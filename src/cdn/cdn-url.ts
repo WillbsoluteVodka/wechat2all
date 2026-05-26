@@ -10,11 +10,22 @@ export function buildCdnDownloadUrl(
   return `${cdnBaseUrl}/download?encrypted_query_param=${encodeURIComponent(encryptedQueryParam)}`;
 }
 
-/** Build a CDN upload URL from upload_param and filekey. */
+/** Build a CDN upload URL from upload_param/filekey or a prebuilt full URL. */
 export function buildCdnUploadUrl(params: {
   cdnBaseUrl: string;
-  uploadParam: string;
-  filekey: string;
+  uploadParam?: string;
+  uploadFullUrl?: string;
+  filekey?: string;
 }): string {
+  if (params.uploadFullUrl) {
+    return params.uploadFullUrl;
+  }
+
+  if (!params.uploadParam || !params.filekey) {
+    throw new Error(
+      "buildCdnUploadUrl requires either uploadFullUrl or both uploadParam and filekey",
+    );
+  }
+
   return `${params.cdnBaseUrl}/upload?encrypted_query_param=${encodeURIComponent(params.uploadParam)}&filekey=${encodeURIComponent(params.filekey)}`;
 }

@@ -4,7 +4,7 @@
  * Flow:
  *   1. Read file -> compute MD5, plaintext size, ciphertext size
  *   2. Generate random 16-byte AES key and filekey
- *   3. Call getUploadUrl to get upload_param
+ *   3. Call getUploadUrl to get upload_param or upload_full_url
  *   4. Encrypt with AES-128-ECB and POST to CDN
  *   5. Return uploaded file info (download param, key, sizes)
  */
@@ -67,15 +67,17 @@ async function uploadMedia(params: {
   });
 
   const uploadParam = uploadUrlResp.upload_param;
-  if (!uploadParam) {
+  const uploadFullUrl = uploadUrlResp.upload_full_url;
+  if (!uploadParam && !uploadFullUrl) {
     throw new Error(
-      `getUploadUrl returned no upload_param: ${JSON.stringify(uploadUrlResp)}`,
+      `getUploadUrl returned no upload_param or upload_full_url: ${JSON.stringify(uploadUrlResp)}`,
     );
   }
 
   const { downloadParam } = await uploadBufferToCdn({
     buf: plaintext,
     uploadParam,
+    uploadFullUrl,
     filekey,
     cdnBaseUrl,
     aeskey,

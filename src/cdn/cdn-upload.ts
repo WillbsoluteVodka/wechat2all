@@ -12,14 +12,20 @@ const UPLOAD_MAX_RETRIES = 3;
  */
 export async function uploadBufferToCdn(params: {
   buf: Buffer;
-  uploadParam: string;
+  uploadParam?: string;
+  uploadFullUrl?: string;
   filekey: string;
   cdnBaseUrl: string;
   aeskey: Buffer;
 }): Promise<{ downloadParam: string }> {
-  const { buf, uploadParam, filekey, cdnBaseUrl, aeskey } = params;
+  const { buf, uploadParam, uploadFullUrl, filekey, cdnBaseUrl, aeskey } = params;
   const ciphertext = encryptAesEcb(buf, aeskey);
-  const cdnUrl = buildCdnUploadUrl({ cdnBaseUrl, uploadParam, filekey });
+  const cdnUrl = buildCdnUploadUrl({
+    cdnBaseUrl,
+    uploadParam,
+    uploadFullUrl,
+    filekey,
+  });
 
   let downloadParam: string | undefined;
   let lastError: unknown;

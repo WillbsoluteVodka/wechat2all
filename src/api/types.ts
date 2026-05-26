@@ -232,8 +232,12 @@ export interface GetUploadUrlReq {
 export interface GetUploadUrlResp {
   /** Original image upload encrypted parameters. */
   upload_param?: string;
+  /** Full CDN upload URL returned by newer backend responses. */
+  upload_full_url?: string;
   /** Thumbnail upload encrypted parameters. */
   thumb_upload_param?: string;
+  /** Full thumbnail CDN upload URL returned by newer backend responses. */
+  thumb_upload_full_url?: string;
 }
 
 // ---------------------------------------------------------------------------
