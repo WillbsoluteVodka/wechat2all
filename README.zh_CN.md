@@ -1,4 +1,4 @@
-# wechat-ilink-client
+# wechat2all
 
 [English](./README.md)
 
@@ -16,7 +16,7 @@
 
 - 二维码扫码登录（返回 URL；调用者自行渲染）
 - 长轮询消息接收（`getUpdates`），游标持久化可选
-- 发送文本、图片、视频、文件消息
+- 发送文本、图片、语音、视频、文件消息
 - CDN 媒体上传/下载，AES-128-ECB 加密
 - 输入状态指示器（正在输入...）
 - 基于 EventEmitter 的 API
@@ -36,7 +36,7 @@ pnpm build
 ## 快速开始
 
 ```typescript
-import { WeChatClient, MessageType } from "wechat-ilink-client";
+import { WeChatClient, MessageType } from "wechat2all";
 
 const client = new WeChatClient();
 
@@ -120,6 +120,39 @@ pnpm echo-bot
 
 示例将凭据存储在 `~/.wechat-echo-bot/` — 这是示例自己的选择，不是库的行为。
 
+如果要同时运行多个相互独立的本地机器人会话，可以给每个进程指定一个 profile。
+每个 profile 都有自己的凭据、sync 游标、临时文件和 24 小时续期计划：
+
+```bash
+pnpm tsx examples/echo-bot.ts --profile sales
+pnpm tsx examples/echo-bot.ts --profile support
+```
+
+也可以使用 `WECHAT_ECHO_PROFILE=sales pnpm echo-bot`。默认 profile 继续使用
+`~/.wechat-echo-bot/`；命名 profile 会存到 `~/.wechat-echo-bot/profiles/<name>/`。
+示例会阻止两个进程同时使用同一个 profile，避免状态互相覆盖。
+
+Echo Bot 还演示了 iLink 24 小时登录窗口的续期流程：
+
+- 随凭据保存二维码登录时间
+- 到期前 2 小时提醒最近联系人
+- 支持回复 `Y` / `N` 选择立即重连或稍后提醒
+- 回复 `N` 后每 30 分钟再次提醒
+- 剩余 30 分钟时自动进入二维码重连流程
+- 支持通过 `/reconnect` 手动触发重连
+
+续期不是静默完成：机器人会生成新的二维码，仍需要用户扫码确认。成功后，示例会保存新的 token，并安排下一轮续期。
+
+测试时可以用环境变量缩短时间：
+
+```bash
+WECHAT_SESSION_MINUTES=6 \
+WECHAT_RECONNECT_WARN_MINUTES=4 \
+WECHAT_RECONNECT_FORCE_MINUTES=2 \
+WECHAT_RECONNECT_REMIND_MINUTES=1 \
+pnpm echo-bot
+```
+
 ## API 参考
 
 ### `WeChatClient`
@@ -136,6 +169,10 @@ new WeChatClient(opts?: {
   accountId?: string;    // 账户 ID
   channelVersion?: string;
   routeTag?: string;
+  apiTimeoutMs?: number;
+  configTimeoutMs?: number;
+  qrTimeoutMs?: number;
+  qrLongPollTimeoutMs?: number;
 })
 ```
 
@@ -146,19 +183,25 @@ new WeChatClient(opts?: {
 | `login(opts?)` | 执行二维码登录。仅在内存中设置 token/accountId。**不持久化。** |
 | `start(opts?)` | 启动长轮询监听。触发 `"message"` 事件。阻塞直到调用 `stop()`。 |
 | `stop()` | 停止长轮询循环。 |
+| `isRunning()` | 当前长轮询是否正在运行。 |
+| `getCredentials()` | 获取内存中的 accountId/token/baseUrl 快照。 |
 | `sendText(to, text, contextToken?)` | 发送文本消息。context token 自动从缓存中获取。 |
-| `sendMedia(to, filePath, caption?, contextToken?)` | 上传并发送文件（根据 MIME 类型自动路由为图片/视频/文件）。 |
+| `sendMedia(to, filePath, caption?, contextToken?, options?)` | 上传并发送文件（根据 MIME 类型自动路由为图片/视频/文件）。 |
+| `sendVoice(to, filePath, options?, contextToken?)` | 上传并发送原生微信语音消息。 |
 | `sendUploadedImage(to, uploaded, caption?, contextToken?)` | 发送已上传的图片。 |
 | `sendUploadedVideo(to, uploaded, caption?, contextToken?)` | 发送已上传的视频。 |
 | `sendUploadedFile(to, fileName, uploaded, caption?, contextToken?)` | 发送已上传的文件。 |
 | `sendTyping(userId, typingTicket, status?)` | 发送/取消输入状态指示器。 |
 | `getTypingTicket(userId, contextToken?)` | 获取用户的 typing ticket。 |
-| `uploadImage(filePath, toUserId)` | 上传图片到 CDN。 |
-| `uploadVideo(filePath, toUserId)` | 上传视频到 CDN。 |
-| `uploadFile(filePath, toUserId)` | 上传文件到 CDN。 |
-| `downloadMedia(item)` | 下载并解密 `MessageItem` 中的媒体内容。 |
+| `uploadImage(filePath, toUserId, options?)` | 上传图片到 CDN。 |
+| `uploadVideo(filePath, toUserId, options?)` | 上传视频到 CDN。 |
+| `uploadFile(filePath, toUserId, options?)` | 上传文件到 CDN。 |
+| `uploadVoice(filePath, toUserId, options?)` | 上传语音文件到 CDN。 |
+| `downloadMedia(item, options?)` | 下载并解密 `MessageItem` 中的媒体内容。 |
 | `getContextToken(userId)` | 获取用户的缓存 context token。 |
 | `getAccountId()` | 获取当前账户 ID。 |
+
+二维码登录成功后，如果服务端返回新的 API base URL，客户端也会自动切换过去。
 
 #### `start()` 选项
 
@@ -166,8 +209,16 @@ new WeChatClient(opts?: {
 |------|------|------|
 | `longPollTimeoutMs` | `number` | 长轮询超时（毫秒），服务器可能覆盖此值。 |
 | `signal` | `AbortSignal` | 用于外部取消。 |
+| `sessionExpiredBehavior` | `"pause" \| "stop"` | session 过期后暂停重试，或直接从 `start()` 返回。默认：`"pause"`。 |
+| `sessionExpiredDelayMs` | `number` | `"pause"` 模式下过期后的重试延迟；默认 1 小时。 |
+| `retryDelayMs` | `number` | 临时轮询失败后的重试延迟；默认 2 秒。 |
+| `backoffDelayMs` | `number` | 连续失败后的退避延迟；默认 30 秒。 |
+| `maxConsecutiveFailures` | `number` | 进入退避前允许的连续失败次数；默认 3。 |
 | `loadSyncBuf` | `() => string \| undefined \| Promise<...>` | 启动时调用一次，加载已持久化的游标。 |
 | `saveSyncBuf` | `(buf: string) => void \| Promise<void>` | 每次轮询后调用，传入新的游标值。 |
+
+同一个 `WeChatClient` 实例正在运行时，再次调用 `start()` 会直接报错。即使
+`start()` 传入了外部 `signal`，`stop()` 也仍然可以停止内部长轮询。
 
 #### `login()` 选项
 
@@ -188,6 +239,32 @@ new WeChatClient(opts?: {
 | `error` | `Error` | 非致命的轮询/API 错误。 |
 | `sessionExpired` | _(无)_ | 服务器返回 errcode -14。机器人会自动暂停。 |
 | `poll` | `GetUpdatesResp` | 每次 getUpdates 调用的原始响应。 |
+
+### 错误与超时
+
+API 失败会抛出 `WeChatApiError`，包含 `endpoint`、`status`、`ret`、
+`errcode`、`errmsg`、`responseBody`、`timedOut` 等结构化字段。长轮询超时是正常情况，
+会返回空更新结果，不会抛错。
+
+CDN 上传/下载默认每次请求 60 秒超时。上传会对临时服务端/网络失败默认重试最多 3 次；
+4xx 客户端错误不会重试。可以通过 media options 覆盖 `timeoutMs`、`maxRetries`、
+`retryDelayMs` 或 `signal`。
+
+### 语音与表情包
+
+原生语音消息可以通过 `sendVoice()` / `sendVoiceFile()` 发送。做 TTS 时，先生成音频文件；
+最稳的语音条格式是 SILK：
+
+```typescript
+await client.sendVoice(userId, "reply.silk", {
+  playtimeMs: 2400,
+  encodeType: VoiceEncodeType.SILK,
+  sampleRate: 24000,
+});
+```
+
+图片型表情包可以作为图片通过 `sendMedia()` 发送，例如 PNG、GIF、WebP、JPEG 等。
+真正的微信自定义表情 item type 不应该靠猜；需要先从真实消息抓 raw payload，再补协议字段。
 
 #### 静态方法
 
@@ -307,6 +384,15 @@ src/
 examples/
   echo-bot.ts              完整的回声机器人（带有自己的持久化和二维码渲染）
 ```
+
+## 开发检查
+
+```bash
+pnpm test
+pnpm check
+```
+
+`pnpm check` 会依次运行类型检查、示例类型检查、单元测试和构建。
 
 ## 许可证
 

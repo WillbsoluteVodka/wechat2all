@@ -1,8 +1,8 @@
-# wechat-ilink-client
+# wechat2all
 
 [简体中文](./README.zh_CN.md)
 
-Standalone TypeScript client for the WeChat iLink bot protocol, reverse-engineered from [`@tencent-weixin/openclaw-weixin`](https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin).
+Local-first TypeScript SDK for the WeChat iLink bot protocol, reverse-engineered from [`@tencent-weixin/openclaw-weixin`](https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin).
 
 No dependency on the OpenClaw framework. Zero runtime dependencies. A pure, stateless library you can use to build your own WeChat bots.
 
@@ -16,7 +16,7 @@ No dependency on the OpenClaw framework. Zero runtime dependencies. A pure, stat
 
 - QR code login (returns the URL; caller handles rendering)
 - Long-poll message receiving (`getUpdates`) with opt-in cursor persistence
-- Send text, image, video, and file messages
+- Send text, image, voice, video, and file messages
 - CDN media upload/download with AES-128-ECB encryption
 - Typing indicator support
 - EventEmitter-based API
@@ -36,7 +36,7 @@ pnpm build
 ## Quick Start
 
 ```typescript
-import { WeChatClient, MessageType } from "wechat-ilink-client";
+import { WeChatClient, MessageType } from "wechat2all";
 
 const client = new WeChatClient();
 
@@ -120,6 +120,44 @@ pnpm echo-bot
 
 The example stores credentials at `~/.wechat-echo-bot/` — this is the example's choice, not the library's.
 
+To run multiple independent local bot sessions, give each process a profile.
+Each profile has its own credentials, sync cursor, temp files, and 24-hour
+renewal schedule:
+
+```bash
+pnpm tsx examples/echo-bot.ts --profile sales
+pnpm tsx examples/echo-bot.ts --profile support
+```
+
+You can also use `WECHAT_ECHO_PROFILE=sales pnpm echo-bot`. The default profile
+keeps using `~/.wechat-echo-bot/`; named profiles are stored under
+`~/.wechat-echo-bot/profiles/<name>/`. The example prevents two processes from
+using the same profile at once.
+
+The echo bot also demonstrates session renewal for the 24-hour iLink login
+window:
+
+- stores the QR login timestamp with the saved credentials
+- warns the most recent contact 2 hours before expiry
+- accepts `Y` / `N` replies to renew now or remind later
+- reminds every 30 minutes after `N`
+- starts QR renewal automatically when 30 minutes remain
+- supports manual renewal with `/reconnect`
+
+Renewal is not silent: the bot generates a fresh QR code and the user must scan
+and confirm it. On success, the example saves the new token and schedules the
+next renewal window.
+
+For testing, shorten the timings with environment variables:
+
+```bash
+WECHAT_SESSION_MINUTES=6 \
+WECHAT_RECONNECT_WARN_MINUTES=4 \
+WECHAT_RECONNECT_FORCE_MINUTES=2 \
+WECHAT_RECONNECT_REMIND_MINUTES=1 \
+pnpm echo-bot
+```
+
 ## API Reference
 
 ### `WeChatClient`
@@ -136,6 +174,10 @@ new WeChatClient(opts?: {
   accountId?: string;    // account ID
   channelVersion?: string;
   routeTag?: string;
+  apiTimeoutMs?: number;
+  configTimeoutMs?: number;
+  qrTimeoutMs?: number;
+  qrLongPollTimeoutMs?: number;
 })
 ```
 
@@ -146,19 +188,26 @@ new WeChatClient(opts?: {
 | `login(opts?)` | Run QR code login. Sets token/accountId in memory. Does NOT persist. |
 | `start(opts?)` | Start the long-poll monitor. Emits `"message"` events. Blocks until `stop()`. |
 | `stop()` | Stop the long-poll loop. |
+| `isRunning()` | Whether the long-poll monitor is currently running. |
+| `getCredentials()` | Get the in-memory accountId/token/baseUrl snapshot. |
 | `sendText(to, text, contextToken?)` | Send a text message. Context token is auto-resolved from cache. |
-| `sendMedia(to, filePath, caption?, contextToken?)` | Upload and send a file (image/video/file routed by MIME type). |
+| `sendMedia(to, filePath, caption?, contextToken?, options?)` | Upload and send a file (image/video/file routed by MIME type). |
+| `sendVoice(to, filePath, options?, contextToken?)` | Upload and send a native WeChat voice message. |
 | `sendUploadedImage(to, uploaded, caption?, contextToken?)` | Send a previously uploaded image. |
 | `sendUploadedVideo(to, uploaded, caption?, contextToken?)` | Send a previously uploaded video. |
 | `sendUploadedFile(to, fileName, uploaded, caption?, contextToken?)` | Send a previously uploaded file. |
 | `sendTyping(userId, typingTicket, status?)` | Send/cancel typing indicator. |
 | `getTypingTicket(userId, contextToken?)` | Fetch the typing ticket for a user. |
-| `uploadImage(filePath, toUserId)` | Upload an image to CDN. |
-| `uploadVideo(filePath, toUserId)` | Upload a video to CDN. |
-| `uploadFile(filePath, toUserId)` | Upload a file to CDN. |
-| `downloadMedia(item)` | Download and decrypt a media `MessageItem`. |
+| `uploadImage(filePath, toUserId, options?)` | Upload an image to CDN. |
+| `uploadVideo(filePath, toUserId, options?)` | Upload a video to CDN. |
+| `uploadFile(filePath, toUserId, options?)` | Upload a file to CDN. |
+| `uploadVoice(filePath, toUserId, options?)` | Upload a voice file to CDN. |
+| `downloadMedia(item, options?)` | Download and decrypt a media `MessageItem`. |
 | `getContextToken(userId)` | Get the cached context token for a user. |
 | `getAccountId()` | Get the current account ID. |
+
+Successful QR login also updates the client's API base URL when the server
+returns one.
 
 #### `start()` Options
 
@@ -166,8 +215,16 @@ new WeChatClient(opts?: {
 |--------|------|-------------|
 | `longPollTimeoutMs` | `number` | Long-poll timeout in ms. Server may override. |
 | `signal` | `AbortSignal` | For external cancellation. |
+| `sessionExpiredBehavior` | `"pause" \| "stop"` | Pause and retry after expiry, or return from `start()`. Default: `"pause"`. |
+| `sessionExpiredDelayMs` | `number` | Delay before retrying after expiry when behavior is `"pause"`; default 1 hour. |
+| `retryDelayMs` | `number` | Delay after transient poll failures; default 2 seconds. |
+| `backoffDelayMs` | `number` | Delay after repeated poll failures; default 30 seconds. |
+| `maxConsecutiveFailures` | `number` | Failures before backoff; default 3. |
 | `loadSyncBuf` | `() => string \| undefined \| Promise<...>` | Called once at startup to load a persisted cursor. |
 | `saveSyncBuf` | `(buf: string) => void \| Promise<void>` | Called after each poll with the new cursor. |
+
+`start()` rejects if called while the same `WeChatClient` instance is already
+running. `stop()` works even when an external `signal` was passed to `start()`.
 
 #### `login()` Options
 
@@ -188,6 +245,37 @@ new WeChatClient(opts?: {
 | `error` | `Error` | Non-fatal poll/API error. |
 | `sessionExpired` | _(none)_ | Server returned errcode -14. Bot pauses automatically. |
 | `poll` | `GetUpdatesResp` | Raw response from each getUpdates call. |
+
+### Errors And Timeouts
+
+API failures are raised as `WeChatApiError` with structured fields such as
+`endpoint`, `status`, `ret`, `errcode`, `errmsg`, `responseBody`, and
+`timedOut`. Long-poll timeouts are normal and return an empty update response
+instead of throwing.
+
+CDN upload/download helpers default to 60-second per-request timeouts. Uploads
+retry transient server/network failures up to 3 attempts by default; 4xx client
+errors are not retried. Pass media options to override `timeoutMs`,
+`maxRetries`, `retryDelayMs`, or `signal`.
+
+### Voice And Stickers
+
+Native voice messages are supported through `sendVoice()` / `sendVoiceFile()`.
+For TTS, generate an audio file first; SILK is the safest format for a real
+WeChat voice bubble:
+
+```typescript
+await client.sendVoice(userId, "reply.silk", {
+  playtimeMs: 2400,
+  encodeType: VoiceEncodeType.SILK,
+  sampleRate: 24000,
+});
+```
+
+Image-like stickers can be sent as images with `sendMedia()` when they are PNG,
+GIF, WebP, JPEG, etc. True WeChat custom sticker item types are not guessed by
+the SDK; capture raw messages from real traffic before adding new protocol
+fields.
 
 #### Static Methods
 
@@ -307,6 +395,15 @@ src/
 examples/
   echo-bot.ts              Complete echo bot (with its own persistence + QR rendering)
 ```
+
+## Development Checks
+
+```bash
+pnpm test
+pnpm check
+```
+
+`pnpm check` runs typecheck, example typecheck, unit tests, and build.
 
 ## License
 

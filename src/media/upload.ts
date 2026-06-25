@@ -15,6 +15,7 @@ import type { ApiClient } from "../api/client.js";
 import { UploadMediaType } from "../api/types.js";
 import { aesEcbPaddedSize } from "../cdn/aes-ecb.js";
 import { uploadBufferToCdn } from "../cdn/cdn-upload.js";
+import type { CdnUploadOptions } from "../cdn/cdn-upload.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -32,6 +33,8 @@ export interface UploadedFileInfo {
   fileSizeCiphertext: number;
 }
 
+export type MediaUploadOptions = CdnUploadOptions;
+
 // ---------------------------------------------------------------------------
 // Internal helper
 // ---------------------------------------------------------------------------
@@ -42,11 +45,21 @@ async function uploadMedia(params: {
   api: ApiClient;
   cdnBaseUrl: string;
   mediaType: (typeof UploadMediaType)[keyof typeof UploadMediaType];
+  options?: MediaUploadOptions;
 }): Promise<UploadedFileInfo> {
-  const { filePath, toUserId, api, cdnBaseUrl, mediaType } = params;
+  const { filePath, toUserId, api, cdnBaseUrl, mediaType, options } = params;
+  if (!filePath.trim()) {
+    throw new Error("filePath is required for media upload");
+  }
+  if (!toUserId.trim()) {
+    throw new Error("toUserId is required for media upload");
+  }
 
   const plaintext = await fs.readFile(filePath);
   const rawsize = plaintext.length;
+  if (rawsize === 0) {
+    throw new Error(`Cannot upload empty media file: ${filePath}`);
+  }
   const rawfilemd5 = crypto
     .createHash("md5")
     .update(plaintext)
@@ -81,6 +94,7 @@ async function uploadMedia(params: {
     filekey,
     cdnBaseUrl,
     aeskey,
+    options,
   });
 
   return {
@@ -102,6 +116,7 @@ export async function uploadImage(params: {
   toUserId: string;
   api: ApiClient;
   cdnBaseUrl: string;
+  options?: MediaUploadOptions;
 }): Promise<UploadedFileInfo> {
   return uploadMedia({ ...params, mediaType: UploadMediaType.IMAGE });
 }
@@ -112,6 +127,7 @@ export async function uploadVideo(params: {
   toUserId: string;
   api: ApiClient;
   cdnBaseUrl: string;
+  options?: MediaUploadOptions;
 }): Promise<UploadedFileInfo> {
   return uploadMedia({ ...params, mediaType: UploadMediaType.VIDEO });
 }
@@ -122,6 +138,18 @@ export async function uploadFile(params: {
   toUserId: string;
   api: ApiClient;
   cdnBaseUrl: string;
+  options?: MediaUploadOptions;
 }): Promise<UploadedFileInfo> {
   return uploadMedia({ ...params, mediaType: UploadMediaType.FILE });
+}
+
+/** Upload a local voice file to the WeChat CDN. */
+export async function uploadVoice(params: {
+  filePath: string;
+  toUserId: string;
+  api: ApiClient;
+  cdnBaseUrl: string;
+  options?: MediaUploadOptions;
+}): Promise<UploadedFileInfo> {
+  return uploadMedia({ ...params, mediaType: UploadMediaType.VOICE });
 }

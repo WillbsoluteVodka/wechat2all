@@ -30,18 +30,23 @@ import { loginWithQRCode } from "./auth/qr-login.js";
 import type { LoginResult, QRLoginOptions } from "./auth/qr-login.js";
 import { downloadMediaFromItem } from "./media/download.js";
 import type { DownloadedMedia } from "./media/download.js";
+import type { MediaDownloadOptions } from "./media/download.js";
 import {
   sendText,
   sendImage,
   sendVideo,
   sendFileMessage,
   sendMediaFile,
+  sendVoiceFile,
 } from "./media/send.js";
+import type { VoiceFileSendOptions } from "./media/send.js";
 import type { UploadedFileInfo } from "./media/upload.js";
+import type { MediaUploadOptions } from "./media/upload.js";
 import {
   uploadImage,
   uploadVideo,
   uploadFile,
+  uploadVoice,
 } from "./media/upload.js";
 import { startMonitor } from "./monitor.js";
 import type { MonitorOptions, MonitorCallbacks } from "./monitor.js";
@@ -53,6 +58,12 @@ import type { MonitorOptions, MonitorCallbacks } from "./monitor.js";
 export interface WeChatClientOptions extends ApiClientOptions {
   /** Account ID. Set after login if not provided. */
   accountId?: string;
+}
+
+export interface WeChatSessionCredentials {
+  accountId?: string;
+  token?: string;
+  baseUrl: string;
 }
 
 export interface WeChatClientEvents {
@@ -95,6 +106,32 @@ export function normalizeAccountId(raw: string): string {
   return raw.trim().toLowerCase().replace(/[@.]/g, "-");
 }
 
+function mergeAbortSignals(
+  ...signals: Array<AbortSignal | undefined>
+): AbortSignal {
+  const active = signals.filter((signal): signal is AbortSignal =>
+    Boolean(signal),
+  );
+  if (active.length === 1) return active[0];
+
+  const controller = new AbortController();
+  const abort = (signal: AbortSignal) => {
+    if (!controller.signal.aborted) {
+      controller.abort(signal.reason);
+    }
+  };
+
+  for (const signal of active) {
+    if (signal.aborted) {
+      abort(signal);
+      break;
+    }
+    signal.addEventListener("abort", () => abort(signal), { once: true });
+  }
+
+  return controller.signal;
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -103,6 +140,7 @@ export class WeChatClient extends EventEmitter {
   readonly api: ApiClient;
   private accountId?: string;
   private abortController?: AbortController;
+  private running = false;
 
   /** In-process cache: userId -> contextToken (echoed from getUpdates). */
   private contextTokens = new Map<string, string>();
@@ -110,7 +148,9 @@ export class WeChatClient extends EventEmitter {
   constructor(opts: WeChatClientOptions = {}) {
     super();
     this.api = new ApiClient(opts);
-    this.accountId = opts.accountId;
+    this.accountId = opts.accountId
+      ? normalizeAccountId(opts.accountId)
+      : undefined;
   }
 
   // -----------------------------------------------------------------------
@@ -119,6 +159,18 @@ export class WeChatClient extends EventEmitter {
 
   getAccountId(): string | undefined {
     return this.accountId;
+  }
+
+  isRunning(): boolean {
+    return this.running;
+  }
+
+  getCredentials(): WeChatSessionCredentials {
+    return {
+      accountId: this.accountId,
+      token: this.api.getToken(),
+      baseUrl: this.api.baseUrl,
+    };
   }
 
   /** Get the cached context token for a user (needed for sending replies). */
@@ -146,6 +198,9 @@ export class WeChatClient extends EventEmitter {
     if (result.connected && result.botToken && result.accountId) {
       this.accountId = normalizeAccountId(result.accountId);
       this.api.setToken(result.botToken);
+      if (result.baseUrl) {
+        this.api.setBaseUrl(result.baseUrl);
+      }
     }
 
     return result;
@@ -164,6 +219,9 @@ export class WeChatClient extends EventEmitter {
    * Call `stop()` to terminate.
    */
   async start(opts: Omit<MonitorOptions, "accountId"> = {}): Promise<void> {
+    if (this.running) {
+      throw new Error("WeChatClient monitor is already running.");
+    }
     if (!this.accountId) {
       throw new Error(
         "No accountId set. Call login() first or pass accountId in constructor.",
@@ -175,11 +233,18 @@ export class WeChatClient extends EventEmitter {
       );
     }
 
-    this.abortController = new AbortController();
+    const internalController = new AbortController();
+    this.abortController = internalController;
+    this.running = true;
+    const { signal: externalSignal, ...restOpts } = opts;
+    const monitorSignal = mergeAbortSignals(
+      internalController.signal,
+      externalSignal,
+    );
 
     const monitorOpts: MonitorOptions = {
-      signal: this.abortController.signal,
-      ...opts,
+      ...restOpts,
+      signal: monitorSignal,
     };
 
     const callbacks: MonitorCallbacks = {
@@ -204,7 +269,14 @@ export class WeChatClient extends EventEmitter {
       },
     };
 
-    await startMonitor(this.api, monitorOpts, callbacks);
+    try {
+      await startMonitor(this.api, monitorOpts, callbacks);
+    } finally {
+      if (this.abortController === internalController) {
+        this.abortController = undefined;
+      }
+      this.running = false;
+    }
   }
 
   /** Stop the long-poll monitor loop. */
@@ -245,6 +317,7 @@ export class WeChatClient extends EventEmitter {
     filePath: string,
     caption?: string,
     contextToken?: string,
+    options?: MediaUploadOptions,
   ): Promise<string> {
     const ct =
       contextToken ?? this.contextTokens.get(to);
@@ -253,7 +326,28 @@ export class WeChatClient extends EventEmitter {
         `No context_token for user ${to}. Receive a message from them first.`,
       );
     }
-    return sendMediaFile(this.api, to, filePath, ct, caption);
+    return sendMediaFile(this.api, to, filePath, ct, caption, options);
+  }
+
+  /**
+   * Upload and send a local file as a native WeChat voice message.
+   *
+   * For best compatibility, generate SILK for TTS and pass playtimeMs.
+   */
+  async sendVoice(
+    to: string,
+    filePath: string,
+    options: VoiceFileSendOptions = {},
+    contextToken?: string,
+  ): Promise<string> {
+    const ct =
+      contextToken ?? this.contextTokens.get(to);
+    if (!ct) {
+      throw new Error(
+        `No context_token for user ${to}. Receive a message from them first.`,
+      );
+    }
+    return sendVoiceFile(this.api, to, filePath, ct, options);
   }
 
   /**
@@ -363,36 +457,56 @@ export class WeChatClient extends EventEmitter {
   async uploadImage(
     filePath: string,
     toUserId: string,
+    options?: MediaUploadOptions,
   ): Promise<UploadedFileInfo> {
     return uploadImage({
       filePath,
       toUserId,
       api: this.api,
       cdnBaseUrl: this.api.cdnBaseUrl,
+      options,
     });
   }
 
   async uploadVideo(
     filePath: string,
     toUserId: string,
+    options?: MediaUploadOptions,
   ): Promise<UploadedFileInfo> {
     return uploadVideo({
       filePath,
       toUserId,
       api: this.api,
       cdnBaseUrl: this.api.cdnBaseUrl,
+      options,
     });
   }
 
   async uploadFile(
     filePath: string,
     toUserId: string,
+    options?: MediaUploadOptions,
   ): Promise<UploadedFileInfo> {
     return uploadFile({
       filePath,
       toUserId,
       api: this.api,
       cdnBaseUrl: this.api.cdnBaseUrl,
+      options,
+    });
+  }
+
+  async uploadVoice(
+    filePath: string,
+    toUserId: string,
+    options?: MediaUploadOptions,
+  ): Promise<UploadedFileInfo> {
+    return uploadVoice({
+      filePath,
+      toUserId,
+      api: this.api,
+      cdnBaseUrl: this.api.cdnBaseUrl,
+      options,
     });
   }
 
@@ -405,8 +519,9 @@ export class WeChatClient extends EventEmitter {
    */
   async downloadMedia(
     item: MessageItem,
+    options?: MediaDownloadOptions,
   ): Promise<DownloadedMedia | null> {
-    return downloadMediaFromItem(item, this.api.cdnBaseUrl);
+    return downloadMediaFromItem(item, this.api.cdnBaseUrl, options);
   }
 
   // -----------------------------------------------------------------------

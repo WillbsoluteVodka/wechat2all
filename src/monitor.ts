@@ -26,11 +26,29 @@ export const SESSION_EXPIRED_ERRCODE = -14;
 // Types
 // ---------------------------------------------------------------------------
 
+export type SessionExpiredBehavior = "pause" | "stop";
+
 export interface MonitorOptions {
   /** Long-poll timeout in ms. Server may override via longpolling_timeout_ms. */
   longPollTimeoutMs?: number;
   /** AbortSignal for stopping the loop. */
   signal?: AbortSignal;
+  /**
+   * What to do when the server reports an expired session.
+   * - "pause" keeps the monitor alive and retries after sessionExpiredDelayMs.
+   * - "stop" emits onSessionExpired and returns from startMonitor.
+   *
+   * Default: "pause" for backward compatibility.
+   */
+  sessionExpiredBehavior?: SessionExpiredBehavior;
+  /** Delay before retrying after session expiry when behavior is "pause". */
+  sessionExpiredDelayMs?: number;
+  /** Short retry delay after transient failures. */
+  retryDelayMs?: number;
+  /** Longer backoff delay after maxConsecutiveFailures. */
+  backoffDelayMs?: number;
+  /** Number of consecutive failures before using backoffDelayMs. */
+  maxConsecutiveFailures?: number;
   /**
    * Called once at startup to load a previously persisted sync cursor.
    * Return the cursor string, or undefined/empty to start fresh.
@@ -49,7 +67,7 @@ export interface MonitorCallbacks {
   /** Called when getUpdates returns an error response. */
   onError?: (err: Error) => void;
   /** Called when the bot session has expired (errcode -14). */
-  onSessionExpired?: () => void;
+  onSessionExpired?: () => void | Promise<void>;
   /** Called after each successful getUpdates response. */
   onPoll?: (resp: GetUpdatesResp) => void;
 }
@@ -72,6 +90,18 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+function positiveMs(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) && value !== undefined && value >= 0
+    ? value
+    : fallback;
+}
+
+function positiveInt(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) && value !== undefined && value > 0
+    ? Math.floor(value)
+    : fallback;
+}
+
 /**
  * Start the long-poll monitor loop. Runs until the AbortSignal fires.
  */
@@ -81,6 +111,21 @@ export async function startMonitor(
   callbacks: MonitorCallbacks,
 ): Promise<void> {
   const { signal } = opts;
+  const sessionExpiredBehavior =
+    opts.sessionExpiredBehavior ?? "pause";
+  const sessionExpiredDelayMs = positiveMs(
+    opts.sessionExpiredDelayMs,
+    60 * 60 * 1000,
+  );
+  const retryDelayMs = positiveMs(opts.retryDelayMs, RETRY_DELAY_MS);
+  const backoffDelayMs = positiveMs(
+    opts.backoffDelayMs,
+    BACKOFF_DELAY_MS,
+  );
+  const maxConsecutiveFailures = positiveInt(
+    opts.maxConsecutiveFailures,
+    MAX_CONSECUTIVE_FAILURES,
+  );
 
   // Load persisted cursor via caller-provided callback
   let getUpdatesBuf = "";
@@ -118,9 +163,11 @@ export async function startMonitor(
           resp.ret === SESSION_EXPIRED_ERRCODE;
 
         if (isSessionExpired) {
-          callbacks.onSessionExpired?.();
-          // Pause for 1 hour
-          await sleep(60 * 60 * 1000, signal);
+          await callbacks.onSessionExpired?.();
+          if (sessionExpiredBehavior === "stop") {
+            return;
+          }
+          await sleep(sessionExpiredDelayMs, signal);
           consecutiveFailures = 0;
           continue;
         }
@@ -132,11 +179,11 @@ export async function startMonitor(
           ),
         );
 
-        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        if (consecutiveFailures >= maxConsecutiveFailures) {
           consecutiveFailures = 0;
-          await sleep(BACKOFF_DELAY_MS, signal);
+          await sleep(backoffDelayMs, signal);
         } else {
-          await sleep(RETRY_DELAY_MS, signal);
+          await sleep(retryDelayMs, signal);
         }
         continue;
       }
@@ -170,11 +217,11 @@ export async function startMonitor(
           : new Error(String(err)),
       );
 
-      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+      if (consecutiveFailures >= maxConsecutiveFailures) {
         consecutiveFailures = 0;
-        await sleep(BACKOFF_DELAY_MS, signal);
+        await sleep(backoffDelayMs, signal);
       } else {
-        await sleep(RETRY_DELAY_MS, signal);
+        await sleep(retryDelayMs, signal);
       }
     }
   }

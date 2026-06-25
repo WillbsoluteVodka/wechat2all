@@ -47,6 +47,18 @@ export const TypingStatus = {
 } as const;
 export type TypingStatus = (typeof TypingStatus)[keyof typeof TypingStatus];
 
+export const VoiceEncodeType = {
+  PCM: 1,
+  ADPCM: 2,
+  FEATURE: 3,
+  SPEEX: 4,
+  AMR: 5,
+  SILK: 6,
+  MP3: 7,
+  OGG_SPEEX: 8,
+} as const;
+export type VoiceEncodeType = (typeof VoiceEncodeType)[keyof typeof VoiceEncodeType];
+
 // ---------------------------------------------------------------------------
 // Common
 // ---------------------------------------------------------------------------
@@ -230,6 +242,9 @@ export interface GetUploadUrlReq {
 }
 
 export interface GetUploadUrlResp {
+  ret?: number;
+  errcode?: number;
+  errmsg?: string;
   /** Original image upload encrypted parameters. */
   upload_param?: string;
   /** Full CDN upload URL returned by newer backend responses. */

@@ -1,7 +1,7 @@
 {
-  "name": "wechat-ilink-client",
+  "name": "wechat2all",
   "version": "0.1.0",
-  "description": "Standalone WeChat iLink bot protocol client",
+  "description": "Local-first WeChat iLink gateway SDK for bots, agents, and automations",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.mjs",
@@ -21,7 +21,9 @@
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
     "echo-bot": "tsx examples/echo-bot.ts",
-    "check:examples": "tsc -p examples/tsconfig.json"
+    "check:examples": "tsc -p examples/tsconfig.json",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "check": "pnpm typecheck && pnpm check:examples && pnpm test && pnpm build"
   },
   "engines": {
     "node": ">=20"

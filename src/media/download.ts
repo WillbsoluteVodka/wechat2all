@@ -9,6 +9,7 @@ import {
   downloadAndDecrypt,
   downloadPlain,
 } from "../cdn/cdn-download.js";
+import type { CdnDownloadOptions } from "../cdn/cdn-download.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -23,6 +24,8 @@ export interface DownloadedMedia {
   fileName?: string;
 }
 
+export type MediaDownloadOptions = CdnDownloadOptions;
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -34,24 +37,29 @@ export interface DownloadedMedia {
 export async function downloadMediaFromItem(
   item: MessageItem,
   cdnBaseUrl: string,
+  options?: MediaDownloadOptions,
 ): Promise<DownloadedMedia | null> {
   if (item.type === MessageItemType.IMAGE) {
     const img = item.image_item;
-    if (!img?.media?.encrypt_query_param) return null;
+    if (!img) return null;
+    const media = img?.media ?? img?.thumb_media;
+    if (!media?.encrypt_query_param) return null;
     // Prefer hex aeskey from image_item, fall back to media.aes_key
     const aesKeyBase64 = img.aeskey
       ? Buffer.from(img.aeskey, "hex").toString("base64")
-      : img.media.aes_key;
+      : media.aes_key;
 
     const data = aesKeyBase64
       ? await downloadAndDecrypt(
-          img.media.encrypt_query_param,
+          media.encrypt_query_param,
           aesKeyBase64,
           cdnBaseUrl,
+          options,
         )
       : await downloadPlain(
-          img.media.encrypt_query_param,
+          media.encrypt_query_param,
           cdnBaseUrl,
+          options,
         );
     return { data, kind: "image" };
   }
@@ -67,6 +75,7 @@ export async function downloadMediaFromItem(
       voice.media.encrypt_query_param,
       voice.media.aes_key,
       cdnBaseUrl,
+      options,
     );
     return { data, kind: "voice" };
   }
@@ -82,6 +91,7 @@ export async function downloadMediaFromItem(
       fileItem.media.encrypt_query_param,
       fileItem.media.aes_key,
       cdnBaseUrl,
+      options,
     );
     return {
       data,
@@ -101,6 +111,7 @@ export async function downloadMediaFromItem(
       videoItem.media.encrypt_query_param,
       videoItem.media.aes_key,
       cdnBaseUrl,
+      options,
     );
     return { data, kind: "video" };
   }

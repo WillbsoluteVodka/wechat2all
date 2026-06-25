@@ -4,16 +4,64 @@
 import { decryptAesEcb } from "./aes-ecb.js";
 import { buildCdnDownloadUrl } from "./cdn-url.js";
 
+const DOWNLOAD_TIMEOUT_MS = 60_000;
+
+export interface CdnDownloadOptions {
+  /** Download timeout in ms. */
+  timeoutMs?: number;
+  /** Optional caller cancellation signal. */
+  signal?: AbortSignal;
+}
+
+function makeTimeoutSignal(
+  timeoutMs: number,
+  parent?: AbortSignal,
+): { signal: AbortSignal; cleanup: () => void; timedOut: () => boolean } {
+  const controller = new AbortController();
+  let timeoutReached = false;
+  const timer = setTimeout(() => {
+    timeoutReached = true;
+    controller.abort();
+  }, timeoutMs);
+
+  const abortFromParent = () => controller.abort(parent?.reason);
+  if (parent?.aborted) abortFromParent();
+  else parent?.addEventListener("abort", abortFromParent, { once: true });
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timer);
+      parent?.removeEventListener("abort", abortFromParent);
+    },
+    timedOut: () => timeoutReached,
+  };
+}
+
 /**
  * Download raw bytes from the CDN (no decryption).
  */
-async function fetchCdnBytes(url: string): Promise<Buffer> {
-  const res = await fetch(url);
-  if (!res.ok) {
-    const body = await res.text().catch(() => "(unreadable)");
-    throw new Error(`CDN download ${res.status} ${res.statusText}: ${body}`);
+async function fetchCdnBytes(
+  url: string,
+  options: CdnDownloadOptions = {},
+): Promise<Buffer> {
+  const timeoutMs = Math.max(1, options.timeoutMs ?? DOWNLOAD_TIMEOUT_MS);
+  const timeout = makeTimeoutSignal(timeoutMs, options.signal);
+  try {
+    const res = await fetch(url, { signal: timeout.signal });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "(unreadable)");
+      throw new Error(`CDN download ${res.status} ${res.statusText}: ${body}`);
+    }
+    return Buffer.from(await res.arrayBuffer());
+  } catch (err) {
+    if (timeout.timedOut()) {
+      throw new Error(`CDN download timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    timeout.cleanup();
   }
-  return Buffer.from(await res.arrayBuffer());
 }
 
 /**
@@ -49,10 +97,11 @@ export async function downloadAndDecrypt(
   encryptedQueryParam: string,
   aesKeyBase64: string,
   cdnBaseUrl: string,
+  options?: CdnDownloadOptions,
 ): Promise<Buffer> {
   const key = parseAesKey(aesKeyBase64);
   const url = buildCdnDownloadUrl(encryptedQueryParam, cdnBaseUrl);
-  const encrypted = await fetchCdnBytes(url);
+  const encrypted = await fetchCdnBytes(url, options);
   return decryptAesEcb(encrypted, key);
 }
 
@@ -62,7 +111,8 @@ export async function downloadAndDecrypt(
 export async function downloadPlain(
   encryptedQueryParam: string,
   cdnBaseUrl: string,
+  options?: CdnDownloadOptions,
 ): Promise<Buffer> {
   const url = buildCdnDownloadUrl(encryptedQueryParam, cdnBaseUrl);
-  return fetchCdnBytes(url);
+  return fetchCdnBytes(url, options);
 }

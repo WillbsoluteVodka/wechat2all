@@ -15,11 +15,28 @@ import {
   MessageItemType,
   MessageState,
   MessageType,
+  VoiceEncodeType,
 } from "../api/types.js";
 import { getMimeFromFilename } from "../util/mime.js";
 import type { UploadedFileInfo } from "./upload.js";
-import { uploadImage, uploadVideo, uploadFile } from "./upload.js";
+import type { MediaUploadOptions } from "./upload.js";
+import { uploadImage, uploadVideo, uploadFile, uploadVoice } from "./upload.js";
 import { generateId } from "../util/random.js";
+
+export interface VoiceMessageOptions {
+  /** Voice duration in milliseconds. */
+  playtimeMs?: number;
+  /** WeChat voice encoding type. Defaults to SILK for .silk files, otherwise inferred where possible. */
+  encodeType?: number;
+  /** Audio sample rate in Hz. */
+  sampleRate?: number;
+  /** Bits per sample for PCM-like encodings. */
+  bitsPerSample?: number;
+}
+
+export interface VoiceFileSendOptions extends VoiceMessageOptions {
+  upload?: MediaUploadOptions;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -29,11 +46,30 @@ function generateClientId(): string {
   return generateId("wechat-ilink");
 }
 
+function assertNonEmpty(name: string, value: string): void {
+  if (!value.trim()) {
+    throw new Error(`${name} is required`);
+  }
+}
+
+function assertUploaded(uploaded: UploadedFileInfo): void {
+  if (!uploaded.downloadEncryptedQueryParam.trim()) {
+    throw new Error("uploaded.downloadEncryptedQueryParam is required");
+  }
+  if (!uploaded.aeskey.trim()) {
+    throw new Error("uploaded.aeskey is required");
+  }
+}
+
 function buildReq(params: {
   to: string;
   contextToken?: string;
   items: MessageItem[];
 }): SendMessageReq {
+  assertNonEmpty("to", params.to);
+  if (params.contextToken !== undefined) {
+    assertNonEmpty("contextToken", params.contextToken);
+  }
   return {
     msg: {
       from_user_id: "",
@@ -45,6 +81,26 @@ function buildReq(params: {
       context_token: params.contextToken ?? undefined,
     },
   };
+}
+
+function inferVoiceEncodeType(filePath: string): number | undefined {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case ".silk":
+      return VoiceEncodeType.SILK;
+    case ".amr":
+      return VoiceEncodeType.AMR;
+    case ".mp3":
+      return VoiceEncodeType.MP3;
+    case ".ogg":
+    case ".spx":
+      return VoiceEncodeType.OGG_SPEEX;
+    case ".wav":
+    case ".pcm":
+      return VoiceEncodeType.PCM;
+    default:
+      return undefined;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -60,6 +116,8 @@ export async function sendText(
   text: string,
   contextToken: string,
 ): Promise<string> {
+  assertNonEmpty("to", to);
+  assertNonEmpty("contextToken", contextToken);
   const clientId = generateClientId();
   const req: SendMessageReq = {
     msg: {
@@ -88,6 +146,7 @@ export async function sendImage(
   contextToken: string,
   caption?: string,
 ): Promise<string> {
+  assertUploaded(uploaded);
   const items: MessageItem[] = [];
   if (caption) {
     items.push({
@@ -127,6 +186,7 @@ export async function sendVideo(
   contextToken: string,
   caption?: string,
 ): Promise<string> {
+  assertUploaded(uploaded);
   const items: MessageItem[] = [];
   if (caption) {
     items.push({
@@ -166,6 +226,8 @@ export async function sendFileMessage(
   contextToken: string,
   caption?: string,
 ): Promise<string> {
+  assertNonEmpty("fileName", fileName);
+  assertUploaded(uploaded);
   const items: MessageItem[] = [];
   if (caption) {
     items.push({
@@ -196,6 +258,70 @@ export async function sendFileMessage(
 }
 
 /**
+ * Send a voice message with a previously uploaded voice file.
+ */
+export async function sendVoice(
+  api: ApiClient,
+  to: string,
+  uploaded: UploadedFileInfo,
+  contextToken: string,
+  options: VoiceMessageOptions = {},
+): Promise<string> {
+  assertUploaded(uploaded);
+  const req = buildReq({
+    to,
+    contextToken,
+    items: [
+      {
+        type: MessageItemType.VOICE,
+        voice_item: {
+          media: {
+            encrypt_query_param: uploaded.downloadEncryptedQueryParam,
+            aes_key: Buffer.from(uploaded.aeskey).toString("base64"),
+            encrypt_type: 1,
+          },
+          encode_type: options.encodeType,
+          sample_rate: options.sampleRate,
+          bits_per_sample: options.bitsPerSample,
+          playtime: options.playtimeMs,
+        },
+      },
+    ],
+  });
+
+  const clientId = req.msg?.client_id ?? "";
+  await api.sendMessage(req);
+  return clientId;
+}
+
+/**
+ * Upload and send a local file as a native WeChat voice message.
+ *
+ * This is explicit on purpose: not every audio file should be displayed as a
+ * WeChat voice bubble. For TTS, prefer generating SILK and set playtimeMs.
+ */
+export async function sendVoiceFile(
+  api: ApiClient,
+  to: string,
+  filePath: string,
+  contextToken: string,
+  options: VoiceFileSendOptions = {},
+): Promise<string> {
+  assertNonEmpty("filePath", filePath);
+  const uploaded = await uploadVoice({
+    filePath,
+    toUserId: to,
+    api,
+    cdnBaseUrl: api.cdnBaseUrl,
+    options: options.upload,
+  });
+  return sendVoice(api, to, uploaded, contextToken, {
+    ...options,
+    encodeType: options.encodeType ?? inferVoiceEncodeType(filePath),
+  });
+}
+
+/**
  * Upload and send a local file as a media message. Routing by MIME type:
  *   - video/*  -> video message
  *   - image/*  -> image message
@@ -207,7 +333,9 @@ export async function sendMediaFile(
   filePath: string,
   contextToken: string,
   caption?: string,
+  options?: MediaUploadOptions,
 ): Promise<string> {
+  assertNonEmpty("filePath", filePath);
   const mime = getMimeFromFilename(filePath);
   const cdnBaseUrl = api.cdnBaseUrl;
 
@@ -217,6 +345,7 @@ export async function sendMediaFile(
       toUserId: to,
       api,
       cdnBaseUrl,
+      options,
     });
     return sendVideo(api, to, uploaded, contextToken, caption);
   }
@@ -227,6 +356,7 @@ export async function sendMediaFile(
       toUserId: to,
       api,
       cdnBaseUrl,
+      options,
     });
     return sendImage(api, to, uploaded, contextToken, caption);
   }
@@ -238,6 +368,7 @@ export async function sendMediaFile(
     toUserId: to,
     api,
     cdnBaseUrl,
+    options,
   });
   return sendFileMessage(
     api,

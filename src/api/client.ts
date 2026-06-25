@@ -23,6 +23,7 @@ import type {
   QRCodeResponse,
   QRCodeStatusResponse,
 } from "./types.js";
+import { WeChatApiError } from "./errors.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -68,6 +69,14 @@ export interface ApiClientOptions {
   channelVersion?: string;
   /** Optional SKRouteTag header. */
   routeTag?: string;
+  /** Timeout for regular API requests in ms. */
+  apiTimeoutMs?: number;
+  /** Timeout for lightweight config/typing requests in ms. */
+  configTimeoutMs?: number;
+  /** Timeout for QR code fetch requests in ms. */
+  qrTimeoutMs?: number;
+  /** Timeout for QR status long-poll requests in ms. */
+  qrLongPollTimeoutMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,18 +84,27 @@ export interface ApiClientOptions {
 // ---------------------------------------------------------------------------
 
 export class ApiClient {
-  readonly baseUrl: string;
+  private apiBaseUrl: string;
   readonly cdnBaseUrl: string;
   private token?: string;
   private channelVersion: string;
   private routeTag?: string;
+  private apiTimeoutMs: number;
+  private configTimeoutMs: number;
+  private qrTimeoutMs: number;
+  private qrLongPollTimeoutMs: number;
 
   constructor(opts: ApiClientOptions = {}) {
-    this.baseUrl = opts.baseUrl ?? DEFAULT_BASE_URL;
+    this.apiBaseUrl = opts.baseUrl ?? DEFAULT_BASE_URL;
     this.cdnBaseUrl = opts.cdnBaseUrl ?? CDN_BASE_URL;
     this.token = opts.token;
     this.channelVersion = opts.channelVersion ?? "standalone-0.1.0";
     this.routeTag = opts.routeTag;
+    this.apiTimeoutMs = opts.apiTimeoutMs ?? DEFAULT_API_TIMEOUT_MS;
+    this.configTimeoutMs = opts.configTimeoutMs ?? DEFAULT_CONFIG_TIMEOUT_MS;
+    this.qrTimeoutMs = opts.qrTimeoutMs ?? DEFAULT_API_TIMEOUT_MS;
+    this.qrLongPollTimeoutMs =
+      opts.qrLongPollTimeoutMs ?? QR_LONG_POLL_TIMEOUT_MS;
   }
 
   /** Update the bearer token (after QR login). */
@@ -96,6 +114,18 @@ export class ApiClient {
 
   getToken(): string | undefined {
     return this.token;
+  }
+
+  /** API base URL currently used for iLink requests. */
+  get baseUrl(): string {
+    return this.apiBaseUrl;
+  }
+
+  /** Update the API base URL returned by QR login. */
+  setBaseUrl(baseUrl: string): void {
+    if (baseUrl.trim()) {
+      this.apiBaseUrl = baseUrl.trim();
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -135,7 +165,11 @@ export class ApiClient {
     const headers = this.buildHeaders(params.body);
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), params.timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, params.timeoutMs);
     try {
       const res = await fetch(url.toString(), {
         method: "POST",
@@ -146,13 +180,59 @@ export class ApiClient {
       clearTimeout(timer);
       const rawText = await res.text();
       if (!res.ok) {
-        throw new Error(`API ${params.endpoint} ${res.status}: ${rawText}`);
+        throw new WeChatApiError({
+          endpoint: params.endpoint,
+          status: res.status,
+          statusText: res.statusText,
+          responseBody: rawText,
+          message: `API ${params.endpoint} ${res.status} ${res.statusText}: ${rawText}`,
+        });
       }
       return rawText;
     } catch (err) {
       clearTimeout(timer);
+      if (timedOut) {
+        throw new WeChatApiError({
+          endpoint: params.endpoint,
+          timedOut: true,
+          cause: err,
+          message: `API ${params.endpoint} timed out after ${params.timeoutMs}ms`,
+        });
+      }
       throw err;
     }
+  }
+
+  private parseJson<T>(endpoint: string, rawText: string): T {
+    try {
+      return JSON.parse(rawText) as T;
+    } catch (err) {
+      throw new WeChatApiError({
+        endpoint,
+        responseBody: rawText,
+        cause: err,
+        message: `API ${endpoint} returned invalid JSON`,
+      });
+    }
+  }
+
+  private assertApiSuccess(
+    endpoint: string,
+    resp: { ret?: number; errcode?: number; errmsg?: string },
+  ): void {
+    const failed =
+      (resp.ret !== undefined && resp.ret !== 0) ||
+      (resp.errcode !== undefined && resp.errcode !== 0);
+    if (!failed) return;
+
+    throw new WeChatApiError({
+      endpoint,
+      ret: resp.ret,
+      errcode: resp.errcode,
+      errmsg: resp.errmsg,
+      responseBody: JSON.stringify(resp),
+      message: `API ${endpoint} failed: ret=${resp.ret} errcode=${resp.errcode} errmsg=${resp.errmsg ?? ""}`,
+    });
   }
 
   // -----------------------------------------------------------------------
@@ -177,9 +257,15 @@ export class ApiClient {
         }),
         timeoutMs: timeout,
       });
-      return JSON.parse(rawText) as GetUpdatesResp;
+      return this.parseJson<GetUpdatesResp>(
+        "ilink/bot/getupdates",
+        rawText,
+      );
     } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") {
+      if (
+        (err instanceof Error && err.name === "AbortError") ||
+        (err instanceof WeChatApiError && err.timedOut)
+      ) {
         return { ret: 0, msgs: [], get_updates_buf: getUpdatesBuf };
       }
       throw err;
@@ -188,26 +274,36 @@ export class ApiClient {
 
   /** Send a message downstream. */
   async sendMessage(req: SendMessageReq): Promise<void> {
-    await this.apiFetch({
-      endpoint: "ilink/bot/sendmessage",
+    const endpoint = "ilink/bot/sendmessage";
+    const rawText = await this.apiFetch({
+      endpoint,
       body: JSON.stringify({ ...req, base_info: this.buildBaseInfo() }),
-      timeoutMs: DEFAULT_API_TIMEOUT_MS,
+      timeoutMs: this.apiTimeoutMs,
     });
+    if (rawText.trim()) {
+      this.assertApiSuccess(
+        endpoint,
+        this.parseJson(endpoint, rawText),
+      );
+    }
   }
 
   /** Get a pre-signed CDN upload URL. */
   async getUploadUrl(
     req: GetUploadUrlReq,
   ): Promise<GetUploadUrlResp> {
+    const endpoint = "ilink/bot/getuploadurl";
     const rawText = await this.apiFetch({
-      endpoint: "ilink/bot/getuploadurl",
+      endpoint,
       body: JSON.stringify({
         ...req,
         base_info: this.buildBaseInfo(),
       }),
-      timeoutMs: DEFAULT_API_TIMEOUT_MS,
+      timeoutMs: this.apiTimeoutMs,
     });
-    return JSON.parse(rawText) as GetUploadUrlResp;
+    const resp = this.parseJson<GetUploadUrlResp>(endpoint, rawText);
+    this.assertApiSuccess(endpoint, resp);
+    return resp;
   }
 
   /** Fetch bot config (includes typing_ticket) for a given user. */
@@ -215,28 +311,38 @@ export class ApiClient {
     ilinkUserId: string,
     contextToken?: string,
   ): Promise<GetConfigResp> {
+    const endpoint = "ilink/bot/getconfig";
     const rawText = await this.apiFetch({
-      endpoint: "ilink/bot/getconfig",
+      endpoint,
       body: JSON.stringify({
         ilink_user_id: ilinkUserId,
         context_token: contextToken,
         base_info: this.buildBaseInfo(),
       }),
-      timeoutMs: DEFAULT_CONFIG_TIMEOUT_MS,
+      timeoutMs: this.configTimeoutMs,
     });
-    return JSON.parse(rawText) as GetConfigResp;
+    const resp = this.parseJson<GetConfigResp>(endpoint, rawText);
+    this.assertApiSuccess(endpoint, resp);
+    return resp;
   }
 
   /** Send a typing indicator. */
   async sendTyping(req: SendTypingReq): Promise<void> {
-    await this.apiFetch({
-      endpoint: "ilink/bot/sendtyping",
+    const endpoint = "ilink/bot/sendtyping";
+    const rawText = await this.apiFetch({
+      endpoint,
       body: JSON.stringify({
         ...req,
         base_info: this.buildBaseInfo(),
       }),
-      timeoutMs: DEFAULT_CONFIG_TIMEOUT_MS,
+      timeoutMs: this.configTimeoutMs,
     });
+    if (rawText.trim()) {
+      this.assertApiSuccess(
+        endpoint,
+        this.parseJson(endpoint, rawText),
+      );
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -257,14 +363,24 @@ export class ApiClient {
       headers.SKRouteTag = this.routeTag;
     }
 
-    const res = await fetch(url.toString(), { headers });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "(unreadable)");
-      throw new Error(
-        `Failed to fetch QR code: ${res.status} ${res.statusText}: ${body}`,
-      );
+    const rawText = await this.getFetchText({
+      endpoint: "ilink/bot/get_bot_qrcode",
+      url,
+      headers,
+      timeoutMs: this.qrTimeoutMs,
+    });
+    const resp = this.parseJson<QRCodeResponse>(
+      "ilink/bot/get_bot_qrcode",
+      rawText,
+    );
+    if (!resp.qrcode || !resp.qrcode_img_content) {
+      throw new WeChatApiError({
+        endpoint: "ilink/bot/get_bot_qrcode",
+        responseBody: rawText,
+        message: "QR code response is missing qrcode or qrcode_img_content",
+      });
     }
-    return (await res.json()) as QRCodeResponse;
+    return resp;
   }
 
   /**
@@ -288,9 +404,13 @@ export class ApiClient {
     }
 
     const controller = new AbortController();
+    let timedOut = false;
     const timer = setTimeout(
-      () => controller.abort(),
-      QR_LONG_POLL_TIMEOUT_MS,
+      () => {
+        timedOut = true;
+        controller.abort();
+      },
+      this.qrLongPollTimeoutMs,
     );
     try {
       const res = await fetch(url.toString(), {
@@ -300,15 +420,65 @@ export class ApiClient {
       clearTimeout(timer);
       const rawText = await res.text();
       if (!res.ok) {
-        throw new Error(
-          `Failed to poll QR status: ${res.status} ${res.statusText}: ${rawText}`,
-        );
+        throw new WeChatApiError({
+          endpoint: "ilink/bot/get_qrcode_status",
+          status: res.status,
+          statusText: res.statusText,
+          responseBody: rawText,
+          message: `Failed to poll QR status: ${res.status} ${res.statusText}: ${rawText}`,
+        });
       }
-      return JSON.parse(rawText) as QRCodeStatusResponse;
+      return this.parseJson<QRCodeStatusResponse>(
+        "ilink/bot/get_qrcode_status",
+        rawText,
+      );
     } catch (err) {
       clearTimeout(timer);
-      if (err instanceof Error && err.name === "AbortError") {
+      if ((err instanceof Error && err.name === "AbortError") || timedOut) {
         return { status: "wait" };
+      }
+      throw err;
+    }
+  }
+
+  private async getFetchText(params: {
+    endpoint: string;
+    url: URL;
+    headers: Record<string, string>;
+    timeoutMs: number;
+  }): Promise<string> {
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, params.timeoutMs);
+    try {
+      const res = await fetch(params.url.toString(), {
+        headers: params.headers,
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      const rawText = await res.text();
+      if (!res.ok) {
+        throw new WeChatApiError({
+          endpoint: params.endpoint,
+          status: res.status,
+          statusText: res.statusText,
+          responseBody: rawText,
+          message: `API ${params.endpoint} ${res.status} ${res.statusText}: ${rawText}`,
+        });
+      }
+      return rawText;
+    } catch (err) {
+      clearTimeout(timer);
+      if (timedOut) {
+        throw new WeChatApiError({
+          endpoint: params.endpoint,
+          timedOut: true,
+          cause: err,
+          message: `API ${params.endpoint} timed out after ${params.timeoutMs}ms`,
+        });
       }
       throw err;
     }
