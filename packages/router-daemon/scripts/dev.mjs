@@ -1,7 +1,12 @@
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import path from "node:path";
 
+const repoRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../..",
+);
 const hostDefault = "127.0.0.1";
 const portDefault = 39787;
 const probeTimeoutMs = 1200;
@@ -109,8 +114,40 @@ function runDaemon() {
   });
 }
 
+function runPnpm(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("pnpm", args, {
+      cwd: repoRoot,
+      stdio: "inherit",
+      env: process.env,
+    });
+    child.on("error", reject);
+    child.on("exit", (code, signal) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`pnpm ${args.join(" ")} exited with ${code ?? signal}`));
+    });
+  });
+}
+
+async function buildRuntimeDependencies() {
+  console.log("[router-daemon-dev] Building workspace runtime dependencies...");
+  await runPnpm([
+    "--filter",
+    "wechat2all",
+    "--filter",
+    "@wechat2all/codex-gui-bridge",
+    "--filter",
+    "@wechat2all/runtime",
+    "build",
+  ]);
+}
+
 async function main() {
   loadLocalEnv();
+  await buildRuntimeDependencies();
   const { url } = routerAddress();
   const existing = await probeDaemon(url);
 
