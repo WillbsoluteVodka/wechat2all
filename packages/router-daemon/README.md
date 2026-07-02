@@ -13,7 +13,7 @@ current state visible to the UI.
 - Dashboard snapshots: profile status, route list, agents, settings, traces.
 - Trace logging.
 - Built-in route wiring, including the main assistant and `codex`.
-- Selecting the Codex backend: file bridge or GUI app-server bridge.
+- Wiring the Codex route to the GUI app-server bridge.
 
 It should not own generic route behavior, memory policy, action semantics, or
 message normalization. Those belong to `packages/runtime`.
@@ -68,33 +68,25 @@ pnpm --filter @wechat2all/router-daemon dev
 
 ## Codex Bridge
 
-The built-in `codex` route has two backends.
-
-### GUI app-server backend
-
-Use this when `/cd codex` should talk to Codex app-server threads instead of
-the legacy `codex exec` watcher inbox:
-
-```bash
-WECHAT2ALL_CODEX_BACKEND=gui-app-server \
-pnpm --filter @wechat2all/router-daemon dev
-```
+The built-in `codex` route talks to Codex app-server threads through
+`@wechat2all/codex-gui-bridge`.
 
 Inside WeChat:
 
 ```text
 /cd codex
+/status
 /ls
-/bind <threadId>
+/bind 1
 /current
+/mode final
 hello from WeChat
 /token
 ```
 
-The backend uses Codex app-server methods `thread/list`, `thread/read`,
-`thread/resume`, `turn/start`, and `account/rateLimits/read`. It does not
-silently fall back to the CLI watcher. If no thread is bound, ordinary text is
-rejected with a `/bind` instruction.
+The bridge uses Codex app-server methods `thread/list`, `thread/read`,
+`thread/resume`, `turn/start`, and `account/rateLimits/read`. If no thread is
+bound, ordinary text is rejected with a `/bind` instruction.
 
 Optional environment:
 
@@ -102,6 +94,9 @@ Optional environment:
 WECHAT2ALL_CODEX_THREAD_ID=<prebound-thread-id>
 WECHAT2ALL_CODEX_DELIVERY=app-server
 # WECHAT2ALL_CODEX_DELIVERY=gui-automation
+WECHAT2ALL_CODEX_REPLY_MODE=final
+# WECHAT2ALL_CODEX_REPLY_MODE=silent
+# WECHAT2ALL_CODEX_REPLY_MODE=stream
 WECHAT2ALL_CODEX_APP_SERVER_SOCKET=<optional-control-socket>
 WECHAT2ALL_CODEX_APP_SERVER_TIMEOUT_MS=8000
 WECHAT2ALL_CODEX_TURN_TIMEOUT_MS=180000
@@ -114,31 +109,6 @@ WECHAT2ALL_CODEX_LIST_LIMIT=20
 bound Codex desktop chat with `codex://threads/<threadId>`, pastes into that
 chat, and polls the same bound thread for the final answer. It requires macOS
 Accessibility permission for the app/terminal running wechat2all.
-
-### File bridge backend
-
-The default backend is the legacy local file bridge for `codex-watcher` and
-`codex-mcp`.
-
-Default bridge directory:
-
-```text
-~/.wechat2all-runtime-bot/codex-bridge/
-```
-
-For non-default profiles:
-
-```text
-~/.wechat2all-runtime-bot/profiles/<profile-id>/codex-bridge/
-```
-
-Files:
-
-- `status.json` - Codex-side process publishes status for `status`.
-- `threads.json` - optional synced chat/project list for `chats`.
-- `inbox.jsonl` - Codex route prompt messages are appended here.
-- `outbox.jsonl` - Codex-side process appends messages to send back to WeChat.
-- `target.json` - last WeChat conversation/context token that used the Codex route.
 
 ## Collaborator Notes
 

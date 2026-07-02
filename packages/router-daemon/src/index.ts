@@ -15,8 +15,8 @@ import {
   createMainAssistantConnector,
   createRouteAssistantConnector,
   createStateStoreMessageDeduper,
+  parseCodexReplyMode,
   type CodexBridgeClient,
-  type CodexBridgeOutboxMessage,
   type RuntimeActionResult,
   type RuntimeMessage,
   type RuntimeProfileConfig,
@@ -48,10 +48,7 @@ function refreshRouterAddress(): void {
 }
 
 function getCodexBridge(): CodexBridgeClient {
-  codexBridge ??= createCodexBridgeFromEnv({
-    stateStore,
-    profileId: PROFILE_ID,
-  });
+  codexBridge ??= createCodexBridgeFromEnv();
   return codexBridge;
 }
 
@@ -67,11 +64,9 @@ interface LoginState {
 
 let runtime: WeChatRuntime | undefined;
 let runtimeStarting = false;
-let codexOutboxTimer: ReturnType<typeof setInterval> | undefined;
 let loginState: LoginState = { active: false, status: "idle" };
 const traceLogger = createTraceLogger();
 const trace = traceLogger.trace;
-const warnedCodexOutboxIds = new Set<string>();
 
 async function buildRuntime(profile: RuntimeProfileConfig): Promise<WeChatRuntime> {
   const savedRoutes = await stateStore.loadRoutes(PROFILE_ID);
@@ -106,6 +101,7 @@ async function buildRuntime(profile: RuntimeProfileConfig): Promise<WeChatRuntim
       createCodexConnector({
         id: "codex-bridge",
         client: getCodexBridge(),
+        replyMode: parseCodexReplyMode(process.env.WECHAT2ALL_CODEX_REPLY_MODE),
       }),
       createMainAssistantConnector({
         id: "main-assistant",
@@ -198,75 +194,8 @@ async function startRuntimeMonitor(): Promise<void> {
   });
 }
 
-async function codexOutboxTarget(message: CodexBridgeOutboxMessage): Promise<{
-  conversationId: string;
-  contextToken?: string;
-} | null> {
-  const bridge = getCodexBridge();
-  const defaultTarget = await bridge.getDefaultTarget?.();
-  const target = {
-    ...defaultTarget,
-    ...message.target,
-  };
-  if (target.profileId && target.profileId !== PROFILE_ID) return null;
-  if (!target.conversationId) return null;
-  return {
-    conversationId: target.conversationId,
-    contextToken: target.contextToken,
-  };
-}
-
-async function pollCodexOutbox(): Promise<void> {
-  const bridge = getCodexBridge();
-  if (!bridge.pullOutbox || !bridge.markOutboxDelivered) return;
-  if (!(await stateStore.loadCredentials(PROFILE_ID))) return;
-  const current = await ensureRuntime();
-  const client = current.getClient(PROFILE_ID);
-  const messages = await bridge.pullOutbox();
-
-  for (const message of messages) {
-    const target = await codexOutboxTarget(message);
-    if (!target) {
-      if (!warnedCodexOutboxIds.has(message.id)) {
-        warnedCodexOutboxIds.add(message.id);
-        trace("warn", "codex", `Outbox ${message.id} has no WeChat target.`);
-      }
-      continue;
-    }
-
-    try {
-      await client.sendText(target.conversationId, message.text, target.contextToken);
-      await bridge.markOutboxDelivered(message.id);
-      trace("info", "codex", `Delivered outbox ${message.id}`);
-    } catch (error) {
-      if (!warnedCodexOutboxIds.has(message.id)) {
-        warnedCodexOutboxIds.add(message.id);
-        trace(
-          "warn",
-          "codex",
-          `Failed to deliver outbox ${message.id}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-    }
-  }
-}
-
-function startCodexOutboxPoller(): void {
-  if (codexBackend() === "gui-app-server") {
-    trace("info", "codex", "Using gui-app-server backend; file outbox poller is disabled.");
-    return;
-  }
-  if (codexOutboxTimer) return;
-  const intervalMs = envNumber("WECHAT2ALL_CODEX_OUTBOX_POLL_MS") ?? 2000;
-  codexOutboxTimer = setInterval(() => {
-    void pollCodexOutbox().catch((error: unknown) => {
-      trace("warn", "codex", error instanceof Error ? error.message : String(error));
-    });
-  }, intervalMs);
-  void pollCodexOutbox();
-  trace("info", "codex", `Outbox poller started (${intervalMs}ms).`);
+function logCodexBackend(): void {
+  trace("info", "codex", "Using gui-app-server backend.");
 }
 
 async function startQrLogin(): Promise<LoginState> {
@@ -453,7 +382,7 @@ async function main(): Promise<void> {
   loadLocalEnv(trace);
   refreshRouterAddress();
   await ensureRuntime();
-  startCodexOutboxPoller();
+  logCodexBackend();
   if (await stateStore.loadCredentials(PROFILE_ID)) {
     void startRuntimeMonitor();
   }

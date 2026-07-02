@@ -11,7 +11,7 @@ const children = [];
 const ownedChildren = new Set();
 const daemonUrl =
   process.env.WECHAT2ALL_ROUTER_DAEMON_URL ?? "http://127.0.0.1:39787";
-const requestedCodexBackend = process.env.WECHAT2ALL_CODEX_BACKEND ?? "file";
+const requestedCodexBackend = "gui-app-server";
 
 function mergeNoProxy(value) {
   const current = value ? value.split(",").map((item) => item.trim()).filter(Boolean) : [];
@@ -123,7 +123,7 @@ async function main() {
       throw new Error(
         `router-daemon is already running at ${daemonUrl} with codex backend ` +
           `${daemon.codexBackend}, but this desktop session requested ${requestedCodexBackend}. ` +
-          "Stop the existing daemon first, or start with the same WECHAT2ALL_CODEX_BACKEND.",
+          "Stop the existing daemon first, then restart desktop.",
       );
     }
     console.log(`[desktop-dev] Reusing existing router-daemon at ${daemonUrl}`);

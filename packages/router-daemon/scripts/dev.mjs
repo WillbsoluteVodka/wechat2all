@@ -53,7 +53,7 @@ function routerAddress() {
 }
 
 function desiredBackend() {
-  return process.env.WECHAT2ALL_CODEX_BACKEND ?? "file";
+  return "gui-app-server";
 }
 
 function abortAfter(ms) {
@@ -122,7 +122,7 @@ async function main() {
         `[router-daemon-dev] Existing codex backend: ${existing.backend}; requested: ${requestedBackend}.`,
       );
       console.error(
-        "[router-daemon-dev] Stop the existing daemon first, or start with the same WECHAT2ALL_CODEX_BACKEND.",
+        "[router-daemon-dev] Stop the existing daemon first, then restart router-daemon.",
       );
       process.exit(1);
     }

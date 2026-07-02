@@ -10,9 +10,10 @@ import {
   RuntimeMediaPipeline,
   RuntimeRouteRegistry,
   WeChatRuntime,
+  cliError,
+  cliPanel,
   createAgentConnector,
   createCodexConnector,
-  createFileCodexBridgeClient,
   createDummyTTSProvider,
   createMcpConnector,
   createStateStoreMessageDeduper,
@@ -37,6 +38,34 @@ import type {
 
 import { MessageItemType, MessageType } from "wechat2all";
 import type { WeChatClient } from "wechat2all";
+
+test("cliPanel uses a tight ASCII header", () => {
+  assert.equal(
+    cliPanel("codex / status", ["state: idle"]),
+    [
+      "+----------------+",
+      "| codex / status |",
+      "+----------------+",
+      "state: idle",
+    ].join("\n"),
+  );
+});
+
+test("cliError uses a tight ASCII header and leaves body lines unpadded", () => {
+  assert.equal(
+    cliError("llm unavailable", [
+      "我现在连不上 LLM，所以这条消息暂时没法生成智能回复。",
+      "  indented line stays indented",
+    ]),
+    [
+      "+------------------------+",
+      "| error: llm unavailable |",
+      "+------------------------+",
+      "我现在连不上 LLM，所以这条消息暂时没法生成智能回复。",
+      "  indented line stays indented",
+    ].join("\n"),
+  );
+});
 
 test("normalizes text and media Weixin messages", () => {
   const message = normalizeWeixinMessage({
@@ -800,7 +829,7 @@ test("codex connector reports status and remembers the WeChat target", async () 
     senderId: "user-1",
     timestamp: 1,
     kind: "text",
-    text: "status",
+    text: "/status",
     attachments: [],
     replyToken: {
       userId: "user-1",
@@ -819,7 +848,13 @@ test("codex connector reports status and remembers the WeChat target", async () 
     routes: new RuntimeRouteRegistry(),
   });
 
-  assert.match((actions[0] as { text: string }).text, /正在工作/);
+  assert.match((actions[0] as { text: string }).text, /正在处理任务/);
+  assert.match(
+    (actions[0] as { text: string }).text,
+    /^◆ Codex - Status\n\n- Codex 正在处理任务/,
+  );
+  assert.match((actions[0] as { text: string }).text, /- 说明: running tests/);
+  assert.match((actions[0] as { text: string }).text, /- 更新时间: /);
   assert.deepEqual(target, {
     profileId: "main",
     conversationId: "user-1",
@@ -886,15 +921,12 @@ test("codex connector returns token usage for /token", async () => {
     routes: new RuntimeRouteRegistry(),
   });
 
-  assert.deepEqual(actions, [{
-    type: "send_text",
-    conversationId: "user-1",
-    text: [
-      "- 5h: 97% 11:35 PM",
-      "- Weekly: 93% Jul 7",
-      "- 1 reset available",
-    ].join("\n"),
-  }]);
+  assert.equal(actions[0].type, "send_text");
+  assert.equal(actions[0].conversationId, "user-1");
+  assert.match((actions[0] as { text: string }).text, /◆ Codex - Token/);
+  assert.match((actions[0] as { text: string }).text, /- 5h: 97% 11:35 PM/);
+  assert.match((actions[0] as { text: string }).text, /- Weekly: 93% Jul 7/);
+  assert.match((actions[0] as { text: string }).text, /- 1 reset available/);
 });
 
 test("codex connector lists bindable chats with /ls", async () => {
@@ -937,12 +969,14 @@ test("codex connector lists bindable chats with /ls", async () => {
     routes: new RuntimeRouteRegistry(),
   });
 
-  assert.match((actions[0] as { text: string }).text, /Codex chats/);
-  assert.match((actions[0] as { text: string }).text, /thread-1/);
-  assert.match((actions[0] as { text: string }).text, /\/bind <id>/);
+  assert.match((actions[0] as { text: string }).text, /◆ Codex - Chats/);
+  assert.match((actions[0] as { text: string }).text, /- wechat2all/);
+  assert.match((actions[0] as { text: string }).text, /  1\. Build bridge/);
+  assert.doesNotMatch((actions[0] as { text: string }).text, /id:/);
+  assert.doesNotMatch((actions[0] as { text: string }).text, /\/bind 1/);
 });
 
-test("codex connector binds a GUI thread and sends ordinary text to it", async () => {
+test("codex connector binds a GUI thread by /ls index and sends ordinary text to it", async () => {
   let binding: {
     threadId: string;
     title?: string;
@@ -955,6 +989,20 @@ test("codex connector binds a GUI thread and sends ordinary text to it", async (
     client: {
       async getStatus() {
         return { state: "idle" };
+      },
+      async listChats() {
+        return [
+          {
+            id: "thread-1",
+            title: "Older chat",
+            project: "wechat2all",
+          },
+          {
+            id: "thread-2",
+            title: "Bridge chat",
+            project: "wechat2all",
+          },
+        ];
       },
       async bindThread(threadId) {
         binding = {
@@ -986,7 +1034,7 @@ test("codex connector binds a GUI thread and sends ordinary text to it", async (
     senderId: "user-1",
     timestamp: 1,
     kind: "text",
-    text: "/bind thread-1",
+    text: "/ls",
     attachments: [],
     raw: {},
   };
@@ -1000,12 +1048,20 @@ test("codex connector binds a GUI thread and sends ordinary text to it", async (
     routes: new RuntimeRouteRegistry(),
   };
 
-  const bindActions = await connector.handleMessage(baseMessage, context);
-  assert.match((bindActions[0] as { text: string }).text, /Thread ID：thread-1/);
+  const listActions = await connector.handleMessage(baseMessage, context);
+  assert.match((listActions[0] as { text: string }).text, /1\. Older chat/);
+  assert.match((listActions[0] as { text: string }).text, /2\. Bridge chat/);
+
+  const bindActions = await connector.handleMessage({
+    ...baseMessage,
+    id: "m2",
+    text: "/bind 2",
+  }, context);
+  assert.match((bindActions[0] as { text: string }).text, /- id: thread-2/);
 
   const sendActions = await connector.handleMessage({
     ...baseMessage,
-    id: "m2",
+    id: "m3",
     text: "continue please",
   }, context);
 
@@ -1014,11 +1070,146 @@ test("codex connector binds a GUI thread and sends ordinary text to it", async (
   assert.match((sendActions[0] as { text: string }).text, /Turn ID: turn-1/);
 });
 
-test("codex connector asks for a GUI binding before sending ordinary text", async () => {
+test("codex connector supports silent reply mode", async () => {
+  let sentReplyMode: unknown;
   const connector = createCodexConnector({
     id: "codex-bridge",
     client: {
       async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        sentReplyMode = prompt.replyMode;
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          status: "completed",
+          finalText: "This should not be sent to WeChat.",
+          replyMode: prompt.replyMode,
+        };
+      },
+    },
+  });
+  const context = {
+    profileId: "main",
+    connectorId: "codex-bridge",
+    client: {} as WeChatClient,
+    memory: new InMemoryMemoryStore(),
+    memoryScope: { profileId: "main", connectorId: "codex-bridge", conversationId: "user-1" },
+    route: { id: "codex", connectorId: "codex-bridge" },
+    routes: new RuntimeRouteRegistry(),
+  };
+  const baseMessage: RuntimeMessage = {
+    id: "m1",
+    platform: "wechat-ilink",
+    profileId: "main",
+    conversationId: "user-1",
+    senderId: "user-1",
+    timestamp: 1,
+    kind: "text",
+    text: "/mode silent",
+    attachments: [],
+    raw: {},
+  };
+
+  const modeActions = await connector.handleMessage(baseMessage, context);
+  assert.match((modeActions[0] as { text: string }).text, /- 当前模式: silent/);
+
+  const sendActions = await connector.handleMessage({
+    ...baseMessage,
+    id: "m2",
+    text: "continue please",
+  }, context);
+
+  assert.equal(sentReplyMode, "silent");
+  assert.match((sendActions[0] as { text: string }).text, /◆ Codex - Done/);
+  assert.doesNotMatch((sendActions[0] as { text: string }).text, /This should not be sent/);
+});
+
+test("codex connector supports stream reply mode", async () => {
+  let sentReplyMode: unknown;
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        sentReplyMode = prompt.replyMode;
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          status: "completed",
+          finalText: "part one\n\npart two",
+          replyParts: ["part one", "part two"],
+          replyMode: prompt.replyMode,
+        };
+      },
+    },
+  });
+  const context = {
+    profileId: "main",
+    connectorId: "codex-bridge",
+    client: {} as WeChatClient,
+    memory: new InMemoryMemoryStore(),
+    memoryScope: { profileId: "main", connectorId: "codex-bridge", conversationId: "user-1" },
+    route: { id: "codex", connectorId: "codex-bridge" },
+    routes: new RuntimeRouteRegistry(),
+  };
+  const baseMessage: RuntimeMessage = {
+    id: "m1",
+    platform: "wechat-ilink",
+    profileId: "main",
+    conversationId: "user-1",
+    senderId: "user-1",
+    timestamp: 1,
+    kind: "text",
+    text: "/mode stream",
+    attachments: [],
+    raw: {},
+  };
+
+  const modeActions = await connector.handleMessage(baseMessage, context);
+  assert.match((modeActions[0] as { text: string }).text, /- 当前模式: stream/);
+
+  const sendActions = await connector.handleMessage({
+    ...baseMessage,
+    id: "m2",
+    text: "continue please",
+  }, context);
+
+  assert.equal(sentReplyMode, "stream");
+  assert.deepEqual(sendActions, [
+    { type: "send_text", conversationId: "user-1", text: "part one" },
+    { type: "send_text", conversationId: "user-1", text: "part two" },
+  ]);
+});
+
+test("codex connector asks for a GUI binding before sending ordinary text", async () => {
+  let statusCalls = 0;
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    client: {
+      async getStatus() {
+        statusCalls += 1;
         return { state: "idle" };
       },
       async getCurrentBinding() {
@@ -1037,7 +1228,7 @@ test("codex connector asks for a GUI binding before sending ordinary text", asyn
     senderId: "user-1",
     timestamp: 1,
     kind: "text",
-    text: "continue please",
+    text: "status",
     attachments: [],
     raw: {},
   };
@@ -1052,7 +1243,8 @@ test("codex connector asks for a GUI binding before sending ordinary text", asyn
     routes: new RuntimeRouteRegistry(),
   });
 
-  assert.match((actions[0] as { text: string }).text, /\/bind <threadId>/);
+  assert.match((actions[0] as { text: string }).text, /\/bind <序号>/);
+  assert.equal(statusCalls, 0);
 });
 
 test("codex connector ignores unknown slash commands inside its route", async () => {
@@ -1091,34 +1283,6 @@ test("codex connector ignores unknown slash commands inside its route", async ()
     type: "noop",
     reason: "unknown codex route command: /unknown",
   }]);
-});
-
-test("file codex bridge stores inbox prompts and marks outbox delivery", async () => {
-  const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-"));
-  const client = createFileCodexBridgeClient({ baseDir });
-
-  await client.sendPrompt?.({
-    id: "prompt-1",
-    createdAt: 1,
-    profileId: "main",
-    conversationId: "user-1",
-    senderId: "user-1",
-    text: "continue the task",
-    sourceMessageId: "m1",
-  });
-
-  const inbox = await fs.readFile(path.join(baseDir, "inbox.jsonl"), "utf-8");
-  assert.match(inbox, /continue the task/);
-
-  await fs.writeFile(
-    path.join(baseDir, "outbox.jsonl"),
-    `${JSON.stringify({ id: "out-1", createdAt: 2, text: "done" })}\n`,
-    "utf-8",
-  );
-  assert.equal((await client.pullOutbox?.())?.length, 1);
-
-  await client.markOutboxDelivered?.("out-1");
-  assert.equal((await client.pullOutbox?.())?.length, 0);
 });
 
 test("runtime media pipeline downloads and caches attachments", async () => {

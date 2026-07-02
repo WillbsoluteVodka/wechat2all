@@ -6,6 +6,7 @@ import type {
   AgentMemorySearchParams,
 } from "../agent-memory/types.js";
 import { createNoopAgentMemoryProvider } from "../agent-memory/noop.js";
+import { cliError, cliOk, cliPanel, cliUsage } from "../format/cli.js";
 import type {
   LLMMessage,
   LLMProvider,
@@ -134,16 +135,27 @@ function routeNameFromId(profileId: string, id: string): string {
 }
 
 function routeHelp(): string {
-  return [
+  return cliPanel("main router / help", [
     "大助手固定命令：",
-    "/help - 展示所有命令和功能",
-    "/ls - 展示当前所有可用 routes",
-    "/rename <新名字> - 直接重命名当前 route",
-    "/cd <route> - 进入某个 route",
-    "/cd .. - 二级 route 中返回大助手",
     "",
-    "进入二级 route 后，大助手会停止接管消息；发送 /cd .. 可回到大助手。",
-  ].join("\n");
+    "/help",
+    "  展示所有命令和功能",
+    "",
+    "/ls",
+    "  展示当前所有可用 routes",
+    "",
+    "/rename <新名字>",
+    "  直接重命名当前 route",
+    "",
+    "/cd <route>",
+    "  进入某个 route",
+    "",
+    "/cd ..",
+    "  二级 route 中返回大助手",
+    "",
+    "进入二级 route 后，大助手会停止接管消息；",
+    "发送 /cd .. 可回到大助手。",
+  ]);
 }
 
 function routeProfileMatches(profileId: string, route: RuntimeRoute): boolean {
@@ -185,7 +197,11 @@ function routeDescriptionText(route: RuntimeRoute): string {
 }
 
 function routeSummaryLine(profileId: string, route: RuntimeRoute): string {
-  return `- ${routeDisplayName(profileId, route)}（${routeKindLabel(route)}）：${routeDescriptionText(route)}`;
+  return [
+    `- ${routeDisplayName(profileId, route)}`,
+    `  kind: ${routeKindLabel(route)}`,
+    `  desc: ${routeDescriptionText(route)}`,
+  ].join("\n");
 }
 
 function routeMatchesName(profileId: string, route: RuntimeRoute, name: string): boolean {
@@ -287,13 +303,13 @@ function toError(err: unknown): Error {
 }
 
 function llmFailureText(error: Error, providerId: string): string {
-  return [
+  return cliError("llm unavailable", [
     "我现在连不上 LLM，所以这条消息暂时没法生成智能回复。",
     `provider: ${providerId}`,
     `error: ${error.message}`,
     "",
     "你可以稍后重试，或者先检查 WECHAT2ALL_LLM_BASE_URL / 网络代理 / API key。",
-  ].join("\n");
+  ]);
 }
 
 async function generateOrFallback(params: {
@@ -409,7 +425,7 @@ export function createMainAssistantConnector(
       return [{
         type: "send_text",
         conversationId: message.conversationId,
-        text: "用法：/rename <新名字>",
+        text: cliUsage("/rename <新名字>", "直接重命名当前 route"),
       }];
     }
 
@@ -418,7 +434,10 @@ export function createMainAssistantConnector(
       return [{
         type: "send_text",
         conversationId: message.conversationId,
-        text: "这个名字不太像 route 名字。请使用普通文本，最多 32 个字符。",
+        text: cliError("invalid route name", [
+          "这个名字不太像 route 名字。",
+          "请使用普通文本，最多 32 个字符。",
+        ]),
       }];
     }
 
@@ -432,7 +451,9 @@ export function createMainAssistantConnector(
       return [{
         type: "send_text",
         conversationId: message.conversationId,
-        text: `没有找到当前 route：${targetRouteId}`,
+        text: cliError("current route missing", [
+          `route: ${targetRouteId}`,
+        ]),
       }];
     }
 
@@ -450,7 +471,10 @@ export function createMainAssistantConnector(
     return [{
       type: "send_text",
       conversationId: message.conversationId,
-      text: `已将当前 route 改名为：${normalized}`,
+      text: cliOk("route renamed", [
+        `已将当前 route 改名为：${normalized}`,
+        `name: ${normalized}`,
+      ]),
     }];
   }
 
@@ -463,7 +487,7 @@ export function createMainAssistantConnector(
       return [{
         type: "send_text",
         conversationId: message.conversationId,
-        text: "用法：/cd <route> 或 /cd ..",
+        text: cliUsage("/cd <route>", "进入某个 route；返回上一级用 /cd .."),
       }];
     }
 
@@ -472,7 +496,9 @@ export function createMainAssistantConnector(
       return [{
         type: "send_text",
         conversationId: message.conversationId,
-        text: "你已经在大助手。",
+        text: cliPanel("main router", [
+          "你已经在主 Router。",
+        ]),
       }];
     }
 
@@ -485,7 +511,12 @@ export function createMainAssistantConnector(
       return [{
         type: "send_text",
         conversationId: message.conversationId,
-        text: `没有找到 route：${target}\n发送 /ls 查看当前可用 routes。`,
+        text: cliError("route not found", [
+          `target: ${target}`,
+          "",
+          "try:",
+          "  /ls",
+        ]),
       }];
     }
 
@@ -494,7 +525,9 @@ export function createMainAssistantConnector(
       return [{
         type: "send_text",
         conversationId: message.conversationId,
-        text: "你已经在大助手。",
+        text: cliPanel("main router", [
+          "你已经在主 Router。",
+        ]),
       }];
     }
 
@@ -507,10 +540,14 @@ export function createMainAssistantConnector(
     return [{
       type: "send_text",
       conversationId: message.conversationId,
-      text:
-        `已进入 route：${routeDisplayName(message.profileId, route)}\n` +
-        `${routeDescriptionText(route)}\n` +
+      text: cliOk("route entered", [
+        `已进入 route：${routeDisplayName(message.profileId, route)}`,
+        `route: ${routeDisplayName(message.profileId, route)}`,
+        `desc: ${routeDescriptionText(route)}`,
+        "",
         "当前对话会停留在这个 route 内。发送 /cd .. 回到大助手。",
+        "return: /cd ..",
+      ]),
     }];
   }
 
@@ -533,10 +570,10 @@ export function createMainAssistantConnector(
           .listRoutes()
           .filter((route) => isVisibleRoute(message.profileId, route));
         const text = routes.length === 0
-          ? "现在没有可用 route。"
-          : routes
+          ? cliPanel("routes", ["现在没有可用 route。"])
+          : cliPanel("routes", routes
               .map((route) => routeSummaryLine(message.profileId, route))
-              .join("\n");
+              .flatMap((line, index) => index === 0 ? [line] : ["", line]));
         return [{ type: "send_text", conversationId: message.conversationId, text }];
       }
       case "rename": {
@@ -634,7 +671,13 @@ export function createRouteAssistantConnector(
         return [{
           type: "send_text",
           conversationId: message.conversationId,
-          text: "已退回大助手。你现在可以继续普通聊天，或发送 /ls 查看 routes。",
+          text: cliOk("returned", [
+            "已退回主 Router。",
+            "",
+            "next:",
+            "  普通聊天",
+            "  /ls",
+          ]),
         }];
       }
 

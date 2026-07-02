@@ -88,7 +88,7 @@ export async function createDashboardSnapshot(
     settings: {
       llmProvider: env.WECHAT2ALL_LLM_PROVIDER ?? "openai-compatible",
       memoryProvider: env.WECHAT2ALL_MEMORY_PROVIDER ?? "local",
-      codexBackend: env.WECHAT2ALL_CODEX_BACKEND ?? "file",
+      codexBackend: "gui-app-server",
       codexDelivery: env.WECHAT2ALL_CODEX_DELIVERY ?? "app-server",
       autostartEnabled: false,
       routerEndpoint: opts.routerEndpoint,

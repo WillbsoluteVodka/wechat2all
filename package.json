@@ -14,11 +14,7 @@
     "echo-bot": "pnpm --filter wechat2all echo-bot",
     "runtime-bot": "pnpm --filter @wechat2all/runtime runtime-bot",
     "codex-mcp": "pnpm --filter @wechat2all/codex-mcp dev",
-    "codex-watcher": "pnpm --filter @wechat2all/codex-watcher dev",
     "codex-gui-bridge": "pnpm --filter @wechat2all/codex-gui-bridge dev",
-    "codex-gui-probe": "pnpm --filter @wechat2all/codex-watcher probe:codex-gui",
-    "codex-gui-usage-probe": "pnpm --filter @wechat2all/codex-watcher probe:codex-gui-usage",
-    "codex-token-probe": "pnpm --filter @wechat2all/codex-watcher probe:codex-token",
     "desktop": "pnpm --filter @wechat2all/desktop dev",
     "desktop:build": "pnpm --filter @wechat2all/desktop tauri:build"
   },

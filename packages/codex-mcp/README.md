@@ -1,18 +1,19 @@
 # wechat2all Codex MCP
 
-Codex-side MCP server for the legacy file bridge used by the built-in `codex`
-route.
+Experimental Codex-side MCP server with a local file-backed bridge store.
+
+The built-in `codex` route no longer uses this package. Current Codex chat
+integration lives in `packages/codex-gui-bridge`.
 
 ## What This Package Owns
 
 - A small MCP server that exposes tools to Codex.
-- A file-backed bridge store shared with `router-daemon` and `codex-watcher`.
+- A standalone file-backed bridge store for MCP experiments.
 - Reading WeChat prompts from `inbox.jsonl`.
 - Writing proactive WeChat replies to `outbox.jsonl`.
 - Publishing Codex status and optional thread lists.
 
-It does not push prompts into an already running GUI chat. For current Codex GUI
-chat integration, use `packages/codex-gui-bridge`.
+It does not push prompts into an already running GUI chat.
 
 ## Tech Stack
 
@@ -53,5 +54,5 @@ codex mcp add wechat2all-codex -- pnpm --dir /path/to/wechat2all --filter @wecha
 
 ## Collaborator Notes
 
-This package is useful for MCP experiments and compatibility with the file
-backend. New GUI chat binding work should happen in `codex-gui-bridge`.
+This package is useful for MCP experiments only. New GUI chat binding work
+should happen in `codex-gui-bridge`.

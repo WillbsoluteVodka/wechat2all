@@ -16,7 +16,6 @@ flowchart TD
   R --> D["packages/router-daemon<br/>本地进程 + HTTP API"]
   D --> UI["packages/desktop<br/>Tauri dashboard"]
   R --> CG["packages/codex-gui-bridge<br/>Codex GUI/app-server bridge"]
-  R --> FM["packages/codex-mcp + codex-watcher<br/>旧 file/MCP bridge"]
   R --> A["未来的 route agents / MCP skills"]
 ```
 
@@ -32,7 +31,6 @@ flowchart TD
 | 本地 daemon | `packages/router-daemon` | 进程生命周期、profile 状态、QR 登录 API、dashboard HTTP API、内置 routes | UI 渲染、底层 iLink 协议 |
 | Desktop UI | `packages/desktop` | macOS Tauri dashboard、QR/login/status/routes/logs/settings 页面 | runtime 业务逻辑 |
 | Codex GUI bridge | `packages/codex-gui-bridge` | Codex app-server chat 列表、绑定、token usage、向绑定 GUI chat 发送 prompt | 微信路由或通用 MCP tools |
-| Codex file bridge | `packages/codex-mcp`, `packages/codex-watcher` | 旧的 file/MCP bridge，用于实验和兼容 | 当前主路径的 GUI chat delivery |
 
 一个消息的例子：
 
@@ -59,7 +57,7 @@ flowchart TD
 
 - 一个真实微信扫码 profile 下挂多个逻辑 routes。
 - `大助手` 默认 route：普通 LLM 聊天、route 列表、rename、route 切换。
-- Codex route：支持 `/ls`、`/bind <threadId>`、`/current`、`/token`，以及把
+- Codex route：支持 `/ls`、`/bind <序号>`、`/current`、`/token`，以及把
   普通微信消息发送到绑定的 Codex GUI chat。
 - 标准 runtime action：`send_text`、`send_media`、`send_voice`、`typing`、
   `noop`。
@@ -130,10 +128,9 @@ pnpm runtime-bot -- --profile main --fresh
 pnpm desktop
 ```
 
-使用 Codex GUI delivery：
+使用可见的 Codex GUI delivery：
 
 ```bash
-WECHAT2ALL_CODEX_BACKEND=gui-app-server \
 WECHAT2ALL_CODEX_DELIVERY=gui-automation \
 pnpm desktop
 ```
@@ -169,7 +166,6 @@ prompt，按 Enter，然后轮询同一个 thread 的最终回复。
 - `packages/router-daemon` 是本地 app backend。它负责把 runtime 接到 QR 登录、
   HTTP endpoints、trace 和 desktop state，但不要把 runtime 业务逻辑塞进去。
 - `packages/desktop` 是可用的开发 dashboard，还不是正式 installer。
-- `packages/codex-gui-bridge` 是当前推荐的 Codex 集成方式。file watcher/MCP 包保留
-  给兼容和实验。
+- `packages/codex-gui-bridge` 是 Codex 集成方式。旧的 `codex exec` watcher 已经移除。
 
 改某一层之前，先读对应 package 里的 README。

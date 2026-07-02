@@ -1,5 +1,3 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import type {
@@ -59,17 +57,7 @@ export interface CodexBridgePrompt {
   sourceMessageId: string;
   contextToken?: string;
   routeId?: string;
-}
-
-export interface CodexBridgeOutboxMessage {
-  id: string;
-  createdAt: number;
-  text: string;
-  level?: "info" | "success" | "warn" | "error";
-  threadId?: string;
-  projectId?: string;
-  target?: Partial<CodexBridgeTarget>;
-  deliveredAt?: number;
+  replyMode?: CodexReplyMode;
 }
 
 export interface CodexBridgeSendPromptResult {
@@ -77,9 +65,13 @@ export interface CodexBridgeSendPromptResult {
   threadId?: string;
   turnId?: string;
   finalText?: string;
+  replyParts?: string[];
+  replyMode?: CodexReplyMode;
   status?: "completed" | "interrupted" | "failed" | "inProgress";
   error?: string;
 }
+
+export type CodexReplyMode = "final" | "silent" | "stream";
 
 export interface CodexBridgeClient {
   getStatus(): Promise<CodexBridgeStatus>;
@@ -91,8 +83,6 @@ export interface CodexBridgeClient {
   sendPrompt?(prompt: CodexBridgePrompt): Promise<CodexBridgeSendPromptResult>;
   setDefaultTarget?(target: CodexBridgeTarget): Promise<void>;
   getDefaultTarget?(): Promise<CodexBridgeTarget | null>;
-  pullOutbox?(): Promise<CodexBridgeOutboxMessage[]>;
-  markOutboxDelivered?(id: string): Promise<void>;
 }
 
 export interface CodexTokenWindow {
@@ -112,117 +102,7 @@ export interface CodexTokenUsage {
 
 export type CodexTokenUsageReader = () => Promise<CodexTokenUsage>;
 
-export interface FileCodexBridgeClientOptions {
-  baseDir: string;
-}
-
-interface StatusFile {
-  status?: CodexBridgeStatus;
-}
-
-interface ThreadsFile {
-  threads?: CodexBridgeThread[];
-}
-
-async function ensureDir(dir: string): Promise<void> {
-  await fs.mkdir(dir, { recursive: true });
-}
-
-async function readJson<T>(filePath: string): Promise<T | null> {
-  try {
-    return JSON.parse(await fs.readFile(filePath, "utf-8")) as T;
-  } catch {
-    return null;
-  }
-}
-
-async function writeJson(filePath: string, value: unknown): Promise<void> {
-  await ensureDir(path.dirname(filePath));
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(tmpPath, JSON.stringify(value, null, 2), "utf-8");
-  await fs.rename(tmpPath, filePath);
-}
-
-async function readJsonl<T>(filePath: string): Promise<T[]> {
-  let raw: string;
-  try {
-    raw = await fs.readFile(filePath, "utf-8");
-  } catch {
-    return [];
-  }
-  return raw
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .flatMap((line) => {
-      try {
-        return [JSON.parse(line) as T];
-      } catch {
-        return [];
-      }
-    });
-}
-
-async function appendJsonl(filePath: string, value: unknown): Promise<void> {
-  await ensureDir(path.dirname(filePath));
-  await fs.appendFile(filePath, `${JSON.stringify(value)}\n`, "utf-8");
-}
-
-function isUndelivered(message: CodexBridgeOutboxMessage): boolean {
-  return !message.deliveredAt && Boolean(message.text?.trim());
-}
-
-export function createFileCodexBridgeClient(
-  opts: FileCodexBridgeClientOptions,
-): CodexBridgeClient {
-  const statusPath = path.join(opts.baseDir, "status.json");
-  const threadsPath = path.join(opts.baseDir, "threads.json");
-  const inboxPath = path.join(opts.baseDir, "inbox.jsonl");
-  const outboxPath = path.join(opts.baseDir, "outbox.jsonl");
-  const targetPath = path.join(opts.baseDir, "target.json");
-
-  return {
-    async getStatus() {
-      const data = await readJson<StatusFile>(statusPath);
-      return data?.status ?? {
-        state: "unknown",
-        summary:
-          "Codex bridge is waiting for a Codex-side MCP/bridge process to publish status.",
-      };
-    },
-    async listThreads() {
-      const data = await readJson<ThreadsFile>(threadsPath);
-      return data?.threads ?? [];
-    },
-    async sendPrompt(prompt) {
-      await appendJsonl(inboxPath, prompt);
-      return { id: prompt.id };
-    },
-    async setDefaultTarget(target) {
-      await writeJson(targetPath, target);
-    },
-    async getDefaultTarget() {
-      return readJson<CodexBridgeTarget>(targetPath);
-    },
-    async pullOutbox() {
-      return (await readJsonl<CodexBridgeOutboxMessage>(outboxPath))
-        .filter(isUndelivered);
-    },
-    async markOutboxDelivered(id) {
-      const messages = await readJsonl<CodexBridgeOutboxMessage>(outboxPath);
-      await ensureDir(path.dirname(outboxPath));
-      await fs.writeFile(
-        outboxPath,
-        messages.map((message) =>
-          JSON.stringify(message.id === id
-            ? { ...message, deliveredAt: Date.now() }
-            : message),
-        ).join("\n") + (messages.length ? "\n" : ""),
-        "utf-8",
-      );
-    },
-  };
-}
+const CODEX_HEADER_PREFIX = "◆ Codex";
 
 export interface CodexConnectorOptions {
   id: string;
@@ -230,6 +110,7 @@ export interface CodexConnectorOptions {
   client: CodexBridgeClient;
   commandPrefixes?: string[];
   tokenUsageReader?: CodexTokenUsageReader;
+  replyMode?: CodexReplyMode;
 }
 
 function messageText(message: RuntimeMessage): string {
@@ -247,7 +128,7 @@ function stripPrefix(text: string, prefixes: string[]): string {
 }
 
 function isStatusCommand(text: string): boolean {
-  return !text || /^(status|progress|进度|状态|在干嘛|busy|idle)$/i.test(text);
+  return text.trim() === "/status";
 }
 
 function isThreadListCommand(text: string): boolean {
@@ -266,6 +147,20 @@ function commandText(text: string): string {
   return text.trim().replace(/^\/+/, "").trim();
 }
 
+export function parseCodexReplyMode(value: string | undefined): CodexReplyMode | undefined {
+  const mode = value?.trim().toLowerCase();
+  if (mode === "final" || mode === "silent" || mode === "stream") return mode;
+  return undefined;
+}
+
+function parseModeCommand(text: string): CodexReplyMode | "show" | null {
+  const match = text.trim().match(/^\/mode(?:\s+(.+))?$/i);
+  if (!match) return null;
+  const rawMode = match[1]?.trim();
+  if (!rawMode) return "show";
+  return parseCodexReplyMode(rawMode) ?? null;
+}
+
 function isCurrentCommand(text: string): boolean {
   return /^(current|pwd|binding|where|当前|绑定)$/i.test(text);
 }
@@ -276,8 +171,46 @@ function parseBindThreadId(text: string): string | null {
   return threadId || null;
 }
 
+function isBindIndex(value: string): boolean {
+  return /^[1-9]\d*$/.test(value.trim());
+}
+
+function bindCacheKey(message: RuntimeMessage): string {
+  return `${message.profileId}\u0000${message.conversationId}`;
+}
+
+function visibleBindableThreads(threads: CodexBridgeThread[]): CodexBridgeThread[] {
+  return threads.slice(0, 12);
+}
+
+async function readBindableThreads(client: CodexBridgeClient): Promise<CodexBridgeThread[]> {
+  if (client.listChats) return client.listChats();
+  if (client.listThreads) return client.listThreads();
+  return [];
+}
+
 function formatTime(timestamp?: number): string {
   return timestamp ? new Date(timestamp).toLocaleString() : "unknown";
+}
+
+function projectLabel(thread: CodexBridgeThread): string {
+  const project = thread.project ?? thread.projectPath;
+  if (!project) return "未归档项目";
+  const parts = project.split(/[\\/]/).filter(Boolean);
+  return parts.at(-1) ?? project;
+}
+
+function compactTitle(title: string): string {
+  const normalized = title.replace(/\s+/g, " ").trim();
+  return normalized.length > 32 ? `${normalized.slice(0, 31)}...` : normalized;
+}
+
+function statusSummaryText(summary: string): string {
+  const normalized = summary.trim();
+  if (/not bound/i.test(normalized) && /\/bind/i.test(normalized)) {
+    return "还没有绑定 Codex chat。";
+  }
+  return normalized;
 }
 
 function formatStatus(status: CodexBridgeStatus): string {
@@ -288,62 +221,135 @@ function formatStatus(status: CodexBridgeStatus): string {
     blocked: "被阻塞",
     unknown: "未知 / 未连接",
   };
-  return [
-    `Codex 状态：${label[status.state] ?? status.state}`,
-    status.summary ? `说明：${status.summary}` : undefined,
-    status.currentProject ? `Project：${status.currentProject}` : undefined,
-    status.currentThreadId ? `Chat：${status.currentThreadId}` : undefined,
-    `更新时间：${formatTime(status.updatedAt)}`,
-  ].filter(Boolean).join("\n");
+  const hasBinding = Boolean(status.currentThreadId || status.currentProject);
+  const summary = status.summary ? statusSummaryText(status.summary) : undefined;
+  const isUnbound = !hasBinding && summary === "还没有绑定 Codex chat。";
+
+  if (isUnbound) {
+    return codexPanel([
+      "codex / status",
+      "",
+      "- 当前没有绑定 Codex chat",
+      "- /ls 查看可绑定的 chat",
+      "- /bind <序号> 绑定一个 chat",
+    ]);
+  }
+
+  const headline = status.state === "working"
+    ? "Codex 正在处理任务"
+    : `Codex ${label[status.state] ?? status.state}`;
+
+  return codexPanel([
+    "codex / status",
+    "",
+    `- ${headline}`,
+    status.currentThreadId ? `- 当前 chat: ${status.currentThreadId}` : undefined,
+    status.currentProject ? `- 项目: ${status.currentProject}` : undefined,
+    summary ? `- 说明: ${summary}` : undefined,
+    `- 更新时间: ${formatTime(status.updatedAt)}`,
+  ]);
 }
 
 function formatThreads(threads: CodexBridgeThread[]): string {
   if (!threads.length) {
-    return "Codex GUI bridge 没有找到可绑定的 chat。";
+    return codexPanel([
+      "codex / chats",
+      "",
+      "Codex GUI bridge 没有找到可绑定的 chat。",
+    ]);
   }
-  return [
-    "Codex chats:",
-    ...threads.slice(0, 12).map((thread, index) => {
-      const title = thread.title ?? thread.id;
-      const project = thread.project ?? thread.projectPath;
-      const status = thread.status ? ` · ${thread.status}` : "";
-      return [
-        `${index + 1}. ${title}${status}`,
-        `   id: ${thread.id}`,
-        project ? `   project: ${project}` : undefined,
-      ].filter(Boolean).join("\n");
-    }),
+  const visibleThreads = visibleBindableThreads(threads);
+  const groupedThreads = new Map<string, Array<{ thread: CodexBridgeThread; index: number }>>();
+  visibleThreads.forEach((thread, index) => {
+    const label = projectLabel(thread);
+    const group = groupedThreads.get(label) ?? [];
+    group.push({ thread, index });
+    groupedThreads.set(label, group);
+  });
+
+  const projectLines = Array.from(groupedThreads.entries()).flatMap(([project, items]) => [
+    `- ${project}`,
+    ...items.flatMap(({ thread, index }) => [
+      `  ${index + 1}. ${compactTitle(thread.title ?? thread.id)}`,
+      "",
+    ]),
+  ]);
+  if (projectLines.at(-1) === "") projectLines.pop();
+
+  return codexPanel([
+    "chats",
     "",
-    "用 /bind <id> 绑定其中一个 chat。",
-  ].join("\n");
+    `最近 ${visibleThreads.length} 个可绑定 chat`,
+    "",
+    ...projectLines,
+  ]);
 }
 
 function formatBinding(binding: CodexBridgeBinding | null): string {
   if (!binding) {
-    return "Codex GUI bridge 还没有绑定 chat。先发送 /ls，再发送 /bind <threadId>。";
+    return codexPanel([
+      "codex / binding",
+      "",
+      "- 当前没有绑定 Codex chat",
+      "- /ls 查看可绑定的 chat",
+      "- /bind <序号> 绑定一个 chat",
+    ]);
   }
-  return [
-    "当前 Codex 绑定：",
-    binding.title ? `Chat：${binding.title}` : undefined,
-    binding.project ? `Project：${binding.project}` : undefined,
-    `Thread ID：${binding.threadId}`,
-    binding.boundAt ? `绑定时间：${formatTime(binding.boundAt)}` : undefined,
-  ].filter(Boolean).join("\n");
+  return codexPanel([
+    "codex / binding",
+    "",
+    "- 当前已绑定 Codex chat",
+    binding.title ? `- chat: ${binding.title}` : undefined,
+    binding.project ? `- 项目: ${binding.project}` : undefined,
+    `- id: ${binding.threadId}`,
+    binding.boundAt ? `- 绑定时间: ${formatTime(binding.boundAt)}` : undefined,
+  ]);
 }
 
-function helpText(): string {
-  return [
-    "Codex route 当前可用输入：",
-    "status - 查询 Codex 当前状态",
-    "/token - 查询 Codex usage 剩余额度",
-    "/ls - 查看可绑定的 Codex chats",
-    "/bind <threadId> - 绑定一个 Codex chat",
-    "/current - 查看当前绑定",
-    "任意普通文本 - 发送到已绑定的 Codex chat",
-    "/cd .. - 回到大助手",
+function formatReplyMode(mode: CodexReplyMode): string {
+  const description: Record<CodexReplyMode, string> = {
+    final: "只返回 Codex 最终回复，忽略 thinking / commentary。",
+    silent: "等待任务完成后只通知完成，不返回正文。",
+    stream: "返回这个 turn 里的所有 Codex 文本片段。",
+  };
+  return codexPanel([
+    "codex / mode",
     "",
-    "默认不使用 GUI 自动化，也不会偷偷 fallback 到 CLI watcher。",
-  ].join("\n");
+    `- 当前模式: ${mode}`,
+    `- 说明: ${description[mode]}`,
+    "- 可选模式: final / silent / stream",
+  ]);
+}
+
+function helpText(replyMode: CodexReplyMode): string {
+  return codexPanel([
+    "codex / help",
+    "",
+    "/status",
+    "  查询 Codex 当前状态",
+    "",
+    "/token",
+    "  查询 Codex usage 剩余额度",
+    "",
+    "/ls",
+    "  查看可绑定的 Codex chats",
+    "",
+    "/bind <序号>",
+    "  绑定 /ls 里对应编号的 Codex chat",
+    "  也支持完整 thread id",
+    "",
+    "/current",
+    "  查看当前绑定",
+    "",
+    "/mode final|silent|stream",
+    `  设置微信返回模式，当前：${replyMode}`,
+    "",
+    "任意普通文本",
+    "  发送到已绑定的 Codex chat",
+    "",
+    "/cd ..",
+    "  回到主 Router",
+  ]);
 }
 
 async function rememberTarget(
@@ -368,23 +374,128 @@ function textAction(message: RuntimeMessage, text: string): RuntimeAction[] {
   }];
 }
 
+function cleanCodexLine(line: string | undefined): string | undefined {
+  if (line === undefined) return undefined;
+  return line.replace(/\s+$/g, "");
+}
+
+function titleCaseAscii(value: string): string {
+  return value.replace(/\b[a-z]/g, (char) => char.toUpperCase());
+}
+
+function codexHeader(title: string | undefined): string {
+  const normalized = title?.trim();
+  if (!normalized) return CODEX_HEADER_PREFIX;
+  const okMatch = normalized.match(/^ok:\s*(.+)$/i);
+  const errorMatch = normalized.match(/^error:\s*(.+)$/i);
+  const rawLabel = okMatch?.[1] ?? errorMatch?.[1] ?? normalized;
+  const label = rawLabel
+    .replace(/^codex\s*\/\s*/i, "")
+    .replace(/^codex\s+/i, "")
+    .trim();
+  const display = errorMatch
+    ? `Error: ${label || rawLabel}`
+    : label || rawLabel;
+  return `${CODEX_HEADER_PREFIX} - ${titleCaseAscii(display)}`;
+}
+
+function codexPanel(lines: Array<string | undefined>): string {
+  const body = lines
+    .map(cleanCodexLine)
+    .filter((line): line is string => line !== undefined);
+  const [title, ...content] = body;
+  const trimmedContent = content[0] === "" ? content.slice(1) : content;
+  return [
+    codexHeader(title),
+    "",
+    ...trimmedContent,
+  ].join("\n");
+}
+
+function codexUsage(command: string, description?: string): string {
+  return codexPanel([
+    "usage",
+    "",
+    command,
+    description ? `  ${description}` : undefined,
+  ]);
+}
+
+function codexError(title: string, lines: Array<string | undefined>): string {
+  return codexPanel([
+    `error: ${title}`,
+    "",
+    ...lines,
+  ]);
+}
+
+function codexOk(title: string, lines: Array<string | undefined>): string {
+  return codexPanel([
+    `ok: ${title}`,
+    "",
+    ...lines,
+  ]);
+}
+
+async function resolveBindTarget(
+  client: CodexBridgeClient,
+  bindTarget: string,
+  cachedThreads: Map<string, CodexBridgeThread[]>,
+  cacheKey: string,
+): Promise<{ threadId: string } | { error: string }> {
+  if (!isBindIndex(bindTarget)) return { threadId: bindTarget };
+
+  const index = Number.parseInt(bindTarget, 10);
+  let threads = cachedThreads.get(cacheKey);
+  if (!threads?.length) {
+    threads = visibleBindableThreads(await readBindableThreads(client));
+    if (threads.length) cachedThreads.set(cacheKey, threads);
+  }
+
+  if (!threads.length) {
+    return {
+      error: codexError("bind index unavailable", [
+        `没有找到编号 ${bindTarget}。`,
+        "先发送 /ls 查看可绑定的 chats，然后使用 /bind 1。",
+      ]),
+    };
+  }
+
+  const thread = threads[index - 1];
+  if (!thread) {
+    return {
+      error: codexError("bind index unavailable", [
+        `没有找到编号 ${bindTarget}。`,
+        `当前可选范围：1-${threads.length}`,
+        "发送 /ls 刷新列表，然后重新绑定。",
+      ]),
+    };
+  }
+
+  return { threadId: thread.id };
+}
+
 function formatTokenUsageForWechat(usage: CodexTokenUsage): string {
   const primary = usage.windows.find((window) => window.label === "5h") ??
     usage.windows[0] ?? null;
   const secondary = usage.windows.find((window) => window.label === "Weekly") ??
     usage.windows[1] ?? null;
 
-  return [
+  return codexPanel([
+    "codex / token",
+    "",
     `- ${primary?.label ?? "5h"}: ${primary?.remainingText ?? "unknown"} ${primary?.resetText ?? "unknown"}`,
     `- ${secondary?.label ?? "Weekly"}: ${secondary?.remainingText ?? "unknown"} ${secondary?.resetText ?? "unknown"}`,
     `- ${usage.resetCreditsText ?? "reset credits unavailable"}`,
-  ].join("\n");
+  ]);
 }
 
 export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnector {
   const prefixes = opts.commandPrefixes ?? [];
   const tokenUsageReader = opts.tokenUsageReader ??
     opts.client.getTokenUsage?.bind(opts.client);
+  let replyMode: CodexReplyMode = opts.replyMode ?? "final";
+  const cachedBindableThreads = new Map<string, CodexBridgeThread[]>();
   return {
     id: opts.id,
     name: opts.name ?? "Codex Bridge",
@@ -393,7 +504,13 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
         context.routes.clearConversationRoute(message.profileId, message.conversationId);
         return textAction(
           message,
-          "已退回大助手。你现在可以继续普通聊天，或发送 /ls 查看 routes。",
+          codexOk("returned", [
+            "已退回主 Router。",
+            "",
+            "next:",
+            "  普通聊天",
+            "  /ls",
+          ]),
         );
       }
 
@@ -405,31 +522,37 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
         if (!tokenUsageReader) {
           return textAction(
             message,
-            "当前 Codex backend 不支持 /token。请使用 gui-app-server backend，或给 Codex connector 传入 tokenUsageReader。",
+            codexError("token unavailable", [
+              "当前 Codex backend 不支持 /token。",
+              "请使用 gui-app-server backend，或给 Codex connector 传入 tokenUsageReader。",
+            ]),
           );
         }
         try {
           return textAction(message, formatTokenUsageForWechat(await tokenUsageReader()));
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
-          return textAction(message, `Codex token usage 暂时读取失败：${detail}`);
+          return textAction(message, codexError("token read failed", [detail]));
         }
       }
 
       if (isHelpCommand(command)) {
-        return textAction(message, helpText());
+        return textAction(message, helpText(replyMode));
       }
 
-      if (isStatusCommand(command)) {
+      if (isStatusCommand(text)) {
         return textAction(message, formatStatus(await opts.client.getStatus()));
       }
 
+      const nextReplyMode = parseModeCommand(text);
+      if (nextReplyMode) {
+        if (nextReplyMode !== "show") replyMode = nextReplyMode;
+        return textAction(message, formatReplyMode(replyMode));
+      }
+
       if (isThreadListCommand(command)) {
-        const threads = opts.client.listChats
-          ? await opts.client.listChats()
-          : opts.client.listThreads
-            ? await opts.client.listThreads()
-            : [];
+        const threads = await readBindableThreads(opts.client);
+        cachedBindableThreads.set(bindCacheKey(message), visibleBindableThreads(threads));
         return textAction(message, formatThreads(threads));
       }
 
@@ -440,22 +563,32 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
         return textAction(message, formatBinding(binding));
       }
 
-      const bindThreadId = parseBindThreadId(command);
-      if (bindThreadId) {
+      const bindTarget = parseBindThreadId(command);
+      if (bindTarget) {
         if (!opts.client.bindThread) {
           return textAction(
             message,
-            "当前 Codex backend 不支持 /bind。请设置 WECHAT2ALL_CODEX_BACKEND=gui-app-server 后重启 router-daemon。",
+            codexError("bind unavailable", [
+              "当前 Codex backend 不支持 /bind。",
+              "请检查 router-daemon 是否正在使用 codex-gui-bridge。",
+            ]),
           );
         }
         try {
+          const resolved = await resolveBindTarget(
+            opts.client,
+            bindTarget,
+            cachedBindableThreads,
+            bindCacheKey(message),
+          );
+          if ("error" in resolved) return textAction(message, resolved.error);
           return textAction(
             message,
-            formatBinding(await opts.client.bindThread(bindThreadId)),
+            formatBinding(await opts.client.bindThread(resolved.threadId)),
           );
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
-          return textAction(message, `Codex 绑定失败：${detail}`);
+          return textAction(message, codexError("bind failed", [detail]));
         }
       }
 
@@ -466,14 +599,16 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
       if (!opts.client.sendPrompt) {
         return textAction(
           message,
-          "Codex bridge 还没有接入 sendPrompt。",
+          codexError("send unavailable", [
+            "Codex bridge 还没有接入 sendPrompt。",
+          ]),
         );
       }
 
       if (opts.client.getCurrentBinding && !(await opts.client.getCurrentBinding())) {
         return textAction(
           message,
-          "Codex GUI bridge 还没有绑定 chat。先发送 /ls，再发送 /bind <threadId>。",
+          codexUsage("/bind <序号>", "Codex GUI bridge 还没有绑定 chat。先 /ls 再绑定。"),
         );
       }
 
@@ -487,6 +622,7 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
         sourceMessageId: message.id,
         contextToken: message.replyToken?.contextToken,
         routeId: context.route.id,
+        replyMode,
       };
       let result: CodexBridgeSendPromptResult;
       try {
@@ -495,36 +631,57 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
         const detail = error instanceof Error ? error.message : String(error);
         return textAction(
           message,
-          `Codex GUI chat 处理失败：${detail}`,
+          codexError("codex gui failed", [detail]),
         );
       }
-      if (result.finalText) return textAction(message, result.finalText);
       if (result.error) {
         return textAction(
           message,
-          [
-            "Codex GUI chat 处理失败。",
+          codexError("codex gui failed", [
             result.threadId ? `Thread ID: ${result.threadId}` : undefined,
             result.turnId ? `Turn ID: ${result.turnId}` : undefined,
             `Error: ${result.error}`,
-          ].filter(Boolean).join("\n"),
+          ]),
         );
       }
+      if (replyMode === "silent" && result.threadId) {
+        return textAction(
+          message,
+          codexOk("codex / done", [
+            "Codex 已完成这次任务。",
+            `Thread ID: ${result.threadId}`,
+            result.turnId ? `Turn ID: ${result.turnId}` : undefined,
+          ]),
+        );
+      }
+      const replyParts = result.replyParts?.filter((part) => part.trim().length > 0) ?? [];
+      if (replyMode === "stream" && replyParts.length) {
+        return replyParts.map((part) => ({
+          type: "send_text",
+          conversationId: message.conversationId,
+          text: part,
+        }));
+      }
+      if (result.finalText) return textAction(message, result.finalText);
       if (result.threadId) {
         return textAction(
           message,
-          [
+          codexPanel([
+            "codex / sent",
+            "",
             result.status === "inProgress"
               ? "Codex GUI chat 仍在处理，暂时只拿到部分/无最终回复。"
               : "已发送到 Codex GUI chat，但没有拿到最终文本回复。",
             `Thread ID: ${result.threadId}`,
             result.turnId ? `Turn ID: ${result.turnId}` : undefined,
-          ].filter(Boolean).join("\n"),
+          ]),
         );
       }
       return textAction(
         message,
-        `已发送给 Codex bridge inbox。\nPrompt ID: ${result.id}`,
+        codexOk("codex inbox", [
+          `Prompt ID: ${result.id}`,
+        ]),
       );
     },
   };

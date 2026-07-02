@@ -37,6 +37,7 @@ export interface CodexGuiPrompt {
   id?: string;
   text: string;
   threadId?: string;
+  replyMode?: CodexGuiReplyMode;
 }
 
 export interface CodexGuiPromptResult {
@@ -45,10 +46,13 @@ export interface CodexGuiPromptResult {
   turnId?: string;
   status?: "completed" | "interrupted" | "failed" | "inProgress";
   finalText?: string;
+  replyParts?: string[];
+  replyMode?: CodexGuiReplyMode;
   error?: string;
 }
 
 export type CodexGuiDeliveryMode = "app-server" | "gui-automation";
+export type CodexGuiReplyMode = "final" | "silent" | "stream";
 
 export interface CodexGuiPromptInjectionContext {
   threadId?: string;
@@ -76,6 +80,7 @@ export interface CodexGuiBridgeOptions {
   socketPath?: string;
   defaultThreadId?: string;
   deliveryMode?: CodexGuiDeliveryMode;
+  replyMode?: CodexGuiReplyMode;
   guiPromptInjector?: CodexGuiPromptInjector;
   timeoutMs?: number;
   turnTimeoutMs?: number;

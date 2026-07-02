@@ -176,7 +176,7 @@ test("starts a turn with standardized text input on the bound thread", async () 
     threadId: "thread-1",
     turnId: "turn-1",
     status: "completed",
-    finalText: undefined,
+    replyMode: "final",
     error: undefined,
   });
   assert.deepEqual(
@@ -243,6 +243,135 @@ test("waits for turn completion and returns final answer text", async () => {
     turnId: "turn-1",
     status: "completed",
     finalText: "Done from Codex.",
+    replyMode: "final",
+    error: undefined,
+  });
+});
+
+test("final reply mode ignores non-final agent messages", async () => {
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({ transport, turnTimeoutMs: 1000 });
+
+  await bridge.bindThread("thread-1");
+  const pending = bridge.sendPrompt({
+    id: "wechat-message-final-mode",
+    text: "answer me",
+  });
+
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      items: [{
+        type: "agentMessage",
+        id: "assistant-thinking-1",
+        text: "Thinking-only text should stay out of WeChat.",
+        phase: "commentary",
+      }],
+    },
+  });
+
+  assert.deepEqual(await pending, {
+    id: "wechat-message-final-mode",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    status: "completed",
+    replyMode: "final",
+    error: undefined,
+  });
+});
+
+test("silent reply mode waits for completion but suppresses assistant text", async () => {
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({ transport, turnTimeoutMs: 1000 });
+
+  await bridge.bindThread("thread-1");
+  const pending = bridge.sendPrompt({
+    id: "wechat-message-silent-mode",
+    text: "answer me",
+    replyMode: "silent",
+  });
+
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      items: [{
+        type: "agentMessage",
+        id: "assistant-final-1",
+        text: "Done from Codex.",
+        phase: "final_answer",
+      }],
+    },
+  });
+
+  assert.deepEqual(await pending, {
+    id: "wechat-message-silent-mode",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    status: "completed",
+    replyMode: "silent",
+    error: undefined,
+  });
+});
+
+test("stream reply mode returns all completed assistant text parts", async () => {
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({ transport, turnTimeoutMs: 1000 });
+
+  await bridge.bindThread("thread-1");
+  const pending = bridge.sendPrompt({
+    id: "wechat-message-stream-mode",
+    text: "answer me",
+    replyMode: "stream",
+  });
+
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("item/completed", {
+    threadId: "thread-1",
+    turnId: "turn-1",
+    item: {
+      type: "agentMessage",
+      id: "assistant-commentary-1",
+      text: "Working...",
+      phase: "commentary",
+    },
+  });
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      items: [{
+        type: "agentMessage",
+        id: "assistant-final-1",
+        text: "Done from Codex.",
+        phase: "final_answer",
+      }],
+    },
+  });
+
+  assert.deepEqual(await pending, {
+    id: "wechat-message-stream-mode",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    status: "completed",
+    finalText: "Working...\n\nDone from Codex.",
+    replyParts: ["Working...", "Done from Codex."],
+    replyMode: "stream",
     error: undefined,
   });
 });
@@ -274,6 +403,8 @@ test("gui-automation mode injects into Codex GUI and polls bound thread", async 
     turnId: "gui-turn-1",
     status: "completed",
     finalText: "GUI final answer.",
+    replyParts: undefined,
+    replyMode: "final",
     error: undefined,
   });
   assert.equal(
@@ -310,6 +441,8 @@ test("gui-automation opens and polls the explicitly bound thread, not the frontm
     turnId: "gui-turn-1",
     status: "completed",
     finalText: "GUI final answer.",
+    replyParts: undefined,
+    replyMode: "final",
     error: undefined,
   });
 });

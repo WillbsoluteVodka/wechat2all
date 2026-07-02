@@ -11,6 +11,7 @@ This is the current preferred Codex integration path.
 - Binding a WeChat route conversation to a specific Codex thread id.
 - Reading token usage from `account/rateLimits/read`.
 - Sending prompts to the bound thread.
+- Filtering Codex turn output with reply modes: `final`, `silent`, and `stream`.
 - Optional GUI automation that opens `codex://threads/<threadId>`, pastes into
   that chat, presses Enter, and polls the same thread for the final answer.
 
@@ -32,6 +33,17 @@ Those live in `runtime` and `router-daemon`.
 - Polls the same bound thread for the final answer.
 - Requires macOS Accessibility permission for the launching app/terminal.
 
+## Reply Modes
+
+`final` is the default. It only returns `final_answer` text to WeChat and drops
+thinking/commentary items.
+
+`silent` waits for the Codex turn to complete, then lets the runtime send only a
+short completion notice.
+
+`stream` returns every completed Codex assistant text part for that turn. The
+runtime maps these parts to multiple WeChat text actions.
+
 ## Tech Stack
 
 - TypeScript.
@@ -52,10 +64,12 @@ WECHAT2ALL_CODEX_THREAD_ID=<threadId> pnpm --filter @wechat2all/codex-gui-bridge
 ## Environment
 
 ```text
-WECHAT2ALL_CODEX_BACKEND=gui-app-server
 WECHAT2ALL_CODEX_DELIVERY=app-server
 # WECHAT2ALL_CODEX_DELIVERY=gui-automation
 WECHAT2ALL_CODEX_THREAD_ID=<optional-prebound-thread-id>
+WECHAT2ALL_CODEX_REPLY_MODE=final
+# WECHAT2ALL_CODEX_REPLY_MODE=silent
+# WECHAT2ALL_CODEX_REPLY_MODE=stream
 WECHAT2ALL_CODEX_APP_SERVER_SOCKET=<optional-control-socket>
 WECHAT2ALL_CODEX_APP_SERVER_TIMEOUT_MS=8000
 WECHAT2ALL_CODEX_TURN_TIMEOUT_MS=180000
@@ -66,8 +80,7 @@ WECHAT2ALL_CODEX_LIST_LIMIT=20
 
 ## Collaborator Notes
 
-- Do not silently fall back to the CLI watcher. If app-server is unavailable,
-  report bridge unavailable.
+- If app-server is unavailable, report bridge unavailable.
 - Do not write directly into Codex SQLite state.
 - Prefer app-server protocol. Use GUI automation only when the user explicitly
   wants visible prompt injection into a desktop chat.

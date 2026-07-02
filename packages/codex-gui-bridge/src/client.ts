@@ -14,6 +14,7 @@ import type {
   CodexGuiChat,
   CodexGuiPrompt,
   CodexGuiPromptResult,
+  CodexGuiReplyMode,
 } from "./types.js";
 
 interface RawThreadStatus {
@@ -75,6 +76,7 @@ interface TurnError {
 }
 
 interface ThreadItem {
+  id?: string;
   type?: string;
   text?: string;
   phase?: string | null;
@@ -248,6 +250,7 @@ export class CodexGuiAppServerBridge {
   private readonly clientTitle: string;
   private readonly clientVersion: string;
   private readonly deliveryMode: CodexGuiDeliveryMode;
+  private readonly replyMode: CodexGuiReplyMode;
   private readonly guiPromptInjector: CodexGuiPromptInjector;
   private initialized?: Promise<void>;
   private binding: CodexGuiBinding | null;
@@ -267,6 +270,7 @@ export class CodexGuiAppServerBridge {
     this.clientTitle = opts.clientTitle ?? "wechat2all Codex GUI Bridge";
     this.clientVersion = opts.clientVersion ?? "0.1.0";
     this.deliveryMode = opts.deliveryMode ?? "app-server";
+    this.replyMode = opts.replyMode ?? "final";
     this.guiPromptInjector = opts.guiPromptInjector ?? injectPromptIntoCodexGui;
     this.binding = opts.defaultThreadId
       ? {
@@ -334,7 +338,7 @@ export class CodexGuiAppServerBridge {
       return {
         state: "unknown",
         summary:
-          "Codex GUI bridge is not bound. Send /ls, then /bind <threadId>.",
+          "Codex GUI bridge is not bound. Send /ls, then /bind <序号>.",
         updatedAt: Date.now(),
       };
     }
@@ -367,14 +371,16 @@ export class CodexGuiAppServerBridge {
     if (!text) throw new Error("Cannot send an empty Codex prompt.");
     const threadId = prompt.threadId?.trim() || this.binding?.threadId;
     if (!threadId) {
-      throw new Error("Codex GUI bridge is not bound. Send /ls, then /bind <threadId>.");
+      throw new Error("Codex GUI bridge is not bound. Send /ls, then /bind <序号>.");
     }
+    const replyMode = prompt.replyMode ?? this.replyMode;
 
     if (this.deliveryMode === "gui-automation") {
       return this.sendPromptViaGuiAutomation({
         id: prompt.id ?? randomUUID(),
         threadId,
         text,
+        replyMode,
       });
     }
 
@@ -401,24 +407,26 @@ export class CodexGuiAppServerBridge {
       this.timeoutMs,
     );
     const turnId = response.turn?.id;
-    const startedTurnResult = resultFromTurn(response.turn, threadId, turnId);
+    const startedTurnResult = resultFromTurn(response.turn, threadId, turnId, replyMode);
     if (startedTurnResult?.finalText || isTerminalStatus(startedTurnResult?.status)) {
       return {
         id,
         threadId,
         turnId,
+        replyMode,
         ...startedTurnResult,
       };
     }
 
     const completed = turnId && this.transport.onNotification
-      ? await this.waitForTurnCompletion(threadId, turnId)
+      ? await this.waitForTurnCompletion(threadId, turnId, replyMode)
       : null;
 
     return {
       id,
       threadId,
       turnId,
+      replyMode,
       ...completed,
     };
   }
@@ -470,6 +478,7 @@ export class CodexGuiAppServerBridge {
     id: string;
     threadId: string;
     text: string;
+    replyMode: CodexGuiReplyMode;
   }): Promise<CodexGuiPromptResult> {
     const before = await this.readThreadWithTurns(args.threadId);
     const previousTurnIds = new Set((before.turns ?? []).map((turn) => turn.id));
@@ -481,7 +490,11 @@ export class CodexGuiAppServerBridge {
         : undefined,
       threadOpenDelayMs: this.guiThreadOpenDelayMs,
     });
-    const completed = await this.waitForNextThreadTurn(args.threadId, previousTurnIds);
+    const completed = await this.waitForNextThreadTurn(
+      args.threadId,
+      previousTurnIds,
+      args.replyMode,
+    );
 
     return {
       id: args.id,
@@ -489,6 +502,8 @@ export class CodexGuiAppServerBridge {
       turnId: completed.turnId,
       status: completed.status,
       finalText: completed.finalText,
+      replyParts: completed.replyParts,
+      replyMode: args.replyMode,
       error: completed.error,
     };
   }
@@ -496,10 +511,12 @@ export class CodexGuiAppServerBridge {
   private async waitForNextThreadTurn(
     threadId: string,
     previousTurnIds: Set<string>,
+    replyMode: CodexGuiReplyMode,
   ): Promise<{
     turnId?: string;
     status?: TurnStatus;
     finalText?: string;
+    replyParts?: string[];
     error?: string;
   }> {
     const deadline = Date.now() + this.turnTimeoutMs;
@@ -513,7 +530,7 @@ export class CodexGuiAppServerBridge {
       if (latestNewTurn && isCompletedTurnForGuiPolling(latestNewTurn)) {
         return {
           turnId: latestNewTurn.id,
-          ...resultFromTurn(latestNewTurn, threadId, latestNewTurn.id),
+          ...resultFromTurn(latestNewTurn, threadId, latestNewTurn.id, replyMode),
         };
       }
 
@@ -524,7 +541,7 @@ export class CodexGuiAppServerBridge {
       return {
         turnId: latestNewTurn.id,
         status: latestNewTurn.status ?? "inProgress",
-        finalText: finalTextFromItems(latestNewTurn.items ?? []),
+        ...resultFromItems(latestNewTurn.items ?? [], replyMode),
         error: errorText(latestNewTurn.error),
       };
     }
@@ -538,9 +555,11 @@ export class CodexGuiAppServerBridge {
   private waitForTurnCompletion(
     threadId: string,
     turnId: string,
+    replyMode: CodexGuiReplyMode,
   ): Promise<{
     status?: TurnStatus;
     finalText?: string;
+    replyParts?: string[];
     error?: string;
   }> {
     const completedItems: ThreadItem[] = [];
@@ -549,11 +568,14 @@ export class CodexGuiAppServerBridge {
       let unsubscribe: (() => void) | undefined;
       const timer = setTimeout(() => {
         unsubscribe?.();
-        const partial = finalTextFromItems(completedItems);
-        if (partial) {
+        const partial = resultFromItems(completedItems, replyMode);
+        const hasPartial = Boolean(
+          partial.finalText || (partial.replyParts && partial.replyParts.length > 0),
+        );
+        if (hasPartial) {
           resolve({
             status: "inProgress",
-            finalText: partial,
+            ...partial,
           });
           return;
         }
@@ -581,9 +603,11 @@ export class CodexGuiAppServerBridge {
         if (method === "turn/completed") {
           const notification = params as TurnCompletedNotification;
           if (notification.threadId !== threadId || notification.turn?.id !== turnId) return;
+          const items = mergeThreadItems(completedItems, notification.turn.items ?? []);
           finish({
-            ...resultFromTurn(notification.turn, threadId, turnId),
-            finalText: finalTextFromItems(notification.turn.items ?? completedItems),
+            status: notification.turn.status,
+            ...resultFromItems(items, replyMode),
+            error: errorText(notification.turn.error),
           });
         }
       });
@@ -628,24 +652,67 @@ function isTerminalStatus(status: TurnStatus | undefined): boolean {
 function isCompletedTurnForGuiPolling(turn: RawTurn): boolean {
   if (turn.status === "completed" || turn.status === "failed") return true;
   if (turn.status !== "interrupted") return false;
-  return Boolean(finalTextFromItems(turn.items ?? []) || errorText(turn.error));
+  return Boolean(
+    resultFromItems(turn.items ?? [], "final").finalText ||
+      resultFromItems(turn.items ?? [], "stream").replyParts?.length ||
+      errorText(turn.error),
+  );
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function finalTextFromItems(items: ThreadItem[]): string | undefined {
-  const agentMessages = items
-    .filter((item) => item.type === "agentMessage" && typeof item.text === "string")
-    .map((item) => ({
-      phase: item.phase,
-      text: item.text?.trim() ?? "",
-    }))
-    .filter((item) => item.text.length > 0);
+function agentTextPartsFromItems(items: ThreadItem[]): Array<{
+  id?: string;
+  phase?: string | null;
+  text: string;
+}> {
+  const seen = new Set<string>();
+  const parts: Array<{ id?: string; phase?: string | null; text: string }> = [];
+  for (const item of items) {
+    if (item.type !== "agentMessage" || typeof item.text !== "string") continue;
+    const text = item.text.trim();
+    if (!text) continue;
+    const key = item.id ?? `${item.phase ?? ""}:${text}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    parts.push({ id: item.id, phase: item.phase, text });
+  }
+  return parts;
+}
+
+function resultFromItems(
+  items: ThreadItem[],
+  replyMode: CodexGuiReplyMode,
+): {
+  finalText?: string;
+  replyParts?: string[];
+} {
+  if (replyMode === "silent") return {};
+  const agentMessages = agentTextPartsFromItems(items);
+  if (replyMode === "stream") {
+    const replyParts = agentMessages.map((item) => item.text);
+    return {
+      finalText: replyParts.length ? replyParts.join("\n\n") : undefined,
+      replyParts: replyParts.length ? replyParts : undefined,
+    };
+  }
 
   const final = [...agentMessages].reverse().find((item) => item.phase === "final_answer");
-  return final?.text ?? [...agentMessages].reverse()[0]?.text;
+  return final ? { finalText: final.text } : {};
+}
+
+function mergeThreadItems(first: ThreadItem[], second: ThreadItem[]): ThreadItem[] {
+  const seen = new Set<string>();
+  const merged: ThreadItem[] = [];
+  for (const item of [...first, ...second]) {
+    const key = item.id ?? `${item.type ?? ""}:${item.phase ?? ""}:${item.text ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(item);
+  }
+  return merged;
 }
 
 function errorText(error: TurnError | null | undefined): string | undefined {
@@ -659,15 +726,17 @@ function resultFromTurn(
   turn: TurnStartResponse["turn"] | TurnCompletedNotification["turn"] | RawTurn | undefined,
   _threadId: string,
   _turnId: string | undefined,
+  replyMode: CodexGuiReplyMode,
 ): {
   status?: TurnStatus;
   finalText?: string;
+  replyParts?: string[];
   error?: string;
 } | null {
   if (!turn) return null;
   return {
     status: turn.status,
-    finalText: finalTextFromItems(turn.items ?? []),
+    ...resultFromItems(turn.items ?? [], replyMode),
     error: errorText(turn.error),
   };
 }
@@ -688,6 +757,7 @@ export function createCodexGuiBridgeClientFromEnv(
     socketPath: stripEnvQuotes(env.WECHAT2ALL_CODEX_APP_SERVER_SOCKET),
     defaultThreadId: stripEnvQuotes(env.WECHAT2ALL_CODEX_THREAD_ID),
     deliveryMode: parseDeliveryMode(env.WECHAT2ALL_CODEX_DELIVERY),
+    replyMode: parseReplyMode(env.WECHAT2ALL_CODEX_REPLY_MODE),
     timeoutMs: envNumber(env, "WECHAT2ALL_CODEX_APP_SERVER_TIMEOUT_MS"),
     turnTimeoutMs: envNumber(env, "WECHAT2ALL_CODEX_TURN_TIMEOUT_MS"),
     guiPollIntervalMs: envNumber(env, "WECHAT2ALL_CODEX_GUI_POLL_INTERVAL_MS"),
@@ -701,5 +771,13 @@ function parseDeliveryMode(
 ): CodexGuiDeliveryMode | undefined {
   const mode = stripEnvQuotes(value);
   if (mode === "app-server" || mode === "gui-automation") return mode;
+  return undefined;
+}
+
+export function parseReplyMode(
+  value: string | undefined,
+): CodexGuiReplyMode | undefined {
+  const mode = stripEnvQuotes(value)?.toLowerCase();
+  if (mode === "final" || mode === "silent" || mode === "stream") return mode;
   return undefined;
 }

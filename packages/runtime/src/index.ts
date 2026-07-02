@@ -16,6 +16,7 @@ export * from "./connectors/mcp.js";
 export * from "./connectors/codex.js";
 export * from "./media/pipeline.js";
 export * from "./media/tts.js";
+export * from "./format/cli.js";
 export * from "./agent-memory/types.js";
 export * from "./agent-memory/noop.js";
 export * from "./agent-memory/composite.js";

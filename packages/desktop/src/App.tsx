@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent,
+} from "react";
 import QRCode from "qrcode";
 
 import {
@@ -19,17 +26,202 @@ import type {
 } from "./types";
 
 const pages: Array<{ key: PageKey; label: string; hint: string }> = [
-  { key: "wechat", label: "WeChat", hint: "连接 / QR" },
-  { key: "routes", label: "Routes", hint: "分发中心" },
-  { key: "agents", label: "Agents", hint: "MCP / Agent" },
-  { key: "trace", label: "Trace", hint: "Memory / Logs" },
-  { key: "settings", label: "Settings", hint: "Keys / Autostart" },
+  { key: "wechat", label: "WeChat", hint: "QR ignition" },
+  { key: "routes", label: "Routes", hint: "routing matrix" },
+  { key: "agents", label: "Agents", hint: "MCP fabric" },
+  { key: "trace", label: "Trace", hint: "signal memory" },
+  { key: "settings", label: "Settings", hint: "local core" },
 ];
+
+type RouteCardStyle = CSSProperties & Record<"--route-signal" | "--route-delay", string>;
+
+function SignalField() {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    const canvasElement = canvasRef.current;
+    if (!canvasElement) return undefined;
+
+    const canvasContext = canvasElement.getContext("2d");
+    if (!canvasContext) return undefined;
+    const canvas: HTMLCanvasElement = canvasElement;
+    const context: CanvasRenderingContext2D = canvasContext;
+
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const pointer = { x: 0, y: 0, active: false };
+    let animationFrame = 0;
+    let width = 0;
+    let height = 0;
+    let dpr = 1;
+
+    const particles = Array.from({ length: 150 }, (_, index) => {
+      const seed = (index * 9301 + 49297) % 233280;
+      const seedAlt = (index * 233 + 719) % 997;
+      return {
+        baseX: (seed % 1000) / 1000,
+        baseY: (seedAlt % 1000) / 1000,
+        phase: index * 0.61,
+        radius: 0.45 + ((seedAlt % 9) / 12),
+        drift: 8 + (seed % 24),
+        speed: 0.00016 + (seedAlt % 7) * 0.000035,
+        depth: 0.45 + ((seed % 31) / 42),
+        channel: index % 6,
+      };
+    });
+
+    function resize() {
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const rect = canvas.getBoundingClientRect();
+      width = Math.max(1, Math.floor(rect.width));
+      height = Math.max(1, Math.floor(rect.height));
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    function draw(timestamp: number) {
+      context.clearRect(0, 0, width, height);
+      context.globalCompositeOperation = "source-over";
+
+      const centerX = width * 0.69;
+      const centerY = height * 0.46;
+      const pulse = 0.5 + Math.sin(timestamp * 0.0011) * 0.5;
+
+      context.save();
+      context.translate(centerX, centerY);
+      context.rotate(timestamp * 0.000025);
+      for (let ring = 0; ring < 4; ring += 1) {
+        const radius = Math.min(width, height) * (0.13 + ring * 0.06) + pulse * 4;
+        context.beginPath();
+        context.ellipse(0, 0, radius * 1.38, radius, 0, 0, Math.PI * 2);
+        context.strokeStyle = `rgba(144, 171, 166, ${0.07 - ring * 0.01})`;
+        context.lineWidth = 1;
+        context.stroke();
+      }
+      context.restore();
+
+      context.globalCompositeOperation = "lighter";
+
+      for (let index = 0; index < particles.length; index += 1) {
+        const particle = particles[index];
+        const orbitX =
+          Math.sin(timestamp * particle.speed + particle.phase) * particle.drift;
+        const orbitY =
+          Math.cos(timestamp * particle.speed * 1.5 + particle.phase) * particle.drift;
+        let x = particle.baseX * width + orbitX;
+        let y = particle.baseY * height + orbitY;
+
+        if (pointer.active) {
+          const dx = pointer.x - x;
+          const dy = pointer.y - y;
+          const distance = Math.hypot(dx, dy);
+          const field = Math.max(0, 1 - distance / 260);
+          const spin = field * field * (46 + particle.depth * 16);
+          x -= (dy / Math.max(distance, 1)) * spin;
+          y += (dx / Math.max(distance, 1)) * spin;
+        }
+
+        context.beginPath();
+        context.arc(x, y, particle.radius, 0, Math.PI * 2);
+        context.fillStyle =
+          particle.channel === 0
+            ? "rgba(173, 255, 209, 0.76)"
+            : particle.channel === 3
+              ? "rgba(255, 174, 94, 0.34)"
+              : "rgba(167, 185, 184, 0.3)";
+        context.shadowColor =
+          particle.channel === 0
+            ? "rgba(141, 255, 210, 0.42)"
+            : "rgba(164, 186, 184, 0.14)";
+        context.shadowBlur = particle.channel === 0 ? 8 : 3;
+        context.fill();
+
+        if (index % 11 === 0) {
+          context.beginPath();
+          context.moveTo(x, y);
+          context.lineTo(
+            x + Math.sin(timestamp * 0.0003 + particle.phase) * 34,
+            y + Math.cos(timestamp * 0.00024 + particle.phase) * 18,
+          );
+          context.strokeStyle = "rgba(150, 178, 174, 0.075)";
+          context.lineWidth = 1;
+          context.stroke();
+        }
+      }
+
+      context.globalCompositeOperation = "source-over";
+      context.shadowBlur = 0;
+      if (!reducedMotion.matches) {
+        animationFrame = window.requestAnimationFrame(draw);
+      }
+    }
+
+    function handlePointerMove(event: globalThis.PointerEvent) {
+      pointer.active = true;
+      pointer.x = event.clientX;
+      pointer.y = event.clientY;
+    }
+
+    function handlePointerLeave() {
+      pointer.active = false;
+    }
+
+    resize();
+    draw(0);
+    if (!reducedMotion.matches) {
+      animationFrame = window.requestAnimationFrame(draw);
+    }
+
+    window.addEventListener("resize", resize);
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerleave", handlePointerLeave);
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      window.removeEventListener("resize", resize);
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerleave", handlePointerLeave);
+    };
+  }, []);
+
+  return <canvas className="signal-field" ref={canvasRef} aria-hidden="true" />;
+}
+
+function AmbientField() {
+  return (
+    <div className="ambient-field" aria-hidden="true">
+      <SignalField />
+      <div className="brushed-noise" />
+      <div className="metal-orbit metal-orbit-a">
+        <span />
+        <span />
+        <span />
+      </div>
+      <div className="metal-orbit metal-orbit-b">
+        <span />
+        <span />
+      </div>
+      <div className="scan-dust" />
+    </div>
+  );
+}
+
+function SignalBars(props: { active: boolean }) {
+  return (
+    <span className={props.active ? "signal-bars is-active" : "signal-bars"} aria-hidden="true">
+      <span />
+      <span />
+      <span />
+      <span />
+      <span />
+    </span>
+  );
+}
 
 function StatusPill(props: { active: boolean; label: string }) {
   return (
     <span className={props.active ? "pill pill-good" : "pill pill-muted"}>
-      <span className="dot" />
+      <span className="dot" aria-hidden="true" />
       {props.label}
     </span>
   );
@@ -54,38 +246,59 @@ function WeChatPage(props: {
 }) {
   const { profile } = props.data;
   const status = props.loginStatus?.status ?? props.qr?.status;
+  const runtimeState = profile.running ? "runtime monitor active" : "runtime monitor idle";
+
   return (
     <main className="page-grid two-columns">
       <section className="panel hero-panel">
-        <div className="section-title">
-          <p>WeChat Profile</p>
-          <StatusPill
-            active={profile.connected}
-            label={profile.connected ? "Connected" : "Disconnected"}
-          />
+        <div className="hero-panel-main">
+          <div>
+            <div className="section-title">
+              <p>WeChat ignition bay</p>
+              <StatusPill
+                active={profile.connected}
+                label={profile.connected ? "Connected" : "Disconnected"}
+              />
+            </div>
+            <h1>{profile.name}</h1>
+            <p className="large-copy">
+              Local-first bridge for WeChat routing, login custody, and daemon health.
+            </p>
+            <dl className="detail-grid">
+              <div>
+                <dt>Profile ID</dt>
+                <dd>{profile.id}</dd>
+              </div>
+              <div>
+                <dt>Account</dt>
+                <dd>{profile.accountId ?? "Not logged in"}</dd>
+              </div>
+              <div>
+                <dt>Runtime</dt>
+                <dd>{profile.running ? "Running" : "Stopped"}</dd>
+              </div>
+              <div>
+                <dt>Session</dt>
+                <dd>{profile.sessionExpiresAt ?? "Unknown"}</dd>
+              </div>
+            </dl>
+            <button className="primary-button" onClick={props.onRequestQr}>
+              Request QR Login
+            </button>
+          </div>
+          <div className="profile-module">
+            <div className={profile.connected ? "status-reactor online" : "status-reactor"} aria-hidden="true">
+              <span className="reactor-ring ring-outer" />
+              <span className="reactor-ring ring-inner" />
+              <span className="reactor-core">{profile.connected ? "ON" : "ID"}</span>
+              <span className="reactor-scan" />
+            </div>
+            <div className="micro-console">
+              <span>{runtimeState}</span>
+              <SignalBars active={profile.running} />
+            </div>
+          </div>
         </div>
-        <h1>{profile.name}</h1>
-        <dl className="detail-grid">
-          <div>
-            <dt>Profile ID</dt>
-            <dd>{profile.id}</dd>
-          </div>
-          <div>
-            <dt>Account</dt>
-            <dd>{profile.accountId ?? "Not logged in"}</dd>
-          </div>
-          <div>
-            <dt>Runtime</dt>
-            <dd>{profile.running ? "Running" : "Stopped"}</dd>
-          </div>
-          <div>
-            <dt>Session</dt>
-            <dd>{profile.sessionExpiresAt ?? "Unknown"}</dd>
-          </div>
-        </dl>
-        <button className="primary-button" onClick={props.onRequestQr}>
-          Request QR Login
-        </button>
         <p className="muted">
           The desktop app talks to the local router daemon, which owns QR login
           and starts the runtime monitor after confirmation.
@@ -94,7 +307,7 @@ function WeChatPage(props: {
 
       <section className="panel qr-panel">
         <div className="section-title">
-          <p>QR Login</p>
+          <p>QR capture chamber</p>
           <span className="pill pill-muted">Local only</span>
         </div>
         {props.qr ? (
@@ -139,11 +352,28 @@ function RouteCard(props: {
   selected: boolean;
   onClick: () => void;
 }) {
+  const signalStrength = Math.max(
+    14,
+    Math.min(100, Math.abs(props.route.priority) / 10 + props.route.stats.messagesToday * 6),
+  );
+  const routeStyle: RouteCardStyle = {
+    "--route-signal": `${signalStrength}%`,
+    "--route-delay": `${Math.abs(props.route.priority) % 9}s`,
+  };
+
   return (
     <button
-      className={props.selected ? "route-card selected" : "route-card"}
+      className={[
+        "route-card",
+        props.route.enabled ? "is-enabled" : "is-disabled",
+        props.selected ? "selected" : "",
+      ].join(" ")}
+      style={routeStyle}
       onClick={props.onClick}
+      aria-pressed={props.selected}
     >
+      <span className="route-card-field" aria-hidden="true" />
+      <span className="route-card-signal" aria-hidden="true" />
       <div className="route-card-head">
         <h3>{props.route.name}</h3>
         <StatusPill
@@ -152,12 +382,77 @@ function RouteCard(props: {
         />
       </div>
       <p>{props.route.description}</p>
+      <div className="route-card-meta">
+        <span>{props.route.connectorId}</span>
+        <span>priority {props.route.priority}</span>
+        <SignalBars active={props.route.enabled} />
+      </div>
       <div className="tag-row">
         {props.route.matchText.map((tag) => (
           <span className="tag" key={tag}>{tag}</span>
         ))}
       </div>
     </button>
+  );
+}
+
+function RoutesStage(props: {
+  routes: RouteSummary[];
+  traces: TraceEvent[];
+  onOpenTrace: () => void;
+}) {
+  const enabledRoutes = props.routes.filter((route) => route.enabled).length;
+  const liveRoutes = props.routes.filter((route) => route.stats.messagesToday > 0).length;
+
+  return (
+    <section className="command-stage">
+      <div className="stage-copy">
+        <p className="stage-kicker">Routing matrix</p>
+        <h1>Route signal desk</h1>
+        <p>
+          Every incoming WeChat message lands here first: classified, matched, and routed into
+          local agents without leaving the machine.
+        </p>
+        <div className="stage-actions">
+          <button className="primary-button">New Route</button>
+          <button className="secondary-button" onClick={props.onOpenTrace}>Open Trace</button>
+        </div>
+      </div>
+      <div className="stage-telemetry" aria-label="Route telemetry">
+        <div>
+          <span>routes</span>
+          <strong>{props.routes.length}</strong>
+        </div>
+        <div>
+          <span>armed</span>
+          <strong>{enabledRoutes}</strong>
+        </div>
+        <div>
+          <span>live</span>
+          <strong>{liveRoutes}</strong>
+        </div>
+        <div>
+          <span>trace</span>
+          <strong>{props.traces.length}</strong>
+        </div>
+      </div>
+      <div className="route-orb" aria-hidden="true">
+        <span className="orb-ring orb-ring-a" />
+        <span className="orb-ring orb-ring-b" />
+        <span className="orb-ring orb-ring-c" />
+        {props.routes.slice(0, 6).map((route, index) => (
+          <span
+            className={route.enabled ? "orb-node is-enabled" : "orb-node"}
+            style={{ "--node-index": String(index) } as CSSProperties}
+            key={route.id}
+          />
+        ))}
+        <span className="orb-core">
+          <strong>{enabledRoutes}</strong>
+          <small>armed</small>
+        </span>
+      </div>
+    </section>
   );
 }
 
@@ -201,6 +496,7 @@ function RoutesPage(props: {
   traces: TraceEvent[];
   selectedRouteId: string | null;
   onSelect: (routeId: string | null) => void;
+  onOpenTrace: () => void;
 }) {
   const selected = props.routes.find((route) => route.id === props.selectedRouteId) ?? null;
   const isMainAssistant = selected?.id === "main-assistant-default";
@@ -208,13 +504,11 @@ function RoutesPage(props: {
   if (!selected) {
     return (
       <main className="page">
-        <section className="page-header">
-          <div>
-            <p className="eyebrow">Router</p>
-            <h1>Routes</h1>
-          </div>
-          <button className="secondary-button">New Route</button>
-        </section>
+        <RoutesStage
+          routes={props.routes}
+          traces={props.traces}
+          onOpenTrace={props.onOpenTrace}
+        />
         <section className="route-grid">
           {props.routes.map((route) => (
             <RouteCard
@@ -282,7 +576,7 @@ function RoutesPage(props: {
         </div>
         <div className="button-row">
           <button className="primary-button">Edit Route</button>
-          <button className="secondary-button">Open Trace</button>
+          <button className="secondary-button" onClick={props.onOpenTrace}>Open Trace</button>
         </div>
         {isMainAssistant ? (
           <>
@@ -300,14 +594,15 @@ function AgentsPage(props: { agents: AgentSummary[] }) {
     <main className="page">
       <section className="page-header">
         <div>
-          <p className="eyebrow">Integrations</p>
+          <p className="eyebrow">Connector fabric</p>
           <h1>Agents / MCP</h1>
         </div>
         <button className="secondary-button">Add Connector</button>
       </section>
       <section className="list-panel">
-        {props.agents.map((agent) => (
+        {props.agents.map((agent, index) => (
           <article className="row-card" key={agent.id}>
+            <span className="agent-orb" style={{ "--node-index": String(index) } as CSSProperties} />
             <div>
               <h3>{agent.name}</h3>
               <p>{agent.description}</p>
@@ -329,23 +624,27 @@ function TracePage(props: { traces: TraceEvent[] }) {
     <main className="page">
       <section className="page-header">
         <div>
-          <p className="eyebrow">Observability</p>
+          <p className="eyebrow">Signal recorder</p>
           <h1>Memory / Logs / Message Trace</h1>
         </div>
         <button className="secondary-button">Refresh</button>
       </section>
       <section className="trace-list">
-        {props.traces.map((trace) => (
-          <article className="trace-row" key={trace.id}>
-            <span className={`level level-${trace.level}`}>{trace.level}</span>
-            <div>
-              <strong>{trace.source}</strong>
-              <p>{trace.message}</p>
-              {trace.routeId ? <small>route: {trace.routeId}</small> : null}
-            </div>
-            <time>{trace.time}</time>
-          </article>
-        ))}
+        {props.traces.length ? (
+          props.traces.map((trace) => (
+            <article className="trace-row" key={trace.id}>
+              <span className={`level level-${trace.level}`}>{trace.level}</span>
+              <div>
+                <strong>{trace.source}</strong>
+                <p>{trace.message}</p>
+                {trace.routeId ? <small>route: {trace.routeId}</small> : null}
+              </div>
+              <time>{trace.time}</time>
+            </article>
+          ))
+        ) : (
+          <EmptyState title="Trace buffer idle" body="Messages will appear here after the router receives traffic." />
+        )}
       </section>
     </main>
   );
@@ -433,21 +732,31 @@ function Sidebar(props: {
   return (
     <aside className="sidebar">
       <div className="brand">
-        <div className="brand-mark">w2a</div>
+        <div className="brand-mark" aria-hidden="true">
+          <span className="brand-halo" />
+          <span>w2a</span>
+        </div>
         <div>
           <strong>wechat2all</strong>
-          <span>local router</span>
+          <span>local signal router</span>
         </div>
       </div>
+      <div className="sidebar-status" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </div>
       <nav>
-        {pages.map((page) => (
+        {pages.map((page, index) => (
           <button
             key={page.key}
             className={props.active === page.key ? "nav-item active" : "nav-item"}
             onClick={() => props.onChange(page.key)}
           >
+            <span className="nav-index">{String(index + 1).padStart(2, "0")}</span>
             <strong>{page.label}</strong>
             <span>{page.hint}</span>
+            <span className="nav-light" aria-hidden="true" />
           </button>
         ))}
       </nav>
@@ -464,6 +773,23 @@ export function App() {
   const [qrImage, setQrImage] = useState<string | null>(null);
   const [qrError, setQrError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  function handleShellPointerMove(event: PointerEvent<HTMLDivElement>) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = (event.clientX - rect.left) / rect.width;
+    const y = (event.clientY - rect.top) / rect.height;
+    event.currentTarget.style.setProperty("--pointer-x", `${Math.round(x * 100)}%`);
+    event.currentTarget.style.setProperty("--pointer-y", `${Math.round(y * 100)}%`);
+    event.currentTarget.style.setProperty("--tilt-x", `${(0.5 - y) * 8}deg`);
+    event.currentTarget.style.setProperty("--tilt-y", `${(x - 0.5) * 10}deg`);
+  }
+
+  function handleShellPointerLeave(event: PointerEvent<HTMLDivElement>) {
+    event.currentTarget.style.setProperty("--pointer-x", "72%");
+    event.currentTarget.style.setProperty("--pointer-y", "18%");
+    event.currentTarget.style.setProperty("--tilt-x", "0deg");
+    event.currentTarget.style.setProperty("--tilt-y", "0deg");
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -540,7 +866,8 @@ export function App() {
 
   if (error) {
     return (
-      <div className="app-shell">
+      <div className="app-shell empty-shell">
+        <AmbientField />
         <EmptyState title="Dashboard failed to load" body={error} />
       </div>
     );
@@ -548,7 +875,8 @@ export function App() {
 
   if (!snapshot) {
     return (
-      <div className="app-shell">
+      <div className="app-shell empty-shell">
+        <AmbientField />
         <EmptyState title="Loading wechat2all" body="Preparing the local dashboard." />
       </div>
     );
@@ -567,8 +895,8 @@ export function App() {
         margin: 2,
         errorCorrectionLevel: "M",
         color: {
-          dark: "#101713",
-          light: "#ffffff",
+          dark: "#0b1012",
+          light: "#f4f8f6",
         },
       }));
     } catch (err) {
@@ -584,9 +912,34 @@ export function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div
+      className="app-shell"
+      onPointerMove={handleShellPointerMove}
+      onPointerLeave={handleShellPointerLeave}
+    >
+      <AmbientField />
       <Sidebar active={activePage} onChange={setActivePage} />
       <section className="content-shell">
+        <header className="topbar">
+          <div>
+            <span className="topbar-kicker">Gateway console</span>
+            <strong>Local WeChat command surface</strong>
+          </div>
+          <div className="topbar-wave" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+            <span />
+          </div>
+          <div className="topbar-status">
+            <StatusPill
+              active={snapshot.profile.running}
+              label={snapshot.profile.running ? "Runtime live" : "Runtime idle"}
+            />
+            <span>{snapshot.routes.length} routes</span>
+            <span>{snapshot.traces.length} trace lines</span>
+          </div>
+        </header>
         {activePage === "wechat" ? (
           <WeChatPage
             data={snapshot}
@@ -603,6 +956,7 @@ export function App() {
             traces={snapshot.traces}
             selectedRouteId={selectedRouteId}
             onSelect={setSelectedRouteId}
+            onOpenTrace={() => setActivePage("trace")}
           />
         ) : null}
         {activePage === "agents" ? <AgentsPage agents={snapshot.agents} /> : null}

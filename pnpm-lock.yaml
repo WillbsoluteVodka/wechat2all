@@ -31,12 +31,6 @@ importers:
 
   packages/codex-gui-bridge: {}
 
-  packages/codex-watcher:
-    dependencies:
-      '@wechat2all/codex-mcp':
-        specifier: workspace:*
-        version: link:../codex-mcp
-
   packages/desktop:
     dependencies:
       '@tauri-apps/api':

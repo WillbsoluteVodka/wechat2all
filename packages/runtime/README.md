@@ -38,6 +38,23 @@ Example: a text message in the default chat starts in the main assistant. If the
 user sends `/cd codex`, runtime moves that conversation into the `codex` route.
 Further plain text is handled only by the Codex connector until `/cd ..`.
 
+## Codex Route Reply Modes
+
+The Codex connector supports route-local reply modes:
+
+- `final`: default. Return only Codex `final_answer` text.
+- `silent`: wait for completion, then return only a completion notice.
+- `stream`: return every completed Codex assistant text part as separate actions.
+
+Inside the Codex route:
+
+```text
+/mode
+/mode final
+/mode silent
+/mode stream
+```
+
 ## Memory
 
 Runtime has two memory concepts:

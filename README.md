@@ -17,7 +17,6 @@ flowchart TD
   R --> D["packages/router-daemon<br/>local process + HTTP API"]
   D --> UI["packages/desktop<br/>Tauri dashboard"]
   R --> CG["packages/codex-gui-bridge<br/>Codex GUI/app-server bridge"]
-  R --> FM["packages/codex-mcp + codex-watcher<br/>legacy file/MCP bridge"]
   R --> A["future route agents / MCP skills"]
 ```
 
@@ -32,7 +31,6 @@ Each package owns one layer and should stay independently understandable.
 | Local daemon | `packages/router-daemon` | Process lifecycle, profile state, QR login API, dashboard HTTP API, built-in routes | UI rendering, low-level iLink protocol |
 | Desktop UI | `packages/desktop` | macOS Tauri dashboard, QR/login/status/routes/logs/settings screens | Runtime business logic |
 | Codex GUI bridge | `packages/codex-gui-bridge` | Codex app-server chat listing, binding, token usage, prompt delivery | WeChat routing or generic MCP tools |
-| Codex file bridge | `packages/codex-mcp`, `packages/codex-watcher` | Legacy file/MCP bridge for Codex route experiments | Current preferred GUI chat delivery |
 
 Example flow:
 
@@ -61,7 +59,7 @@ returns with `/cd ..`.
 - One physical WeChat scan/profile with multiple logical routes.
 - Main assistant route (`大助手`) for general LLM chat, route listing, renaming,
   and route switching.
-- Codex route with `/ls`, `/bind <threadId>`, `/current`, `/token`, and prompt
+- Codex route with `/ls`, `/bind <序号>`, `/current`, `/token`, and prompt
   delivery into a bound Codex GUI chat.
 - Standard runtime action surface: `send_text`, `send_media`, `send_voice`,
   `typing`, and `noop`.
@@ -135,10 +133,9 @@ Full local dashboard stack:
 pnpm desktop
 ```
 
-Use Codex GUI delivery:
+Use visible Codex GUI delivery:
 
 ```bash
-WECHAT2ALL_CODEX_BACKEND=gui-app-server \
 WECHAT2ALL_CODEX_DELIVERY=gui-automation \
 pnpm desktop
 ```
@@ -178,7 +175,7 @@ final answer.
   business logic.
 - `packages/desktop` is a usable development dashboard, not yet a packaged
   installer.
-- `packages/codex-gui-bridge` is the current preferred Codex integration. The
-  file watcher/MCP packages remain for compatibility and experiments.
+- `packages/codex-gui-bridge` is the Codex integration path. The old
+  `codex exec` watcher has been removed.
 
 Before changing behavior, read the README in the package you are touching.
