@@ -1329,6 +1329,79 @@ test("codex connector configures the Codex GUI alarm", async () => {
   assert.match((clearActions[0] as { text: string }).text, /- 当前状态: disabled/);
 });
 
+test("codex connector queues prompts per conversation", async () => {
+  let releaseFirst!: () => void;
+  const firstBlocked = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const sentPrompts: string[] = [];
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        sentPrompts.push(prompt.text);
+        if (prompt.text === "first") await firstBlocked;
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: `turn-${sentPrompts.length}`,
+          finalText: `${prompt.text} done`,
+        };
+      },
+    },
+  });
+  const context = {
+    profileId: "main",
+    connectorId: "codex-bridge",
+    client: {} as WeChatClient,
+    memory: new InMemoryMemoryStore(),
+    memoryScope: { profileId: "main", connectorId: "codex-bridge", conversationId: "user-1" },
+    route: { id: "codex", connectorId: "codex-bridge" },
+    routes: new RuntimeRouteRegistry(),
+  };
+  const baseMessage: RuntimeMessage = {
+    id: "m1",
+    platform: "wechat-ilink",
+    profileId: "main",
+    conversationId: "user-1",
+    senderId: "user-1",
+    timestamp: 1,
+    kind: "text",
+    text: "first",
+    attachments: [],
+    raw: {},
+  };
+
+  const first = connector.handleMessage(baseMessage, context);
+  while (sentPrompts.length === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  const second = connector.handleMessage({
+    ...baseMessage,
+    id: "m2",
+    text: "second",
+  }, context);
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(sentPrompts, ["first"]);
+
+  releaseFirst();
+  assert.match(((await first)[0] as { text: string }).text, /first done/);
+  assert.match(((await second)[0] as { text: string }).text, /second done/);
+  assert.deepEqual(sentPrompts, ["first", "second"]);
+});
+
 test("codex connector asks for a GUI binding before sending ordinary text", async () => {
   let statusCalls = 0;
   const connector = createCodexConnector({

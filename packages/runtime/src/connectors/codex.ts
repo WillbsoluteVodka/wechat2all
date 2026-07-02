@@ -217,6 +217,25 @@ function bindCacheKey(message: RuntimeMessage): string {
   return `${message.profileId}\u0000${message.conversationId}`;
 }
 
+function conversationQueueKey(message: RuntimeMessage): string {
+  return `${message.profileId}\u0000${message.conversationId}`;
+}
+
+function enqueueConversationTask<T>(
+  queues: Map<string, Promise<void>>,
+  key: string,
+  task: () => Promise<T>,
+): Promise<T> {
+  const previous = queues.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(task);
+  const settled = current.then(() => undefined, () => undefined);
+  queues.set(key, settled);
+  void settled.finally(() => {
+    if (queues.get(key) === settled) queues.delete(key);
+  });
+  return current;
+}
+
 function visibleBindableThreads(threads: CodexBridgeThread[]): CodexBridgeThread[] {
   return threads.slice(0, 12);
 }
@@ -583,6 +602,7 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
     opts.client.getTokenUsage?.bind(opts.client);
   let replyMode: CodexReplyMode = opts.replyMode ?? "final";
   const cachedBindableThreads = new Map<string, CodexBridgeThread[]>();
+  const conversationQueues = new Map<string, Promise<void>>();
   return {
     id: opts.id,
     name: opts.name ?? "Codex Bridge",
@@ -601,6 +621,10 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
         );
       }
 
+      return enqueueConversationTask(
+        conversationQueues,
+        conversationQueueKey(message),
+        async () => {
       await rememberTarget(opts.client, message);
       const text = stripPrefix(messageText(message), prefixes);
       const command = commandText(text);
@@ -815,6 +839,8 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
         codexOk("codex inbox", [
           `Prompt ID: ${result.id}`,
         ]),
+      );
+        },
       );
     },
   };
