@@ -1,0 +1,30 @@
+{
+  "name": "@wechat2all/codex-gui-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Protocol-first bridge from wechat2all Codex route to Codex app-server threads",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "types": "dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "files": [
+    "dist/"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "check": "pnpm typecheck && pnpm test && pnpm build"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

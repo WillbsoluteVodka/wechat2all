@@ -1,0 +1,108 @@
+# wechat2all Runtime
+
+Platform-neutral runtime layer for routing normalized WeChat messages to local
+connectors, agents, memory, and action execution.
+
+## What This Package Owns
+
+- `WeixinMessage -> RuntimeMessage` normalization.
+- `RuntimeAction` definitions and execution through `WeChatClient`.
+- Route matching by `profileId`, `conversationId`, `senderId`, `kind`,
+  `textIncludes`, and slash commands.
+- Multiple logical routes under one scanned WeChat profile.
+- Main assistant (`大助手`) behavior: `/help`, `/ls`, `/rename`, `/cd`.
+- Route-local behavior such as `/cd ..`.
+- Connector interfaces for local handlers, route assistants, MCP-style tools,
+  agents, and Codex.
+- Conversation memory and agent memory providers.
+- Media cache pipeline and dummy TTS provider.
+- Message dedupe and typed runtime events.
+
+It does not own QR login UI, HTTP endpoints, or Tauri dashboard state. Those are
+owned by `packages/router-daemon` and `packages/desktop`.
+
+## Mental Model
+
+```mermaid
+flowchart LR
+  W["WeixinMessage"] --> N["normalizeWeixinMessage"]
+  N --> M["RuntimeMessage"]
+  M --> RM["route matching"]
+  RM --> C["connector"]
+  C --> A["RuntimeAction[]"]
+  A --> X["executeRuntimeActions"]
+  X --> WC["WeChatClient"]
+```
+
+Example: a text message in the default chat starts in the main assistant. If the
+user sends `/cd codex`, runtime moves that conversation into the `codex` route.
+Further plain text is handled only by the Codex connector until `/cd ..`.
+
+## Memory
+
+Runtime has two memory concepts:
+
+- Conversation memory: scoped message history for current route/profile/user.
+- Agent memory: longer-lived memory provider abstraction.
+
+Implemented providers:
+
+- `local-jsonl`: simple local JSONL store.
+- `mem0`: optional Mem0 REST integration.
+- `noop`: disabled memory.
+- `composite`: writes/searches across multiple providers.
+
+## Tech Stack
+
+- TypeScript library package.
+- Depends on the local `wechat2all` client package.
+- No hosted server.
+- Uses Node built-ins for local files/state in the example and state-store
+  implementations.
+- Optional external services are behind provider interfaces, such as Mem0 and
+  OpenAI-compatible LLM APIs.
+
+## LLM
+
+LLM access is abstracted behind `LLMProvider`.
+
+Current providers:
+
+- `mock`: deterministic local fallback.
+- `openai-compatible`: works with OpenAI-compatible APIs, including DeepSeek.
+
+Common env:
+
+```text
+WECHAT2ALL_LLM_PROVIDER=openai-compatible
+WECHAT2ALL_LLM_BASE_URL=https://api.deepseek.com/v1
+WECHAT2ALL_LLM_API_KEY=...
+WECHAT2ALL_LLM_MODEL=deepseek-chat
+```
+
+## Run The Runtime Bot
+
+```bash
+pnpm runtime-bot
+pnpm runtime-bot -- --profile main --fresh
+```
+
+Try in WeChat:
+
+```text
+hello
+/help
+/ls
+/rename
+/cd codex
+/cd ..
+```
+
+State for the example is stored under `~/.wechat2all-runtime-bot`.
+
+## Collaborator Notes
+
+- Add new reusable route behavior here, not in `router-daemon`.
+- Keep connector interfaces generic so downstream products can be local agents,
+  MCP servers, app-specific handlers, or future skills.
+- Keep `client` imports limited to action execution and WeChat type adapters.

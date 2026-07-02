@@ -1,0 +1,32 @@
+{
+  "name": "@wechat2all/runtime",
+  "version": "0.1.0",
+  "description": "Local runtime layer for routing WeChat messages to connectors, skills, and agents",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "types": "dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "files": [
+    "dist/"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "runtime-bot": "node --use-env-proxy --env-file-if-exists=../../.env.local --env-file-if-exists=.env.local --import tsx examples/runtime-bot.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "check": "pnpm typecheck && pnpm test && pnpm build"
+  },
+  "dependencies": {
+    "wechat2all": "workspace:*"
+  },
+  "optionalDependencies": {
+    "qrcode-terminal": "^0.12.0"
+  }
+}

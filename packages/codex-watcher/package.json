@@ -1,0 +1,39 @@
+{
+  "name": "@wechat2all/codex-watcher",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Codex-side watcher that injects WeChat codex route prompts into Codex",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "types": "dist/index.d.mts",
+  "bin": {
+    "wechat2all-codex-watcher": "dist/index.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "files": [
+    "dist/"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsx src/index.ts",
+    "probe:codex-gui": "node --import tsx tests/codex-gui-catalog.probe.ts",
+    "probe:codex-gui-usage": "node --import tsx tests/codex-gui-usage.probe.ts",
+    "probe:codex-token": "node --import tsx tests/codex-token-status.probe.ts",
+    "start": "node dist/index.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "check": "pnpm typecheck && pnpm test && pnpm build"
+  },
+  "dependencies": {
+    "@wechat2all/codex-mcp": "workspace:*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

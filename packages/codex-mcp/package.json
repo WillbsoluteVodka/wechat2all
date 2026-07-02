@@ -1,0 +1,37 @@
+{
+  "name": "@wechat2all/codex-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Codex-side MCP server for the wechat2all Codex route bridge",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "types": "dist/index.d.mts",
+  "bin": {
+    "wechat2all-codex-mcp": "dist/index.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    },
+    "./bridge": {
+      "types": "./dist/bridge.d.mts",
+      "import": "./dist/bridge.mjs"
+    }
+  },
+  "files": [
+    "dist/"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "check": "pnpm typecheck && pnpm test && pnpm build"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

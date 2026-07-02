@@ -1,40 +1,31 @@
 {
-  "name": "wechat2all",
+  "name": "wechat2all-monorepo",
+  "private": true,
   "version": "0.1.0",
-  "description": "Local-first WeChat iLink gateway SDK for bots, agents, and automations",
+  "description": "Local-first WeChat gateway monorepo for bots, agents, and automations",
   "license": "MIT",
   "type": "module",
-  "main": "dist/index.mjs",
-  "types": "dist/index.d.mts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.mts",
-      "import": "./dist/index.mjs"
-    }
-  },
-  "files": [
-    "dist/"
-  ],
   "scripts": {
-    "build": "tsdown",
-    "dev": "tsdown --watch",
-    "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist",
-    "echo-bot": "tsx examples/echo-bot.ts",
-    "check:examples": "tsc -p examples/tsconfig.json",
-    "test": "node --import tsx --test tests/*.test.ts",
-    "check": "pnpm typecheck && pnpm check:examples && pnpm test && pnpm build"
-  },
-  "engines": {
-    "node": ">=20"
+    "build": "pnpm -r build",
+    "dev": "pnpm --filter wechat2all dev",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "check": "pnpm -r check",
+    "echo-bot": "pnpm --filter wechat2all echo-bot",
+    "runtime-bot": "pnpm --filter @wechat2all/runtime runtime-bot",
+    "codex-mcp": "pnpm --filter @wechat2all/codex-mcp dev",
+    "codex-watcher": "pnpm --filter @wechat2all/codex-watcher dev",
+    "codex-gui-bridge": "pnpm --filter @wechat2all/codex-gui-bridge dev",
+    "codex-gui-probe": "pnpm --filter @wechat2all/codex-watcher probe:codex-gui",
+    "codex-gui-usage-probe": "pnpm --filter @wechat2all/codex-watcher probe:codex-gui-usage",
+    "codex-token-probe": "pnpm --filter @wechat2all/codex-watcher probe:codex-token",
+    "desktop": "pnpm --filter @wechat2all/desktop dev",
+    "desktop:build": "pnpm --filter @wechat2all/desktop tauri:build"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "tsdown": "^0.21.4",
     "tsx": "^4.21.0",
     "typescript": "^5.8.0"
-  },
-  "optionalDependencies": {
-    "qrcode-terminal": "^0.12.0"
   }
 }

@@ -1,3 +1,49 @@
 dist
 node_modules
 .pnpm-store
+target
+.DS_Store
+
+# Local env and secrets
+.env
+.env.*
+!.env.example
+
+# Logs and local tool caches
+*.log
+.cache
+.vite
+
+# wechat2all local runtime/session state. These are normally stored under
+# ~/.wechat-echo-bot or ~/.wechat2all-runtime-bot, but ignore them if a developer
+# points state into the repo while testing.
+/.wechat-echo-bot/
+/.wechat2all-runtime-bot/
+/wechat-echo-bot/
+/wechat2all-runtime-bot/
+/credentials.json
+/sync-buf.json
+/processed-messages.json
+/routes.json
+/profile.lock
+/memory/
+/media/
+/tmp/
+/profiles/*/credentials.json
+/profiles/*/sync-buf.json
+/profiles/*/processed-messages.json
+/profiles/*/routes.json
+/profiles/*/profile.lock
+/profiles/*/memory/
+/profiles/*/media/
+/profiles/*/tmp/
+
+# Legacy Codex bridge state
+/codex-bridge/
+/profiles/*/codex-bridge/
+/status.json
+/threads.json
+/target.json
+/handled-prompts.json
+/inbox.jsonl
+/outbox.jsonl

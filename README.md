@@ -2,409 +2,183 @@
 
 [简体中文](./README.zh_CN.md)
 
-Local-first TypeScript SDK for the WeChat iLink bot protocol, reverse-engineered from [`@tencent-weixin/openclaw-weixin`](https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin).
+wechat2all is a local-first WeChat gateway for bots, agents, skills, and
+desktop automations. The current target is a macOS app that lets one scanned
+WeChat chat act like a local control surface: the main assistant is the OS-like
+router, and each route is an app/agent you can enter, leave, and connect to
+local services.
 
-No dependency on the OpenClaw framework. Zero runtime dependencies. A pure, stateless library you can use to build your own WeChat bots.
+## Project Map
 
-## Design Principles
+```mermaid
+flowchart TD
+  W["WeChat mobile chat"] --> C["packages/client<br/>WeChat iLink SDK"]
+  C --> R["packages/runtime<br/>messages, routes, actions, memory"]
+  R --> D["packages/router-daemon<br/>local process + HTTP API"]
+  D --> UI["packages/desktop<br/>Tauri dashboard"]
+  R --> CG["packages/codex-gui-bridge<br/>Codex GUI/app-server bridge"]
+  R --> FM["packages/codex-mcp + codex-watcher<br/>legacy file/MCP bridge"]
+  R --> A["future route agents / MCP skills"]
+```
 
-- **Stateless** — the library does NOT read or write files. Credential storage, sync buf persistence, and QR code rendering are entirely the caller's responsibility.
-- **Zero runtime dependencies** — only Node.js built-ins.
-- **Minimal API surface** — a single `WeChatClient` class for most use cases, with lower-level primitives exported for advanced usage.
+## Layers And Boundaries
 
-## Features
+Each package owns one layer and should stay independently understandable.
 
-- QR code login (returns the URL; caller handles rendering)
-- Long-poll message receiving (`getUpdates`) with opt-in cursor persistence
-- Send text, image, voice, video, and file messages
-- CDN media upload/download with AES-128-ECB encryption
-- Typing indicator support
-- EventEmitter-based API
-- Full TypeScript types for the entire protocol
+| Layer | Package | Owns | Does not own |
+|---|---|---|---|
+| Protocol SDK | `packages/client` | WeChat iLink login, polling, media upload/download, send APIs | Route selection, LLMs, memory, UI |
+| Runtime | `packages/runtime` | `WeixinMessage -> RuntimeMessage`, route matching, connectors, memory, action execution | HTTP server, QR dashboard, desktop app |
+| Local daemon | `packages/router-daemon` | Process lifecycle, profile state, QR login API, dashboard HTTP API, built-in routes | UI rendering, low-level iLink protocol |
+| Desktop UI | `packages/desktop` | macOS Tauri dashboard, QR/login/status/routes/logs/settings screens | Runtime business logic |
+| Codex GUI bridge | `packages/codex-gui-bridge` | Codex app-server chat listing, binding, token usage, prompt delivery | WeChat routing or generic MCP tools |
+| Codex file bridge | `packages/codex-mcp`, `packages/codex-watcher` | Legacy file/MCP bridge for Codex route experiments | Current preferred GUI chat delivery |
 
-## Requirements
+Example flow:
 
-- Node.js >= 20
+1. A user sends `hello` in the WeChat bot chat.
+2. `client` receives the raw iLink message and exposes it as a `WeixinMessage`.
+3. `runtime` normalizes it into `RuntimeMessage`, checks the current route, and
+   asks the matched connector for `RuntimeAction`s.
+4. `router-daemon` owns the running profile and trace stream.
+5. `client` executes the returned action, such as `send_text`, back to WeChat.
 
-## Install
+Route navigation currently behaves like a tiny local OS:
+
+```text
+/help        # main assistant commands
+/ls          # visible routes
+/rename      # rename the current route
+/cd codex    # enter the codex route
+/cd ..       # return to the main assistant
+```
+
+Inside a second-level route, the main assistant stops listening until the user
+returns with `/cd ..`.
+
+## Current Features
+
+- One physical WeChat scan/profile with multiple logical routes.
+- Main assistant route (`大助手`) for general LLM chat, route listing, renaming,
+  and route switching.
+- Codex route with `/ls`, `/bind <threadId>`, `/current`, `/token`, and prompt
+  delivery into a bound Codex GUI chat.
+- Standard runtime action surface: `send_text`, `send_media`, `send_voice`,
+  `typing`, and `noop`.
+- Message normalization for text, media, voice, emoji/sticker-like attachments,
+  and generic files when the iLink payload contains the needed metadata.
+- Local JSONL memory plus optional Mem0 agent memory provider.
+- Dummy TTS provider as a placeholder for future real voice replies.
+- Tauri dashboard for QR login, routes, agents/MCP, logs/traces, memory, and
+  settings.
+
+## Tech Stack
+
+- TypeScript monorepo with `pnpm` workspaces.
+- Node.js 20+ runtime.
+- `tsdown` for package builds.
+- Node test runner plus `tsx` for TypeScript tests/probes.
+- WeChat iLink/OpenClaw-compatible HTTP protocol in `packages/client`.
+- React + Vite + Tauri v2 for the macOS dashboard.
+- Rust only for the Tauri shell.
+- OpenAI-compatible LLM provider configuration; DeepSeek works through the same
+  interface.
+- Local JSONL memory and optional Mem0 REST memory.
+- Codex app-server JSON-RPC plus opt-in macOS GUI automation for visible Codex
+  chat injection.
+
+## Setup
 
 ```bash
 pnpm install
-pnpm build
-```
-
-## Quick Start
-
-```typescript
-import { WeChatClient, MessageType } from "wechat2all";
-
-const client = new WeChatClient();
-
-// Step 1: Login via QR code
-const result = await client.login({
-  onQRCode(url) {
-    // You handle QR rendering — print it, show it in a GUI, etc.
-    console.log("Scan this QR code:", url);
-  },
-});
-if (!result.connected) {
-  console.error("Login failed:", result.message);
-  process.exit(1);
-}
-// You handle persistence — save these yourself:
-// result.botToken, result.accountId, result.baseUrl
-
-// Step 2: Handle incoming messages
-client.on("message", async (msg) => {
-  if (msg.message_type !== MessageType.USER) return;
-
-  const text = WeChatClient.extractText(msg);
-  const from = msg.from_user_id!;
-
-  await client.sendText(from, `Echo: ${text}`);
-});
-
-// Step 3: Start the long-poll loop (blocks until stop() is called)
-await client.start();
-```
-
-On subsequent runs, construct the client directly from saved credentials:
-
-```typescript
-const client = new WeChatClient({
-  accountId: savedAccountId,
-  token: savedToken,
-  baseUrl: savedBaseUrl,
-});
-// Ready — go straight to .on("message", ...) and .start()
-```
-
-### Persisting the Long-Poll Cursor
-
-To resume from where you left off across restarts, pass `loadSyncBuf` / `saveSyncBuf` callbacks to `start()`:
-
-```typescript
-await client.start({
-  loadSyncBuf: () => fs.readFileSync("sync.json", "utf-8"),
-  saveSyncBuf: (buf) => fs.writeFileSync("sync.json", buf),
-});
-```
-
-## Examples
-
-### Echo Bot
-
-A complete working bot with file-based persistence and QR rendering.
-
-First, install `qrcode-terminal` to render QR codes inline in your terminal:
-
-```bash
-pnpm add qrcode-terminal
-```
-
-Then run:
-
-```bash
-pnpm tsx examples/echo-bot.ts          # first run — shows QR code
-pnpm tsx examples/echo-bot.ts          # subsequent — resumes session
-pnpm tsx examples/echo-bot.ts --fresh  # force re-login
-```
-
-Or via the script:
-
-```bash
-pnpm echo-bot
-```
-
-> Without `qrcode-terminal` the example still works — it prints the QR code URL instead.
-
-The example stores credentials at `~/.wechat-echo-bot/` — this is the example's choice, not the library's.
-
-To run multiple independent local bot sessions, give each process a profile.
-Each profile has its own credentials, sync cursor, temp files, and 24-hour
-renewal schedule:
-
-```bash
-pnpm tsx examples/echo-bot.ts --profile sales
-pnpm tsx examples/echo-bot.ts --profile support
-```
-
-You can also use `WECHAT_ECHO_PROFILE=sales pnpm echo-bot`. The default profile
-keeps using `~/.wechat-echo-bot/`; named profiles are stored under
-`~/.wechat-echo-bot/profiles/<name>/`. The example prevents two processes from
-using the same profile at once.
-
-The echo bot also demonstrates session renewal for the 24-hour iLink login
-window:
-
-- stores the QR login timestamp with the saved credentials
-- warns the most recent contact 2 hours before expiry
-- accepts `Y` / `N` replies to renew now or remind later
-- reminds every 30 minutes after `N`
-- starts QR renewal automatically when 30 minutes remain
-- supports manual renewal with `/reconnect`
-
-Renewal is not silent: the bot generates a fresh QR code and the user must scan
-and confirm it. On success, the example saves the new token and schedules the
-next renewal window.
-
-For testing, shorten the timings with environment variables:
-
-```bash
-WECHAT_SESSION_MINUTES=6 \
-WECHAT_RECONNECT_WARN_MINUTES=4 \
-WECHAT_RECONNECT_FORCE_MINUTES=2 \
-WECHAT_RECONNECT_REMIND_MINUTES=1 \
-pnpm echo-bot
-```
-
-## API Reference
-
-### `WeChatClient`
-
-The high-level client. Extends `EventEmitter`.
-
-#### Constructor
-
-```typescript
-new WeChatClient(opts?: {
-  baseUrl?: string;      // default: "https://ilinkai.weixin.qq.com"
-  cdnBaseUrl?: string;   // default: "https://novac2c.cdn.weixin.qq.com/c2c"
-  token?: string;        // bearer token
-  accountId?: string;    // account ID
-  channelVersion?: string;
-  routeTag?: string;
-  apiTimeoutMs?: number;
-  configTimeoutMs?: number;
-  qrTimeoutMs?: number;
-  qrLongPollTimeoutMs?: number;
-})
-```
-
-#### Methods
-
-| Method | Description |
-|--------|-------------|
-| `login(opts?)` | Run QR code login. Sets token/accountId in memory. Does NOT persist. |
-| `start(opts?)` | Start the long-poll monitor. Emits `"message"` events. Blocks until `stop()`. |
-| `stop()` | Stop the long-poll loop. |
-| `isRunning()` | Whether the long-poll monitor is currently running. |
-| `getCredentials()` | Get the in-memory accountId/token/baseUrl snapshot. |
-| `sendText(to, text, contextToken?)` | Send a text message. Context token is auto-resolved from cache. |
-| `sendMedia(to, filePath, caption?, contextToken?, options?)` | Upload and send a file (image/video/file routed by MIME type). |
-| `sendVoice(to, filePath, options?, contextToken?)` | Upload and send a native WeChat voice message. |
-| `sendUploadedImage(to, uploaded, caption?, contextToken?)` | Send a previously uploaded image. |
-| `sendUploadedVideo(to, uploaded, caption?, contextToken?)` | Send a previously uploaded video. |
-| `sendUploadedFile(to, fileName, uploaded, caption?, contextToken?)` | Send a previously uploaded file. |
-| `sendTyping(userId, typingTicket, status?)` | Send/cancel typing indicator. |
-| `getTypingTicket(userId, contextToken?)` | Fetch the typing ticket for a user. |
-| `uploadImage(filePath, toUserId, options?)` | Upload an image to CDN. |
-| `uploadVideo(filePath, toUserId, options?)` | Upload a video to CDN. |
-| `uploadFile(filePath, toUserId, options?)` | Upload a file to CDN. |
-| `uploadVoice(filePath, toUserId, options?)` | Upload a voice file to CDN. |
-| `downloadMedia(item, options?)` | Download and decrypt a media `MessageItem`. |
-| `getContextToken(userId)` | Get the cached context token for a user. |
-| `getAccountId()` | Get the current account ID. |
-
-Successful QR login also updates the client's API base URL when the server
-returns one.
-
-#### `start()` Options
-
-| Option | Type | Description |
-|--------|------|-------------|
-| `longPollTimeoutMs` | `number` | Long-poll timeout in ms. Server may override. |
-| `signal` | `AbortSignal` | For external cancellation. |
-| `sessionExpiredBehavior` | `"pause" \| "stop"` | Pause and retry after expiry, or return from `start()`. Default: `"pause"`. |
-| `sessionExpiredDelayMs` | `number` | Delay before retrying after expiry when behavior is `"pause"`; default 1 hour. |
-| `retryDelayMs` | `number` | Delay after transient poll failures; default 2 seconds. |
-| `backoffDelayMs` | `number` | Delay after repeated poll failures; default 30 seconds. |
-| `maxConsecutiveFailures` | `number` | Failures before backoff; default 3. |
-| `loadSyncBuf` | `() => string \| undefined \| Promise<...>` | Called once at startup to load a persisted cursor. |
-| `saveSyncBuf` | `(buf: string) => void \| Promise<void>` | Called after each poll with the new cursor. |
-
-`start()` rejects if called while the same `WeChatClient` instance is already
-running. `stop()` works even when an external `signal` was passed to `start()`.
-
-#### `login()` Options
-
-| Option | Type | Description |
-|--------|------|-------------|
-| `timeoutMs` | `number` | Max wait for QR scan (default: 480_000). |
-| `botType` | `string` | bot_type parameter (default: "3"). |
-| `maxRefreshes` | `number` | Max QR refreshes on expiry (default: 3). |
-| `onQRCode` | `(url: string) => void` | Called with the QR code URL. **Caller renders.** |
-| `onStatus` | `(status) => void` | Called on status changes (wait/scaned/expired/confirmed). |
-| `signal` | `AbortSignal` | For cancellation. |
-
-#### Events
-
-| Event | Payload | Description |
-|-------|---------|-------------|
-| `message` | `WeixinMessage` | Inbound message from a user. |
-| `error` | `Error` | Non-fatal poll/API error. |
-| `sessionExpired` | _(none)_ | Server returned errcode -14. Bot pauses automatically. |
-| `poll` | `GetUpdatesResp` | Raw response from each getUpdates call. |
-
-### Errors And Timeouts
-
-API failures are raised as `WeChatApiError` with structured fields such as
-`endpoint`, `status`, `ret`, `errcode`, `errmsg`, `responseBody`, and
-`timedOut`. Long-poll timeouts are normal and return an empty update response
-instead of throwing.
-
-CDN upload/download helpers default to 60-second per-request timeouts. Uploads
-retry transient server/network failures up to 3 attempts by default; 4xx client
-errors are not retried. Pass media options to override `timeoutMs`,
-`maxRetries`, `retryDelayMs`, or `signal`.
-
-### Voice And Stickers
-
-Native voice messages are supported through `sendVoice()` / `sendVoiceFile()`.
-For TTS, generate an audio file first; SILK is the safest format for a real
-WeChat voice bubble:
-
-```typescript
-await client.sendVoice(userId, "reply.silk", {
-  playtimeMs: 2400,
-  encodeType: VoiceEncodeType.SILK,
-  sampleRate: 24000,
-});
-```
-
-Image-like stickers can be sent as images with `sendMedia()` when they are PNG,
-GIF, WebP, JPEG, etc. True WeChat custom sticker item types are not guessed by
-the SDK; capture raw messages from real traffic before adding new protocol
-fields.
-
-#### Static Methods
-
-| Method | Description |
-|--------|-------------|
-| `WeChatClient.extractText(msg)` | Extract text body from a `WeixinMessage`. |
-| `WeChatClient.isMediaItem(item)` | Check if a `MessageItem` is image/voice/file/video. |
-
-### `ApiClient`
-
-Low-level HTTP client. Used internally by `WeChatClient`, also exported for direct use.
-
-```typescript
-const api = new ApiClient({ baseUrl, token });
-
-await api.getUpdates(syncBuf, timeoutMs);
-await api.sendMessage(req);
-await api.getUploadUrl(req);
-await api.getConfig(userId, contextToken);
-await api.sendTyping(req);
-await api.getQRCode(botType);
-await api.pollQRCodeStatus(qrcode);
-```
-
-### `normalizeAccountId(raw)`
-
-Converts a raw account ID (e.g. `"hex@im.bot"`) to a safe key (`"hex-im-bot"`).
-
-## Protocol Overview
-
-The WeChat iLink bot backend lives at `https://ilinkai.weixin.qq.com`. All API endpoints use `POST` with JSON bodies (except QR login which uses `GET`).
-
-### Authentication
-
-Every request includes these headers:
-
-| Header | Value |
-|--------|-------|
-| `Content-Type` | `application/json` |
-| `AuthorizationType` | `ilink_bot_token` |
-| `Authorization` | `Bearer <token>` |
-| `X-WECHAT-UIN` | Base64 of a random uint32 |
-
-The token is obtained through QR code login:
-
-1. `GET ilink/bot/get_bot_qrcode?bot_type=3` — returns a QR code URL
-2. `GET ilink/bot/get_qrcode_status?qrcode=...` — long-poll until `"confirmed"`
-3. Response includes `bot_token`, `ilink_bot_id`, `baseurl`
-
-### Endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `ilink/bot/getupdates` | Long-poll for inbound messages (cursor: `get_updates_buf`) |
-| `ilink/bot/sendmessage` | Send a message (text/image/video/file) |
-| `ilink/bot/getuploadurl` | Get CDN pre-signed upload parameters |
-| `ilink/bot/getconfig` | Get account config (typing ticket) |
-| `ilink/bot/sendtyping` | Send/cancel typing indicator |
-
-### Message Structure
-
-Messages use a `WeixinMessage` envelope containing an `item_list` of typed items:
-
-| Type | Value | Item field |
-|------|-------|------------|
-| TEXT | 1 | `text_item.text` |
-| IMAGE | 2 | `image_item` (CDN media ref + AES key) |
-| VOICE | 3 | `voice_item` (CDN media ref, optional STT text) |
-| FILE | 4 | `file_item` (CDN media ref + filename) |
-| VIDEO | 5 | `video_item` (CDN media ref) |
-
-The `context_token` field on inbound messages **must** be echoed back in all replies.
-
-### CDN Media
-
-All media is encrypted with **AES-128-ECB** (PKCS7 padding, random 16-byte key per file).
-
-**Upload flow:**
-1. Read file, compute MD5 and AES ciphertext size
-2. Call `getUploadUrl` with file metadata
-3. Encrypt with AES-128-ECB, POST to CDN URL
-4. CDN returns `x-encrypted-param` header (the download param)
-
-**Download flow:**
-1. Build URL: `{cdnBaseUrl}/download?encrypted_query_param=...`
-2. Fetch ciphertext
-3. Decrypt with the `aes_key` from the `CDNMedia` reference
-
-AES key encoding varies by media type:
-- Images: `base64(raw 16 bytes)`
-- Files/voice/video: `base64(hex string of 16 bytes)`
-
-## Project Structure
-
-```
-src/
-  index.ts                 Public API exports
-  client.ts                WeChatClient (high-level, stateless)
-  monitor.ts               Long-poll getUpdates loop with backoff
-  api/
-    types.ts               Protocol types (messages, CDN, requests/responses)
-    client.ts              Low-level HTTP ApiClient
-  auth/
-    qr-login.ts            QR code login flow (returns URL, no rendering)
-  cdn/
-    aes-ecb.ts             AES-128-ECB encrypt/decrypt
-    cdn-url.ts             CDN URL builders
-    cdn-upload.ts          Encrypted upload to CDN
-    cdn-download.ts        Download + decrypt from CDN
-  media/
-    upload.ts              File -> CDN upload pipeline
-    download.ts            Download media from inbound messages
-    send.ts                Build and send text/image/video/file messages
-  util/
-    mime.ts                MIME type <-> extension mapping
-    random.ts              ID and filename generation
-examples/
-  echo-bot.ts              Complete echo bot (with its own persistence + QR rendering)
-```
-
-## Development Checks
-
-```bash
-pnpm test
 pnpm check
 ```
 
-`pnpm check` runs typecheck, example typecheck, unit tests, and build.
+Use `.env.local` at the repo root for local keys and settings. Do not commit
+real API keys.
 
-## License
+Common LLM settings:
 
-MIT
+```bash
+WECHAT2ALL_LLM_PROVIDER=openai-compatible
+WECHAT2ALL_LLM_BASE_URL=https://api.deepseek.com/v1
+WECHAT2ALL_LLM_API_KEY=...
+WECHAT2ALL_LLM_MODEL=deepseek-chat
+WECHAT2ALL_LLM_TEMPERATURE=0.7
+WECHAT2ALL_LLM_MAX_TOKENS=800
+```
+
+Optional memory:
+
+```bash
+WECHAT2ALL_MEM0_API_KEY=...
+```
+
+## Run
+
+Low-level SDK echo bot:
+
+```bash
+pnpm echo-bot
+```
+
+Runtime bot without the desktop dashboard:
+
+```bash
+pnpm runtime-bot
+pnpm runtime-bot -- --profile main --fresh
+```
+
+Full local dashboard stack:
+
+```bash
+pnpm desktop
+```
+
+Use Codex GUI delivery:
+
+```bash
+WECHAT2ALL_CODEX_BACKEND=gui-app-server \
+WECHAT2ALL_CODEX_DELIVERY=gui-automation \
+pnpm desktop
+```
+
+If port `39787` is already occupied, another router daemon or desktop session is
+already running. Stop it, or point this run at a different local port:
+
+```bash
+WECHAT2ALL_ROUTER_PORT=39788 pnpm desktop
+```
+
+## macOS Privacy Settings
+
+For normal QR login and dashboard viewing, no special macOS permission should be
+needed beyond network access.
+
+For Codex GUI delivery with `WECHAT2ALL_CODEX_DELIVERY=gui-automation`, macOS
+must allow the process running wechat2all to control the computer:
+
+1. Open System Settings.
+2. Go to Privacy & Security -> Accessibility.
+3. Enable the app or terminal you use to start wechat2all. Common entries:
+   `Terminal`, `iTerm`, `Codex`, and sometimes `Codex Computer Use`.
+4. Keep the Codex desktop app installed and logged in.
+
+The GUI delivery path opens `codex://threads/<threadId>`, waits briefly, pastes
+the prompt into that bound chat, presses Enter, then polls the same thread for a
+final answer.
+
+## Current Progress For Collaborators
+
+- `packages/client` is the robust low-level SDK. Keep it stateless.
+- `packages/runtime` is the primary product logic layer. Add new route behavior,
+  memory policies, connectors, and action abstractions here.
+- `packages/router-daemon` is the local app backend. It should wire runtime to
+  QR login, HTTP endpoints, traces, and desktop state, but not absorb runtime
+  business logic.
+- `packages/desktop` is a usable development dashboard, not yet a packaged
+  installer.
+- `packages/codex-gui-bridge` is the current preferred Codex integration. The
+  file watcher/MCP packages remain for compatibility and experiments.
+
+Before changing behavior, read the README in the package you are touching.
