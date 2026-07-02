@@ -41,6 +41,11 @@ target
 # Legacy Codex bridge state
 /codex-bridge/
 /profiles/*/codex-bridge/
+
+# Codex GUI bridge local preferences/state
+/codex-gui-bridge/
+/profiles/*/codex-gui-bridge/
+
 /status.json
 /threads.json
 /target.json
