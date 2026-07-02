@@ -1,5 +1,6 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { CodexAppServerRpc, resolveCodexExecutable } from "./app-server-rpc.js";
 import {
@@ -24,7 +25,9 @@ import type {
   CodexGuiBridgeTokenUsage,
   CodexGuiBridgeTokenWindow,
   CodexGuiChat,
+  CodexGuiOutputFile,
   CodexGuiPrompt,
+  CodexGuiPromptAttachment,
   CodexGuiPromptResult,
   CodexGuiReplyMode,
 } from "./types.js";
@@ -92,6 +95,13 @@ interface ThreadItem {
   type?: string;
   text?: string;
   phase?: string | null;
+  content?: unknown;
+  image_url?: string;
+  imageUrl?: string;
+  filePath?: string;
+  file_path?: string;
+  path?: string;
+  url?: string;
 }
 
 interface TurnCompletedNotification {
@@ -395,7 +405,10 @@ export class CodexGuiAppServerBridge {
 
   async sendPrompt(prompt: CodexGuiPrompt): Promise<CodexGuiPromptResult> {
     const text = prompt.text.trim();
-    if (!text) throw new Error("Cannot send an empty Codex prompt.");
+    const attachments = prompt.attachments?.filter(isUsablePromptAttachment) ?? [];
+    if (!text && attachments.length === 0) {
+      throw new Error("Cannot send an empty Codex prompt.");
+    }
     const threadId = prompt.threadId?.trim() || this.binding?.threadId;
     if (!threadId) {
       throw new Error("Codex GUI bridge is not bound. Send /ls, then /bind <序号>.");
@@ -407,6 +420,7 @@ export class CodexGuiAppServerBridge {
         id: prompt.id ?? randomUUID(),
         threadId,
         text,
+        attachments,
         replyMode,
       });
     }
@@ -423,13 +437,7 @@ export class CodexGuiAppServerBridge {
       {
         threadId,
         clientUserMessageId: id,
-        input: [
-          {
-            type: "text",
-            text,
-            text_elements: [],
-          },
-        ],
+        input: promptInputItems(text, attachments),
       },
       this.timeoutMs,
     );
@@ -595,12 +603,13 @@ export class CodexGuiAppServerBridge {
     id: string;
     threadId: string;
     text: string;
+    attachments: CodexGuiPromptAttachment[];
     replyMode: CodexGuiReplyMode;
   }): Promise<CodexGuiPromptResult> {
     const before = await this.readThreadWithTurns(args.threadId);
     const previousTurnIds = new Set((before.turns ?? []).map((turn) => turn.id));
 
-    await this.guiPromptInjector(args.text, {
+    await this.guiPromptInjector(textWithAttachmentReferences(args.text, args.attachments), {
       threadId: args.threadId,
       threadTitle: this.binding?.threadId === args.threadId
         ? this.binding.title
@@ -620,6 +629,7 @@ export class CodexGuiAppServerBridge {
       status: completed.status,
       finalText: completed.finalText,
       replyParts: completed.replyParts,
+      ...(completed.outputFiles?.length ? { outputFiles: completed.outputFiles } : {}),
       replyMode: args.replyMode,
       error: completed.error,
     };
@@ -634,6 +644,7 @@ export class CodexGuiAppServerBridge {
     status?: TurnStatus;
     finalText?: string;
     replyParts?: string[];
+    outputFiles?: CodexGuiOutputFile[];
     error?: string;
   }> {
     const deadline = Date.now() + this.turnTimeoutMs;
@@ -677,6 +688,7 @@ export class CodexGuiAppServerBridge {
     status?: TurnStatus;
     finalText?: string;
     replyParts?: string[];
+    outputFiles?: CodexGuiOutputFile[];
     error?: string;
   }> {
     const completedItems: ThreadItem[] = [];
@@ -687,7 +699,9 @@ export class CodexGuiAppServerBridge {
         unsubscribe?.();
         const partial = resultFromItems(completedItems, replyMode);
         const hasPartial = Boolean(
-          partial.finalText || (partial.replyParts && partial.replyParts.length > 0),
+          partial.finalText ||
+            (partial.replyParts && partial.replyParts.length > 0) ||
+            (partial.outputFiles && partial.outputFiles.length > 0),
         );
         if (hasPartial) {
           resolve({
@@ -702,6 +716,8 @@ export class CodexGuiAppServerBridge {
       const finish = (result: {
         status?: TurnStatus;
         finalText?: string;
+        replyParts?: string[];
+        outputFiles?: CodexGuiOutputFile[];
         error?: string;
       }) => {
         clearTimeout(timer);
@@ -772,12 +788,156 @@ function isCompletedTurnForGuiPolling(turn: RawTurn): boolean {
   return Boolean(
     resultFromItems(turn.items ?? [], "final").finalText ||
       resultFromItems(turn.items ?? [], "stream").replyParts?.length ||
+      resultFromItems(turn.items ?? [], "final").outputFiles?.length ||
       errorText(turn.error),
   );
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isUsablePromptAttachment(
+  attachment: CodexGuiPromptAttachment,
+): boolean {
+  return attachment.kind === "image" && attachment.filePath.trim().length > 0;
+}
+
+function promptInputItems(
+  text: string,
+  attachments: CodexGuiPromptAttachment[],
+): unknown[] {
+  const input: unknown[] = [];
+  if (text) {
+    input.push({
+      type: "text",
+      text,
+      text_elements: [],
+    });
+  }
+  for (const attachment of attachments) {
+    input.push({
+      type: "input_image",
+      image_url: pathToFileURL(attachment.filePath).href,
+      detail: "auto",
+    });
+  }
+  return input;
+}
+
+function textWithAttachmentReferences(
+  text: string,
+  attachments: CodexGuiPromptAttachment[],
+): string {
+  if (!attachments.length) return text;
+  const lines = attachments.map((attachment, index) => {
+    const label = attachment.fileName ? `${attachment.fileName}: ` : "";
+    return `image ${index + 1}: ${label}${attachment.filePath}`;
+  });
+  return [
+    ...(text ? [text, ""] : []),
+    "WeChat image attachments:",
+    ...lines,
+  ].join("\n");
+}
+
+const IMAGE_EXTENSION_PATTERN = /\.(?:png|jpe?g|gif|webp|bmp|tiff?)(?:[#?][^\s)\]]*)?$/i;
+const MARKDOWN_IMAGE_PATTERN = /!\[[^\]]*]\(([^)\]]+)\)/g;
+const FILE_URL_PATTERN = /file:\/\/[^\s)\]]+/g;
+const ABSOLUTE_IMAGE_PATH_PATTERN = /\/[^\s)\]]+\.(?:png|jpe?g|gif|webp|bmp|tiff?)(?:[#?][^\s)\]]*)?/gi;
+
+function stripUrlFragment(value: string): string {
+  return value.replace(/[?#].*$/, "");
+}
+
+function localImagePath(value: unknown, requireImageExtension = false): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const cleaned = value.trim().replace(/^<|>$/g, "");
+  if (!cleaned) return undefined;
+  try {
+    if (cleaned.startsWith("file://")) {
+      const filePath = fileURLToPath(cleaned);
+      if (requireImageExtension && !IMAGE_EXTENSION_PATTERN.test(filePath)) return undefined;
+      return filePath;
+    }
+  } catch {
+    return undefined;
+  }
+  const withoutFragment = stripUrlFragment(cleaned);
+  if (!path.isAbsolute(withoutFragment)) return undefined;
+  if (requireImageExtension && !IMAGE_EXTENSION_PATTERN.test(withoutFragment)) return undefined;
+  return withoutFragment;
+}
+
+function outputFilesFromText(text: string, source: string): CodexGuiOutputFile[] {
+  const files: CodexGuiOutputFile[] = [];
+  for (const match of text.matchAll(MARKDOWN_IMAGE_PATTERN)) {
+    const filePath = localImagePath(match[1], true);
+    if (filePath) files.push({ kind: "image", filePath, source: "markdown" });
+  }
+  for (const match of text.matchAll(FILE_URL_PATTERN)) {
+    const filePath = localImagePath(match[0], true);
+    if (filePath) files.push({ kind: "image", filePath, source });
+  }
+  const textWithoutUrls = text
+    .replace(MARKDOWN_IMAGE_PATTERN, " ")
+    .replace(FILE_URL_PATTERN, " ");
+  for (const match of textWithoutUrls.matchAll(ABSOLUTE_IMAGE_PATH_PATTERN)) {
+    const filePath = localImagePath(match[0], true);
+    if (filePath) files.push({ kind: "image", filePath, source });
+  }
+  return dedupeOutputFiles(files);
+}
+
+function outputFilesFromUnknown(
+  value: unknown,
+  source: string,
+  depth = 0,
+): CodexGuiOutputFile[] {
+  if (depth > 5 || value == null) return [];
+  if (typeof value === "string") return outputFilesFromText(value, source);
+  if (Array.isArray(value)) {
+    return dedupeOutputFiles(
+      value.flatMap((item) => outputFilesFromUnknown(item, source, depth + 1)),
+    );
+  }
+  if (typeof value !== "object") return [];
+
+  const record = value as Record<string, unknown>;
+  const files: CodexGuiOutputFile[] = [];
+  for (const key of ["image_url", "imageUrl", "filePath", "file_path", "path", "url"]) {
+    const filePath = localImagePath(record[key], key === "url");
+    if (filePath) files.push({ kind: "image", filePath, source });
+  }
+  if (typeof record.text === "string") {
+    files.push(...outputFilesFromText(record.text, source));
+  }
+  if ("content" in record) {
+    files.push(...outputFilesFromUnknown(record.content, source, depth + 1));
+  }
+  for (const key of ["items", "parts", "output", "outputs", "attachments"]) {
+    if (key in record) {
+      files.push(...outputFilesFromUnknown(record[key], source, depth + 1));
+    }
+  }
+  return dedupeOutputFiles(files);
+}
+
+function outputFilesFromItems(items: ThreadItem[]): CodexGuiOutputFile[] {
+  return dedupeOutputFiles(
+    items.flatMap((item) => outputFilesFromUnknown(item, item.type ?? "item")),
+  );
+}
+
+function dedupeOutputFiles(files: CodexGuiOutputFile[]): CodexGuiOutputFile[] {
+  const seen = new Set<string>();
+  const deduped: CodexGuiOutputFile[] = [];
+  for (const file of files) {
+    if (seen.has(file.filePath)) continue;
+    seen.add(file.filePath);
+    deduped.push(file);
+  }
+  return deduped;
 }
 
 function agentTextPartsFromItems(items: ThreadItem[]): Array<{
@@ -805,19 +965,23 @@ function resultFromItems(
 ): {
   finalText?: string;
   replyParts?: string[];
+  outputFiles?: CodexGuiOutputFile[];
 } {
-  if (replyMode === "silent") return {};
+  const outputFiles = outputFilesFromItems(items);
+  const mediaResult = outputFiles.length ? { outputFiles } : {};
+  if (replyMode === "silent") return mediaResult;
   const agentMessages = agentTextPartsFromItems(items);
   if (replyMode === "stream") {
     const replyParts = agentMessages.map((item) => item.text);
     return {
       finalText: replyParts.length ? replyParts.join("\n\n") : undefined,
       replyParts: replyParts.length ? replyParts : undefined,
+      ...mediaResult,
     };
   }
 
   const final = [...agentMessages].reverse().find((item) => item.phase === "final_answer");
-  return final ? { finalText: final.text } : {};
+  return final ? { finalText: final.text, ...mediaResult } : mediaResult;
 }
 
 function mergeThreadItems(first: ThreadItem[], second: ThreadItem[]): ThreadItem[] {
@@ -848,6 +1012,7 @@ function resultFromTurn(
   status?: TurnStatus;
   finalText?: string;
   replyParts?: string[];
+  outputFiles?: CodexGuiOutputFile[];
   error?: string;
 } | null {
   if (!turn) return null;

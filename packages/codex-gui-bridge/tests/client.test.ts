@@ -197,6 +197,54 @@ test("starts a turn with standardized text input on the bound thread", async () 
   );
 });
 
+test("starts a turn with image attachments on the bound thread", async () => {
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({ transport });
+
+  await bridge.bindThread("thread-1");
+  const pending = bridge.sendPrompt({
+    id: "wechat-image-message-1",
+    text: "",
+    attachments: [{
+      kind: "image",
+      filePath: "/tmp/wechat-image.jpg",
+      fileName: "wechat-image.jpg",
+      mimeType: "image/jpeg",
+    }],
+  });
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      items: [{
+        type: "agentMessage",
+        id: "assistant-1",
+        text: "I can see the image.",
+        phase: "final_answer",
+      }],
+    },
+  });
+
+  assert.equal((await pending).finalText, "I can see the image.");
+  assert.deepEqual(
+    transport.calls.find((call) => call.method === "turn/start")?.params,
+    {
+      threadId: "thread-1",
+      clientUserMessageId: "wechat-image-message-1",
+      input: [{
+        type: "input_image",
+        image_url: "file:///tmp/wechat-image.jpg",
+        detail: "auto",
+      }],
+    },
+  );
+});
+
 test("waits for turn completion and returns final answer text", async () => {
   const transport = new FakeTransport();
   const bridge = new CodexGuiAppServerBridge({ transport, turnTimeoutMs: 1000 });
@@ -243,6 +291,52 @@ test("waits for turn completion and returns final answer text", async () => {
     turnId: "turn-1",
     status: "completed",
     finalText: "Done from Codex.",
+    replyMode: "final",
+    error: undefined,
+  });
+});
+
+test("returns local image files mentioned by Codex output", async () => {
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({ transport, turnTimeoutMs: 1000 });
+
+  await bridge.bindThread("thread-1");
+  const pending = bridge.sendPrompt({
+    id: "wechat-message-with-output-image",
+    text: "make an image",
+  });
+
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      items: [
+        {
+          type: "agentMessage",
+          id: "assistant-1",
+          text: "Done.\n\n![chart](file:///tmp/codex-output.png)",
+          phase: "final_answer",
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(await pending, {
+    id: "wechat-message-with-output-image",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    status: "completed",
+    finalText: "Done.\n\n![chart](file:///tmp/codex-output.png)",
+    outputFiles: [{
+      kind: "image",
+      filePath: "/tmp/codex-output.png",
+      source: "markdown",
+    }],
     replyMode: "final",
     error: undefined,
   });

@@ -96,6 +96,30 @@ test("normalizes text and media Weixin messages", () => {
   assert.equal(message.replyToken?.contextToken, "ctx");
 });
 
+test("normalizes SDK voice transcription as runtime text", () => {
+  const message = normalizeWeixinMessage({
+    profileId: "main",
+    msg: {
+      message_id: 126,
+      from_user_id: "user-1",
+      context_token: "ctx",
+      item_list: [{
+        type: MessageItemType.VOICE,
+        msg_id: "voice-1",
+        voice_item: {
+          text: "帮我看一下 Codex 状态",
+          playtime: 1200,
+        },
+      }],
+    },
+  });
+
+  assert.equal(message.kind, "mixed");
+  assert.equal(message.text, "帮我看一下 Codex 状态");
+  assert.equal(message.attachments[0].kind, "voice");
+  assert.equal(message.attachments[0].durationMs, 1200);
+});
+
 test("normalization ignores empty protocol identifiers", () => {
   const message = normalizeWeixinMessage({
     profileId: "sales",
@@ -1069,6 +1093,160 @@ test("codex connector binds a GUI thread by /ls index and sends ordinary text to
   assert.deepEqual((sentPrompt as { text: string }).text, "continue please");
   assert.match((sendActions[0] as { text: string }).text, /已发送到 Codex GUI chat/);
   assert.match((sendActions[0] as { text: string }).text, /Turn ID: turn-1/);
+});
+
+test("codex connector forwards cached WeChat images to the GUI bridge", async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-image-"));
+  let sentPrompt: unknown;
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        sentPrompt = prompt;
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          finalText: "image received",
+        };
+      },
+    },
+  });
+  const rawImage = {
+    type: MessageItemType.IMAGE,
+    msg_id: "image-1",
+    image_item: { mid_size: 5 },
+  };
+  const client = {
+    async downloadMedia() {
+      return {
+        kind: "image",
+        fileName: "wechat-photo.jpg",
+        data: Buffer.from("image"),
+      };
+    },
+  } as unknown as WeChatClient;
+  const message: RuntimeMessage = {
+    id: "m-image",
+    platform: "wechat-ilink",
+    profileId: "main",
+    conversationId: "user-1",
+    senderId: "user-1",
+    timestamp: 1,
+    kind: "image",
+    attachments: [{
+      id: "image-1",
+      kind: "image",
+      size: 5,
+      raw: rawImage,
+    }],
+    raw: {},
+  };
+
+  const actions = await connector.handleMessage(message, {
+    profileId: "main",
+    connectorId: "codex-bridge",
+    client,
+    memory: new InMemoryMemoryStore(),
+    memoryScope: { profileId: "main", connectorId: "codex-bridge", conversationId: "user-1" },
+    route: { id: "codex", connectorId: "codex-bridge" },
+    routes: new RuntimeRouteRegistry(),
+    media: new RuntimeMediaPipeline({ cacheDir }),
+  });
+
+  assert.equal((sentPrompt as { text: string }).text, "请分析这张微信图片。");
+  const attachments = (sentPrompt as { attachments: Array<{ filePath: string; kind: string }> })
+    .attachments;
+  assert.equal(attachments[0].kind, "image");
+  assert.match(attachments[0].filePath, /\.jpg$/);
+  assert.equal(
+    (sentPrompt as { attachments: Array<{ fileName?: string }> }).attachments[0].fileName,
+    "wechat-photo.jpg",
+  );
+  assert.equal(await fs.readFile(attachments[0].filePath, "utf-8"), "image");
+  assert.deepEqual(actions, [{
+    type: "send_text",
+    conversationId: "user-1",
+    text: "image received",
+  }]);
+});
+
+test("codex connector sends Codex output images back to WeChat", async () => {
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          finalText: "done",
+          outputFiles: [{
+            kind: "image",
+            filePath: "/tmp/codex-output.png",
+            source: "markdown",
+          }],
+        };
+      },
+    },
+  });
+  const message: RuntimeMessage = {
+    id: "m1",
+    platform: "wechat-ilink",
+    profileId: "main",
+    conversationId: "user-1",
+    senderId: "user-1",
+    timestamp: 1,
+    kind: "text",
+    text: "make an image",
+    attachments: [],
+    raw: {},
+  };
+
+  const actions = await connector.handleMessage(message, {
+    profileId: "main",
+    connectorId: "codex-bridge",
+    client: {} as WeChatClient,
+    memory: new InMemoryMemoryStore(),
+    memoryScope: { profileId: "main", connectorId: "codex-bridge", conversationId: "user-1" },
+    route: { id: "codex", connectorId: "codex-bridge" },
+    routes: new RuntimeRouteRegistry(),
+  });
+
+  assert.deepEqual(actions, [
+    {
+      type: "send_text",
+      conversationId: "user-1",
+      text: "done",
+    },
+    {
+      type: "send_media",
+      conversationId: "user-1",
+      filePath: "/tmp/codex-output.png",
+    },
+  ]);
 });
 
 test("codex connector supports silent reply mode", async () => {

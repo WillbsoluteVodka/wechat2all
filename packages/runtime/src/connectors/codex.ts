@@ -54,10 +54,26 @@ export interface CodexBridgePrompt {
   conversationId: string;
   senderId: string;
   text: string;
+  attachments?: CodexBridgePromptAttachment[];
   sourceMessageId: string;
   contextToken?: string;
   routeId?: string;
   replyMode?: CodexReplyMode;
+}
+
+export interface CodexBridgePromptAttachment {
+  kind: "image";
+  filePath: string;
+  fileName?: string;
+  mimeType?: string;
+  size?: number;
+}
+
+export interface CodexBridgeOutputFile {
+  kind: "image";
+  filePath: string;
+  mimeType?: string;
+  source?: string;
 }
 
 export interface CodexBridgeSendPromptResult {
@@ -66,6 +82,7 @@ export interface CodexBridgeSendPromptResult {
   turnId?: string;
   finalText?: string;
   replyParts?: string[];
+  outputFiles?: CodexBridgeOutputFile[];
   replyMode?: CodexReplyMode;
   status?: "completed" | "interrupted" | "failed" | "inProgress";
   error?: string;
@@ -480,6 +497,69 @@ function textAction(message: RuntimeMessage, text: string): RuntimeAction[] {
   }];
 }
 
+function mediaActions(
+  message: RuntimeMessage,
+  outputFiles: CodexBridgeOutputFile[] | undefined,
+): RuntimeAction[] {
+  return (outputFiles ?? [])
+    .filter((file) => file.kind === "image" && file.filePath.trim().length > 0)
+    .map((file) => ({
+      type: "send_media" as const,
+      conversationId: message.conversationId,
+      filePath: file.filePath,
+    }));
+}
+
+function textAndMediaActions(
+  message: RuntimeMessage,
+  text: string | undefined,
+  outputFiles: CodexBridgeOutputFile[] | undefined,
+): RuntimeAction[] {
+  return [
+    ...(text?.trim()
+      ? textAction(message, text)
+      : []),
+    ...mediaActions(message, outputFiles),
+  ];
+}
+
+async function promptAttachmentsForMessage(
+  message: RuntimeMessage,
+  context: RuntimeHandlerContext,
+): Promise<CodexBridgePromptAttachment[]> {
+  const hasImage = message.attachments.some((attachment) => attachment.kind === "image");
+  if (!hasImage) return [];
+  if (!context.media) {
+    throw new Error("Runtime media pipeline is not configured; cannot forward WeChat images.");
+  }
+  const media = await context.media.downloadMessageMedia({
+    client: context.client,
+    message,
+  });
+  const images = media
+    .filter((item) => item.kind === "image" && item.filePath)
+    .map((item) => ({
+      kind: "image" as const,
+      filePath: item.filePath ?? "",
+      fileName: item.fileName,
+      mimeType: item.mimeType,
+      size: item.size,
+    }));
+  if (!images.length) {
+    throw new Error("WeChat image was received, but no local image file could be cached.");
+  }
+  return images;
+}
+
+function promptTextForMessage(
+  text: string,
+  attachments: CodexBridgePromptAttachment[],
+): string {
+  if (text) return text;
+  if (attachments.length) return "请分析这张微信图片。";
+  return "";
+}
+
 function cleanCodexLine(line: string | undefined): string | undefined {
   if (line === undefined) return undefined;
   return line.replace(/\s+$/g, "");
@@ -769,13 +849,32 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
         );
       }
 
+      let promptAttachments: CodexBridgePromptAttachment[];
+      try {
+        promptAttachments = await promptAttachmentsForMessage(message, context);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        return textAction(message, codexError("media failed", [detail]));
+      }
+      const promptText = promptTextForMessage(text, promptAttachments);
+      if (!promptText && promptAttachments.length === 0) {
+        return textAction(
+          message,
+          codexError("unsupported message", [
+            "这条微信消息没有可转发给 Codex 的文本或图片。",
+            "语音消息需要 SDK 提供转写文本；图片消息需要 media cache。",
+          ]),
+        );
+      }
+
       const prompt: CodexBridgePrompt = {
         id: randomUUID(),
         createdAt: Date.now(),
         profileId: message.profileId,
         conversationId: message.conversationId,
         senderId: message.senderId,
-        text,
+        text: promptText,
+        attachments: promptAttachments.length ? promptAttachments : undefined,
         sourceMessageId: message.id,
         contextToken: message.replyToken?.contextToken,
         routeId: context.route.id,
@@ -813,13 +912,17 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
       }
       const replyParts = result.replyParts?.filter((part) => part.trim().length > 0) ?? [];
       if (replyMode === "stream" && replyParts.length) {
-        return replyParts.map((part) => ({
-          type: "send_text",
-          conversationId: message.conversationId,
-          text: part,
-        }));
+        return [
+          ...replyParts.map((part) => ({
+            type: "send_text" as const,
+            conversationId: message.conversationId,
+            text: part,
+          })),
+          ...mediaActions(message, result.outputFiles),
+        ];
       }
-      if (result.finalText) return textAction(message, result.finalText);
+      const finalActions = textAndMediaActions(message, result.finalText, result.outputFiles);
+      if (finalActions.length) return finalActions;
       if (result.threadId) {
         return textAction(
           message,

@@ -38,6 +38,21 @@ export interface CodexGuiPrompt {
   text: string;
   threadId?: string;
   replyMode?: CodexGuiReplyMode;
+  attachments?: CodexGuiPromptAttachment[];
+}
+
+export interface CodexGuiPromptAttachment {
+  kind: "image";
+  filePath: string;
+  fileName?: string;
+  mimeType?: string;
+}
+
+export interface CodexGuiOutputFile {
+  kind: "image";
+  filePath: string;
+  mimeType?: string;
+  source?: string;
 }
 
 export interface CodexGuiPromptResult {
@@ -47,6 +62,7 @@ export interface CodexGuiPromptResult {
   status?: "completed" | "interrupted" | "failed" | "inProgress";
   finalText?: string;
   replyParts?: string[];
+  outputFiles?: CodexGuiOutputFile[];
   replyMode?: CodexGuiReplyMode;
   error?: string;
 }
