@@ -73,6 +73,20 @@ export interface CodexBridgeSendPromptResult {
 
 export type CodexReplyMode = "final" | "silent" | "stream";
 
+export interface CodexAutoOpenState {
+  enabled: boolean;
+  updatedAt?: number;
+}
+
+export interface CodexAlarmState {
+  enabled: boolean;
+  timeText?: string;
+  nextFireAt?: number;
+  updatedAt?: number;
+  lastFiredAt?: number;
+  lastError?: string;
+}
+
 export interface CodexBridgeClient {
   getStatus(): Promise<CodexBridgeStatus>;
   listThreads?(): Promise<CodexBridgeThread[]>;
@@ -80,6 +94,11 @@ export interface CodexBridgeClient {
   bindThread?(threadId: string): Promise<CodexBridgeBinding>;
   getCurrentBinding?(): Promise<CodexBridgeBinding | null>;
   getTokenUsage?(): Promise<CodexTokenUsage>;
+  getAutoOpen?(): Promise<CodexAutoOpenState>;
+  setAutoOpen?(enabled: boolean): Promise<CodexAutoOpenState>;
+  getAlarm?(): Promise<CodexAlarmState>;
+  setAlarm?(timeText: string): Promise<CodexAlarmState>;
+  clearAlarm?(): Promise<CodexAlarmState>;
   sendPrompt?(prompt: CodexBridgePrompt): Promise<CodexBridgeSendPromptResult>;
   setDefaultTarget?(target: CodexBridgeTarget): Promise<void>;
   getDefaultTarget?(): Promise<CodexBridgeTarget | null>;
@@ -159,6 +178,25 @@ function parseModeCommand(text: string): CodexReplyMode | "show" | null {
   const rawMode = match[1]?.trim();
   if (!rawMode) return "show";
   return parseCodexReplyMode(rawMode) ?? null;
+}
+
+function parseAutoOpenCommand(text: string): boolean | "show" | null {
+  const match = text.trim().match(/^\/autoopen(?:\s+(.+))?$/i);
+  if (!match) return null;
+  const raw = match[1]?.trim().toLowerCase();
+  if (!raw) return "show";
+  if (["1", "true", "on", "yes"].includes(raw)) return true;
+  if (["0", "false", "off", "no"].includes(raw)) return false;
+  return null;
+}
+
+function parseAlarmCommand(text: string): string | "show" | "off" | null {
+  const match = text.trim().match(/^\/alarm(?:\s+(.+))?$/i);
+  if (!match) return null;
+  const raw = match[1]?.trim();
+  if (!raw) return "show";
+  if (["0", "off", "disable", "disabled", "关闭"].includes(raw.toLowerCase())) return "off";
+  return raw;
 }
 
 function isCurrentCommand(text: string): boolean {
@@ -321,6 +359,49 @@ function formatReplyMode(mode: CodexReplyMode): string {
   ]);
 }
 
+function formatAutoOpen(state: CodexAutoOpenState): string {
+  return codexPanel([
+    "codex / autoopen",
+    "",
+    `- 当前状态: ${state.enabled ? "1 / enabled" : "0 / disabled"}`,
+    state.updatedAt ? `- 更新时间: ${formatTime(state.updatedAt)}` : undefined,
+    "",
+    "/autoopen 1",
+    "  启动 wechat2all 时自动打开 Codex GUI",
+    "",
+    "/autoopen 0",
+    "  启动 wechat2all 时不自动打开 Codex GUI",
+  ]);
+}
+
+function formatAlarm(state: CodexAlarmState): string {
+  if (!state.enabled) {
+    return codexPanel([
+      "codex / alarm",
+      "",
+      "- 当前状态: disabled",
+      "",
+      "/alarm 09:30",
+      "  设置 24 小时制时间，到点向当前绑定的 Codex chat 发送 dummy 你好",
+      "",
+      "/alarm off",
+      "  关闭这个定时触发",
+    ]);
+  }
+  return codexPanel([
+    "codex / alarm",
+    "",
+    "- 当前状态: enabled",
+    state.timeText ? `- 每日时间: ${state.timeText}` : undefined,
+    state.nextFireAt ? `- 下次触发: ${formatTime(state.nextFireAt)}` : undefined,
+    state.lastFiredAt ? `- 上次触发: ${formatTime(state.lastFiredAt)}` : undefined,
+    state.lastError ? `- 上次错误: ${state.lastError}` : undefined,
+    "",
+    "触发内容:",
+    "  你好",
+  ]);
+}
+
 function helpText(replyMode: CodexReplyMode): string {
   return codexPanel([
     "codex / help",
@@ -343,6 +424,12 @@ function helpText(replyMode: CodexReplyMode): string {
     "",
     "/mode final|silent|stream",
     `  设置微信返回模式，当前：${replyMode}`,
+    "",
+    "/autoopen 1|0",
+    "  设置启动 wechat2all 时是否自动打开 Codex GUI",
+    "",
+    "/alarm <HH:mm>",
+    "  设置 24 小时制时间，到点向绑定的 Codex chat 发送 dummy 你好",
     "",
     "任意普通文本",
     "  发送到已绑定的 Codex chat",
@@ -548,6 +635,52 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
       if (nextReplyMode) {
         if (nextReplyMode !== "show") replyMode = nextReplyMode;
         return textAction(message, formatReplyMode(replyMode));
+      }
+
+      const nextAutoOpen = parseAutoOpenCommand(text);
+      if (nextAutoOpen !== null) {
+        if (!opts.client.getAutoOpen || !opts.client.setAutoOpen) {
+          return textAction(
+            message,
+            codexError("autoopen unavailable", [
+              "当前 Codex backend 不支持 /autoopen。",
+              "请检查 router-daemon 是否正在使用 codex-gui-bridge。",
+            ]),
+          );
+        }
+        try {
+          const state = nextAutoOpen === "show"
+            ? await opts.client.getAutoOpen()
+            : await opts.client.setAutoOpen(nextAutoOpen);
+          return textAction(message, formatAutoOpen(state));
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          return textAction(message, codexError("autoopen failed", [detail]));
+        }
+      }
+
+      const nextAlarm = parseAlarmCommand(text);
+      if (nextAlarm !== null) {
+        if (!opts.client.getAlarm || !opts.client.setAlarm || !opts.client.clearAlarm) {
+          return textAction(
+            message,
+            codexError("alarm unavailable", [
+              "当前 Codex backend 不支持 /alarm。",
+              "请检查 router-daemon 是否正在使用 codex-gui-bridge。",
+            ]),
+          );
+        }
+        try {
+          const state = nextAlarm === "show"
+            ? await opts.client.getAlarm()
+            : nextAlarm === "off"
+              ? await opts.client.clearAlarm()
+              : await opts.client.setAlarm(nextAlarm);
+          return textAction(message, formatAlarm(state));
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          return textAction(message, codexError("alarm failed", [detail]));
+        }
       }
 
       if (isThreadListCommand(command)) {

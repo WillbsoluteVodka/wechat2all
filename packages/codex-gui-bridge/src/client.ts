@@ -2,6 +2,18 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { CodexAppServerRpc, resolveCodexExecutable } from "./app-server-rpc.js";
+import {
+  disabledCodexGuiAlarmState,
+  readCodexGuiAlarm,
+  scheduledCodexGuiAlarmState,
+  type CodexGuiAlarmState,
+  writeCodexGuiAlarm,
+} from "./alarm.js";
+import {
+  readCodexGuiAutoOpen,
+  type CodexGuiAutoOpenState,
+  writeCodexGuiAutoOpen,
+} from "./auto-open.js";
 import { injectPromptIntoCodexGui } from "./gui-automation.js";
 import type {
   CodexAppServerTransport,
@@ -120,6 +132,7 @@ interface AppServerRateLimitsResponse {
 
 export interface CodexGuiBridgeEnvOptions {
   env?: NodeJS.ProcessEnv;
+  enableAlarmScheduler?: boolean;
 }
 
 function stripEnvQuotes(value: string | undefined): string | undefined {
@@ -252,8 +265,12 @@ export class CodexGuiAppServerBridge {
   private readonly deliveryMode: CodexGuiDeliveryMode;
   private readonly replyMode: CodexGuiReplyMode;
   private readonly guiPromptInjector: CodexGuiPromptInjector;
+  private readonly autoOpenConfigPath?: string;
+  private readonly alarmConfigPath?: string;
+  private readonly enableAlarmScheduler: boolean;
   private initialized?: Promise<void>;
   private binding: CodexGuiBinding | null;
+  private alarmTimer?: ReturnType<typeof setTimeout>;
 
   constructor(opts: CodexGuiBridgeOptions = {}) {
     this.transport = opts.transport ?? new CodexAppServerRpc({
@@ -272,15 +289,25 @@ export class CodexGuiAppServerBridge {
     this.deliveryMode = opts.deliveryMode ?? "app-server";
     this.replyMode = opts.replyMode ?? "final";
     this.guiPromptInjector = opts.guiPromptInjector ?? injectPromptIntoCodexGui;
+    this.autoOpenConfigPath = opts.autoOpenConfigPath;
+    this.alarmConfigPath = opts.alarmConfigPath;
+    this.enableAlarmScheduler = opts.enableAlarmScheduler === true;
     this.binding = opts.defaultThreadId
       ? {
           threadId: opts.defaultThreadId,
           boundAt: Date.now(),
         }
       : null;
+    if (this.enableAlarmScheduler) {
+      void this.startAlarmScheduler();
+    }
   }
 
   close(): void {
+    if (this.alarmTimer) {
+      clearTimeout(this.alarmTimer);
+      this.alarmTimer = undefined;
+    }
     this.transport.close?.();
   }
 
@@ -448,6 +475,46 @@ export class CodexGuiAppServerBridge {
     };
   }
 
+  async getAutoOpen(): Promise<CodexGuiAutoOpenState> {
+    return readCodexGuiAutoOpen({
+      configPath: this.autoOpenConfigPath,
+    });
+  }
+
+  async setAutoOpen(enabled: boolean): Promise<CodexGuiAutoOpenState> {
+    return writeCodexGuiAutoOpen(enabled, {
+      configPath: this.autoOpenConfigPath,
+    });
+  }
+
+  async getAlarm(): Promise<CodexGuiAlarmState> {
+    return readCodexGuiAlarm({
+      configPath: this.alarmConfigPath,
+    });
+  }
+
+  async setAlarm(timeText: string): Promise<CodexGuiAlarmState> {
+    const state = scheduledCodexGuiAlarmState({ timeText });
+    await writeCodexGuiAlarm(state, {
+      configPath: this.alarmConfigPath,
+    });
+    this.scheduleAlarm(state);
+    return state;
+  }
+
+  async clearAlarm(): Promise<CodexGuiAlarmState> {
+    const state = disabledCodexGuiAlarmState();
+    await writeCodexGuiAlarm(state, {
+      configPath: this.alarmConfigPath,
+    });
+    this.clearAlarmTimer();
+    return state;
+  }
+
+  async startAlarmScheduler(): Promise<void> {
+    this.scheduleAlarm(await this.getAlarm());
+  }
+
   private async readThread(threadId: string): Promise<RawThread> {
     await this.ensureInitialized();
     const response = await this.transport.request<ThreadReadResponse>(
@@ -459,6 +526,56 @@ export class CodexGuiAppServerBridge {
       this.timeoutMs,
     );
     return response.thread;
+  }
+
+  private clearAlarmTimer(): void {
+    if (!this.alarmTimer) return;
+    clearTimeout(this.alarmTimer);
+    this.alarmTimer = undefined;
+  }
+
+  private scheduleAlarm(state: CodexGuiAlarmState): void {
+    this.clearAlarmTimer();
+    if (!state.enabled || !state.timeText || !state.nextFireAt) return;
+    const delayMs = Math.max(0, state.nextFireAt - Date.now());
+    this.alarmTimer = setTimeout(() => {
+      void this.fireAlarm(state.nextFireAt);
+    }, delayMs);
+    this.alarmTimer.unref?.();
+  }
+
+  private async fireAlarm(expectedNextFireAt: number | undefined): Promise<void> {
+    const state = await this.getAlarm();
+    if (
+      !state.enabled ||
+      !state.timeText ||
+      !state.nextFireAt ||
+      state.nextFireAt !== expectedNextFireAt
+    ) {
+      return;
+    }
+
+    const firedAt = Date.now();
+    let lastError: string | undefined;
+    try {
+      await this.sendPrompt({
+        text: "你好",
+        replyMode: "silent",
+      });
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+
+    const nextState = scheduledCodexGuiAlarmState({
+      timeText: state.timeText,
+      now: firedAt,
+      lastFiredAt: firedAt,
+      lastError,
+    });
+    await writeCodexGuiAlarm(nextState, {
+      configPath: this.alarmConfigPath,
+    });
+    this.scheduleAlarm(nextState);
   }
 
   private async readThreadWithTurns(threadId: string): Promise<RawThread> {
@@ -755,6 +872,9 @@ export function createCodexGuiBridgeClientFromEnv(
     codexCommand: stripEnvQuotes(env.CODEX_CLI_PATH) ??
       stripEnvQuotes(env.WECHAT2ALL_CODEX_BIN),
     socketPath: stripEnvQuotes(env.WECHAT2ALL_CODEX_APP_SERVER_SOCKET),
+    autoOpenConfigPath: stripEnvQuotes(env.WECHAT2ALL_CODEX_GUI_AUTOOPEN_FILE),
+    alarmConfigPath: stripEnvQuotes(env.WECHAT2ALL_CODEX_GUI_ALARM_FILE),
+    enableAlarmScheduler: opts.enableAlarmScheduler,
     defaultThreadId: stripEnvQuotes(env.WECHAT2ALL_CODEX_THREAD_ID),
     deliveryMode: parseDeliveryMode(env.WECHAT2ALL_CODEX_DELIVERY),
     replyMode: parseReplyMode(env.WECHAT2ALL_CODEX_REPLY_MODE),

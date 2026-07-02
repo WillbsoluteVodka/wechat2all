@@ -12,6 +12,10 @@ This is the current preferred Codex integration path.
 - Reading token usage from `account/rateLimits/read`.
 - Sending prompts to the bound thread.
 - Filtering Codex turn output with reply modes: `final`, `silent`, and `stream`.
+- Persisting the Codex GUI auto-open preference used by `/autoopen 1|0`.
+- Opening the Codex desktop app at project boot when auto-open is enabled.
+- Persisting a `/alarm <HH:mm>` keepalive timer that sends a silent dummy
+  `你好` prompt to the bound Codex chat once per day.
 - Optional GUI automation that opens `codex://threads/<threadId>`, pastes into
   that chat, presses Enter, and polls the same thread for the final answer.
 
@@ -59,7 +63,14 @@ pnpm --filter @wechat2all/codex-gui-bridge dev -- ls
 pnpm --filter @wechat2all/codex-gui-bridge dev -- token
 pnpm --filter @wechat2all/codex-gui-bridge dev -- bind <threadId>
 WECHAT2ALL_CODEX_THREAD_ID=<threadId> pnpm --filter @wechat2all/codex-gui-bridge dev -- send "hello"
+pnpm --filter @wechat2all/codex-gui-bridge dev -- autoopen 1
+pnpm --filter @wechat2all/codex-gui-bridge dev -- ensure-open --dry-run
+pnpm --filter @wechat2all/codex-gui-bridge dev -- alarm 09:30
+pnpm --filter @wechat2all/codex-gui-bridge dev -- alarm off
 ```
+
+`autoopen 1` is the same persisted setting exposed in the WeChat `codex` route
+as `/autoopen 1`. `autoopen 0` disables it. The default is disabled.
 
 ## Environment
 
@@ -76,7 +87,17 @@ WECHAT2ALL_CODEX_TURN_TIMEOUT_MS=180000
 WECHAT2ALL_CODEX_GUI_POLL_INTERVAL_MS=1000
 WECHAT2ALL_CODEX_GUI_THREAD_OPEN_DELAY_MS=900
 WECHAT2ALL_CODEX_LIST_LIMIT=20
+WECHAT2ALL_CODEX_GUI_AUTOOPEN_FILE=<optional-autoopen-state-file>
+WECHAT2ALL_CODEX_GUI_ALARM_FILE=<optional-alarm-state-file>
+WECHAT2ALL_CODEX_AUTOOPEN=1
+WECHAT2ALL_CODEX_GUI_APP_NAME=Codex
+WECHAT2ALL_CODEX_GUI_APP_PATH=/Applications/Codex.app
+WECHAT2ALL_CODEX_GUI_PROCESS_NAME=Codex
+WECHAT2ALL_CODEX_GUI_BUNDLE_ID=<optional-bundle-id>
 ```
+
+`WECHAT2ALL_CODEX_AUTOOPEN=1` is an environment override. Without it, the bridge
+reads the persisted `/autoopen` setting from local runtime state.
 
 ## Collaborator Notes
 

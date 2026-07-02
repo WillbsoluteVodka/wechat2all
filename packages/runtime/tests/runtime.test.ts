@@ -716,6 +716,7 @@ test("main assistant replies gracefully when the LLM provider fails", async () =
   });
 
   assert.equal(errors[0], "fetch failed");
+  assert.match(sent[0], /^◆ 大助手 - Error: Llm Unavailable/);
   assert.match(sent[0], /连不上 LLM/);
 });
 
@@ -1203,6 +1204,131 @@ test("codex connector supports stream reply mode", async () => {
   ]);
 });
 
+test("codex connector toggles Codex GUI auto-open", async () => {
+  let enabled = false;
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getAutoOpen() {
+        return { enabled };
+      },
+      async setAutoOpen(nextEnabled) {
+        enabled = nextEnabled;
+        return {
+          enabled,
+          updatedAt: 42,
+        };
+      },
+    },
+  });
+  const context = {
+    profileId: "main",
+    connectorId: "codex-bridge",
+    client: {} as WeChatClient,
+    memory: new InMemoryMemoryStore(),
+    memoryScope: { profileId: "main", connectorId: "codex-bridge", conversationId: "user-1" },
+    route: { id: "codex", connectorId: "codex-bridge" },
+    routes: new RuntimeRouteRegistry(),
+  };
+  const baseMessage: RuntimeMessage = {
+    id: "m1",
+    platform: "wechat-ilink",
+    profileId: "main",
+    conversationId: "user-1",
+    senderId: "user-1",
+    timestamp: 1,
+    kind: "text",
+    text: "/autoopen 1",
+    attachments: [],
+    raw: {},
+  };
+
+  const enabledActions = await connector.handleMessage(baseMessage, context);
+  assert.equal(enabled, true);
+  assert.match((enabledActions[0] as { text: string }).text, /◆ Codex - Autoopen/);
+  assert.match((enabledActions[0] as { text: string }).text, /- 当前状态: 1 \/ enabled/);
+
+  const disabledActions = await connector.handleMessage({
+    ...baseMessage,
+    id: "m2",
+    text: "/autoopen 0",
+  }, context);
+  assert.equal(enabled, false);
+  assert.match((disabledActions[0] as { text: string }).text, /- 当前状态: 0 \/ disabled/);
+});
+
+test("codex connector configures the Codex GUI alarm", async () => {
+  let alarmTime = "";
+  let alarmEnabled = false;
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getAlarm() {
+        return { enabled: alarmEnabled, timeText: alarmTime };
+      },
+      async setAlarm(timeText) {
+        alarmEnabled = true;
+        alarmTime = timeText;
+        return {
+          enabled: true,
+          timeText,
+          nextFireAt: 42,
+          updatedAt: 41,
+        };
+      },
+      async clearAlarm() {
+        alarmEnabled = false;
+        return {
+          enabled: false,
+          updatedAt: 43,
+        };
+      },
+    },
+  });
+  const context = {
+    profileId: "main",
+    connectorId: "codex-bridge",
+    client: {} as WeChatClient,
+    memory: new InMemoryMemoryStore(),
+    memoryScope: { profileId: "main", connectorId: "codex-bridge", conversationId: "user-1" },
+    route: { id: "codex", connectorId: "codex-bridge" },
+    routes: new RuntimeRouteRegistry(),
+  };
+  const baseMessage: RuntimeMessage = {
+    id: "m1",
+    platform: "wechat-ilink",
+    profileId: "main",
+    conversationId: "user-1",
+    senderId: "user-1",
+    timestamp: 1,
+    kind: "text",
+    text: "/alarm 09:30",
+    attachments: [],
+    raw: {},
+  };
+
+  const setActions = await connector.handleMessage(baseMessage, context);
+  assert.equal(alarmEnabled, true);
+  assert.equal(alarmTime, "09:30");
+  assert.match((setActions[0] as { text: string }).text, /◆ Codex - Alarm/);
+  assert.match((setActions[0] as { text: string }).text, /- 当前状态: enabled/);
+  assert.match((setActions[0] as { text: string }).text, /- 每日时间: 09:30/);
+
+  const clearActions = await connector.handleMessage({
+    ...baseMessage,
+    id: "m2",
+    text: "/alarm off",
+  }, context);
+  assert.equal(alarmEnabled, false);
+  assert.match((clearActions[0] as { text: string }).text, /- 当前状态: disabled/);
+});
+
 test("codex connector asks for a GUI binding before sending ordinary text", async () => {
   let statusCalls = 0;
   const connector = createCodexConnector({
@@ -1420,7 +1546,8 @@ test("main assistant renames current route and cd enters a route session", async
     item_list: [{ type: MessageItemType.TEXT, text_item: { text: "/rename 总控台" } }],
   });
 
-  assert.match(sent[0], /已将当前 route 改名为：总控台/);
+  assert.match(sent[0], /^◆ 大助手 - Route Renamed/);
+  assert.match(sent[0], /- 已重命名为: 总控台/);
   assert.equal(
     runtime.listRoutes().find((route) => route.id === "main-assistant-default")
       ?.metadata?.assistantName,
@@ -1444,7 +1571,8 @@ test("main assistant renames current route and cd enters a route session", async
     item_list: [{ type: MessageItemType.TEXT, text_item: { text: "/cd codex" } }],
   });
 
-  assert.match(sent[1], /已进入 route：codex/);
+  assert.match(sent[1], /^◆ 大助手 - Route Entered/);
+  assert.match(sent[1], /- 已进入 route: codex/);
   assert.match(sent[1], /当前对话会停留在这个 route 内/);
   assert.equal(runtime.getConversationRoute("main", "user-1"), "codex");
 

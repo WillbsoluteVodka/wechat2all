@@ -59,8 +59,8 @@ returns with `/cd ..`.
 - One physical WeChat scan/profile with multiple logical routes.
 - Main assistant route (`大助手`) for general LLM chat, route listing, renaming,
   and route switching.
-- Codex route with `/ls`, `/bind <序号>`, `/current`, `/token`, and prompt
-  delivery into a bound Codex GUI chat.
+- Codex route with `/ls`, `/bind <序号>`, `/current`, `/token`, `/autoopen 1|0`,
+  `/alarm <HH:mm>`, and prompt delivery into a bound Codex GUI chat.
 - Standard runtime action surface: `send_text`, `send_media`, `send_voice`,
   `typing`, and `noop`.
 - Message normalization for text, media, voice, emoji/sticker-like attachments,
@@ -133,6 +133,23 @@ Full local dashboard stack:
 pnpm desktop
 ```
 
+In development, `pnpm desktop` restarts stale local wechat2all dev processes:
+the desktop app process, the router port (`39787`), and the UI port (`5173`).
+It then starts a fresh router-daemon + Tauri session. On macOS, it also runs
+the Codex GUI auto-open check, but that check is disabled by default and only
+opens Codex after the user enables `/autoopen 1` inside the `codex` route.
+To opt back into reuse:
+
+```bash
+WECHAT2ALL_DESKTOP_RESTART=0 pnpm desktop
+```
+
+To skip the Codex GUI auto-open check entirely:
+
+```bash
+WECHAT2ALL_DESKTOP_OPEN_CODEX=0 pnpm desktop
+```
+
 Use visible Codex GUI delivery:
 
 ```bash
@@ -140,8 +157,8 @@ WECHAT2ALL_CODEX_DELIVERY=gui-automation \
 pnpm desktop
 ```
 
-If port `39787` is already occupied, another router daemon or desktop session is
-already running. Stop it, or point this run at a different local port:
+If port `39787` is occupied by something that is not wechat2all, point this run
+at a different local port:
 
 ```bash
 WECHAT2ALL_ROUTER_PORT=39788 pnpm desktop

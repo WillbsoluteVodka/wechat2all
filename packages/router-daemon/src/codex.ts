@@ -10,5 +10,8 @@ export function createCodexBridgeFromEnv(opts: {
   env?: NodeJS.ProcessEnv;
 } = {}): CodexBridgeClient {
   const env = opts.env ?? process.env;
-  return createCodexGuiBridgeClientFromEnv({ env });
+  return createCodexGuiBridgeClientFromEnv({
+    env,
+    enableAlarmScheduler: true,
+  });
 }

@@ -57,8 +57,9 @@ flowchart TD
 
 - 一个真实微信扫码 profile 下挂多个逻辑 routes。
 - `大助手` 默认 route：普通 LLM 聊天、route 列表、rename、route 切换。
-- Codex route：支持 `/ls`、`/bind <序号>`、`/current`、`/token`，以及把
-  普通微信消息发送到绑定的 Codex GUI chat。
+- Codex route：支持 `/ls`、`/bind <序号>`、`/current`、`/token`、
+  `/autoopen 1|0`、`/alarm <HH:mm>`，以及把普通微信消息发送到绑定的 Codex GUI
+  chat。
 - 标准 runtime action：`send_text`、`send_media`、`send_voice`、`typing`、
   `noop`。
 - 对文本、媒体、语音、表情/贴纸类附件、普通文件做消息标准化。具体能力取决于
@@ -128,6 +129,22 @@ pnpm runtime-bot -- --profile main --fresh
 pnpm desktop
 ```
 
+开发模式下，`pnpm desktop` 会先重启本地旧的 wechat2all dev 进程：desktop app
+进程、router 端口 `39787`、UI 端口 `5173`，然后再启动一套新的 router-daemon 和
+Tauri。在 macOS 上，它也会跑 Codex GUI auto-open 检查；但默认是关闭的，只有你在
+`codex` route 里发送 `/autoopen 1` 后，下一次启动才会自动打开 Codex GUI。
+如果想恢复复用旧 daemon：
+
+```bash
+WECHAT2ALL_DESKTOP_RESTART=0 pnpm desktop
+```
+
+如果想彻底跳过 Codex GUI auto-open 检查：
+
+```bash
+WECHAT2ALL_DESKTOP_OPEN_CODEX=0 pnpm desktop
+```
+
 使用可见的 Codex GUI delivery：
 
 ```bash
@@ -135,8 +152,7 @@ WECHAT2ALL_CODEX_DELIVERY=gui-automation \
 pnpm desktop
 ```
 
-如果 `39787` 被占用，通常是已有 router daemon 或 desktop session 在运行。可以停掉
-旧进程，或者换一个本地端口：
+如果 `39787` 被非 wechat2all 的进程占用，可以换一个本地端口：
 
 ```bash
 WECHAT2ALL_ROUTER_PORT=39788 pnpm desktop

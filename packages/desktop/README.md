@@ -46,8 +46,24 @@ From the repo root:
 pnpm desktop
 ```
 
-This starts or reuses `@wechat2all/router-daemon`, waits for `/health`, then
-starts `tauri dev`.
+This restarts stale local wechat2all dev processes: the desktop app process,
+the router port (`39787`), and the UI port (`5173`). Then it starts a fresh
+`@wechat2all/router-daemon`, waits for `/health`, and starts `tauri dev`.
+On macOS it also runs the Codex GUI auto-open check. The check is disabled by
+default and only opens Codex after the user enables `/autoopen 1` inside the
+`codex` route.
+
+To opt back into reusing an existing daemon:
+
+```bash
+WECHAT2ALL_DESKTOP_RESTART=0 pnpm desktop
+```
+
+To skip the Codex GUI auto-open check entirely:
+
+```bash
+WECHAT2ALL_DESKTOP_OPEN_CODEX=0 pnpm desktop
+```
 
 Run only this package:
 

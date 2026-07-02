@@ -78,6 +78,9 @@ export interface CodexGuiBridgeOptions {
   transport?: CodexAppServerTransport;
   codexCommand?: string;
   socketPath?: string;
+  autoOpenConfigPath?: string;
+  alarmConfigPath?: string;
+  enableAlarmScheduler?: boolean;
   defaultThreadId?: string;
   deliveryMode?: CodexGuiDeliveryMode;
   replyMode?: CodexGuiReplyMode;
