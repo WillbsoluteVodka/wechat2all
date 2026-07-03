@@ -6,7 +6,7 @@ import { test } from "node:test";
 
 import { injectPromptIntoCodexGui } from "../src/index.js";
 
-test("GUI automation submits pasted prompts with Cmd+Return after a send delay", async () => {
+test("GUI automation clears stale input and clicks the send button after paste", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-gui-automation-"));
   const capturePath = path.join(dir, "args.json");
   const fakeOsascript = path.join(dir, "fake-osascript.mjs");
@@ -32,6 +32,8 @@ test("GUI automation submits pasted prompts with Cmd+Return after a send delay",
       threadId: "thread-1",
       threadOpenDelayMs: 900,
       sendDelayMs: 250,
+      sendButtonRightOffsetPx: 70,
+      sendButtonBottomOffsetPx: 80,
     });
   } finally {
     if (previousCapturePath === undefined) {
@@ -43,11 +45,17 @@ test("GUI automation submits pasted prompts with Cmd+Return after a send delay",
 
   const args = JSON.parse(await fs.readFile(capturePath, "utf-8")) as string[];
   assert.equal(args[0], "-e");
-  assert.match(args[1], /key code 36 using command down/);
+  assert.match(args[1], /keystroke "a" using command down/);
+  assert.match(args[1], /key code 51/);
+  assert.match(args[1], /click at \{inputClickX, inputClickY\}/);
+  assert.match(args[1], /click at \{sendClickX, sendClickY\}/);
+  assert.doesNotMatch(args[1], /key code 36 using command down/);
   assert.equal(args[2], "hello from WeChat");
   assert.equal(args[3], "Codex");
   assert.equal(args[4], "0.45");
   assert.equal(args[5], "thread-1");
   assert.equal(args[6], "0.9");
   assert.equal(args[7], "0.25");
+  assert.equal(args[8], "70");
+  assert.equal(args[9], "80");
 });
