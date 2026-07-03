@@ -1927,6 +1927,65 @@ test("WeChatRuntime skips duplicate inbound messages through a persistent dedupe
   assert.deepEqual(skipped, ["duplicate"]);
 });
 
+test("WeChatRuntime skips repeated text deliveries with different protocol ids", async () => {
+  const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-fingerprint-dedupe-"));
+  const store = new FileRuntimeStateStore({ baseDir });
+  const sent: string[] = [];
+  const skipped: string[] = [];
+  const runtime = new WeChatRuntime({
+    profiles: [
+      {
+        id: "sales",
+        credentials: {
+          accountId: "abc@im.bot",
+          token: "token",
+        },
+      },
+    ],
+    deduper: createStateStoreMessageDeduper(store),
+    connectors: [
+      createLocalConnector({
+        id: "echo",
+        handleMessage: async (message) => [
+          {
+            type: "send_text",
+            conversationId: message.conversationId,
+            text: `Echo: ${message.text ?? ""}`,
+          },
+        ],
+      }),
+    ],
+    routes: [
+      { id: "echo-text", profileId: "sales", connectorId: "echo", match: { kind: "text" } },
+    ],
+  });
+
+  runtime.on("messageSkipped", (_message, reason) => skipped.push(reason));
+  const client = runtime.getClient("sales");
+  client.sendText = async (_to: string, text: string) => {
+    sent.push(text);
+    return "client-id";
+  };
+
+  await Promise.all([
+    runtime.handleWeixinMessage("sales", {
+      message_id: 1001,
+      from_user_id: "user-1",
+      context_token: "ctx-1",
+      item_list: [{ type: MessageItemType.TEXT, text_item: { text: "same text" } }],
+    }),
+    runtime.handleWeixinMessage("sales", {
+      message_id: 1002,
+      from_user_id: "user-1",
+      context_token: "ctx-2",
+      item_list: [{ type: MessageItemType.TEXT, text_item: { text: "same text" } }],
+    }),
+  ]);
+
+  assert.deepEqual(sent, ["Echo: same text"]);
+  assert.deepEqual(skipped, ["duplicate"]);
+});
+
 test("WeChatRuntime handles message -> connector -> action -> memory", async () => {
   const sent: RuntimeAction[] = [];
   let sentContextToken: string | undefined;
