@@ -312,6 +312,24 @@ test("file runtime state store persists credentials, routes, sync buf, and proce
   assert.equal(await store.hasProcessedMessage("default", "k1"), true);
 });
 
+test("file runtime state store handles concurrent processed-message writes", async () => {
+  const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-state-concurrent-"));
+  const store = new FileRuntimeStateStore({ baseDir });
+
+  await Promise.all(Array.from({ length: 20 }, (_value, index) =>
+    store.markProcessedMessage({
+      key: `k${index}`,
+      profileId: "default",
+      messageId: `m${index}`,
+      conversationId: "u1",
+      processedAt: Date.now(),
+    })
+  ));
+
+  assert.equal(await store.hasProcessedMessage("default", "k0"), true);
+  assert.equal(await store.hasProcessedMessage("default", "k19"), true);
+});
+
 test("executes runtime actions against a WeChatClient-like object", async () => {
   const sent: string[] = [];
   const client = {

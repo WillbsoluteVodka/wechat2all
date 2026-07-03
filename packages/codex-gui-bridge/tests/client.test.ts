@@ -221,16 +221,29 @@ test("starts a turn with image attachments on the bound thread", async () => {
       id: "turn-1",
       status: "completed",
       error: null,
-      items: [{
-        type: "agentMessage",
-        id: "assistant-1",
-        text: "I can see the image.",
-        phase: "final_answer",
-      }],
+      items: [
+        {
+          type: "userMessage",
+          id: "user-image-1",
+          content: [{
+            type: "input_image",
+            image_url: "file:///tmp/wechat-image.jpg",
+            detail: "auto",
+          }],
+        },
+        {
+          type: "agentMessage",
+          id: "assistant-1",
+          text: "I can see the image.",
+          phase: "final_answer",
+        },
+      ],
     },
   });
 
-  assert.equal((await pending).finalText, "I can see the image.");
+  const result = await pending;
+  assert.equal(result.finalText, "I can see the image.");
+  assert.equal(result.outputFiles, undefined);
   assert.deepEqual(
     transport.calls.find((call) => call.method === "turn/start")?.params,
     {

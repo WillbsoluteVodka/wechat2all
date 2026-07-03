@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -43,7 +44,7 @@ async function readJson<T>(filePath: string): Promise<T | null> {
 
 async function writeJson(filePath: string, value: unknown): Promise<void> {
   await ensureDir(path.dirname(filePath));
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`;
   await fs.writeFile(tmpPath, JSON.stringify(value, null, 2), "utf-8");
   await fs.rename(tmpPath, filePath);
 }
@@ -60,6 +61,7 @@ export class FileRuntimeStateStore implements RuntimeStateStore {
   readonly baseDir: string;
   private maxProcessedMessages: number;
   private processedMessageTtlMs: number;
+  private processedMessageWrites = new Map<string, Promise<void>>();
 
   constructor(opts: FileRuntimeStateStoreOptions) {
     this.baseDir = opts.baseDir;
@@ -144,10 +146,21 @@ export class FileRuntimeStateStore implements RuntimeStateStore {
   }
 
   async markProcessedMessage(record: RuntimeProcessedMessageRecord): Promise<void> {
-    const records = await this.loadProcessedMessages(record.profileId);
-    const withoutExisting = records.filter((item) => item.key !== record.key);
-    withoutExisting.push(record);
-    await this.saveProcessedMessages(record.profileId, withoutExisting);
+    const previous = this.processedMessageWrites.get(record.profileId) ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(async () => {
+      const records = await this.loadProcessedMessages(record.profileId);
+      const withoutExisting = records.filter((item) => item.key !== record.key);
+      withoutExisting.push(record);
+      await this.saveProcessedMessages(record.profileId, withoutExisting);
+    });
+    this.processedMessageWrites.set(record.profileId, current);
+    try {
+      await current;
+    } finally {
+      if (this.processedMessageWrites.get(record.profileId) === current) {
+        this.processedMessageWrites.delete(record.profileId);
+      }
+    }
   }
 
   private async loadProcessedMessages(

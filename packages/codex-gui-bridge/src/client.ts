@@ -925,8 +925,14 @@ function outputFilesFromUnknown(
 
 function outputFilesFromItems(items: ThreadItem[]): CodexGuiOutputFile[] {
   return dedupeOutputFiles(
-    items.flatMap((item) => outputFilesFromUnknown(item, item.type ?? "item")),
+    items
+      .filter((item) => !isUserInputItem(item))
+      .flatMap((item) => outputFilesFromUnknown(item, item.type ?? "item")),
   );
+}
+
+function isUserInputItem(item: ThreadItem): boolean {
+  return typeof item.type === "string" && /^user/i.test(item.type);
 }
 
 function dedupeOutputFiles(files: CodexGuiOutputFile[]): CodexGuiOutputFile[] {
