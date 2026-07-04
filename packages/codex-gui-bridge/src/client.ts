@@ -1,6 +1,6 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 import { CodexAppServerRpc, resolveCodexExecutable } from "./app-server-rpc.js";
 import {
@@ -415,7 +415,9 @@ export class CodexGuiAppServerBridge {
     }
     const replyMode = prompt.replyMode ?? this.replyMode;
 
-    if (this.deliveryMode === "gui-automation") {
+    const shouldUseGuiAutomation = this.deliveryMode === "gui-automation" &&
+      attachments.length === 0;
+    if (shouldUseGuiAutomation) {
       return this.sendPromptViaGuiAutomation({
         id: prompt.id ?? randomUUID(),
         threadId,
@@ -817,9 +819,8 @@ function promptInputItems(
   }
   for (const attachment of attachments) {
     input.push({
-      type: "input_image",
-      image_url: pathToFileURL(attachment.filePath).href,
-      detail: "auto",
+      type: "localImage",
+      path: attachment.filePath,
     });
   }
   return input;

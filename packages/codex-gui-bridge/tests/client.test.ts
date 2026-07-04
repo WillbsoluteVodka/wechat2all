@@ -226,9 +226,8 @@ test("starts a turn with image attachments on the bound thread", async () => {
           type: "userMessage",
           id: "user-image-1",
           content: [{
-            type: "input_image",
-            image_url: "file:///tmp/wechat-image.jpg",
-            detail: "auto",
+            type: "localImage",
+            path: "/tmp/wechat-image.jpg",
           }],
         },
         {
@@ -250,9 +249,8 @@ test("starts a turn with image attachments on the bound thread", async () => {
       threadId: "thread-1",
       clientUserMessageId: "wechat-image-message-1",
       input: [{
-        type: "input_image",
-        image_url: "file:///tmp/wechat-image.jpg",
-        detail: "auto",
+        type: "localImage",
+        path: "/tmp/wechat-image.jpg",
       }],
     },
   );
@@ -517,6 +515,71 @@ test("gui-automation mode injects into Codex GUI and polls bound thread", async 
   assert.equal(
     transport.calls.some((call) => call.method === "turn/start"),
     false,
+  );
+});
+
+test("gui-automation mode sends image attachments through app-server localImage", async () => {
+  const transport = new FakeTransport();
+  let guiInjected = false;
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    deliveryMode: "gui-automation",
+    guiPollIntervalMs: 1,
+    turnTimeoutMs: 1000,
+    guiPromptInjector: async () => {
+      guiInjected = true;
+    },
+  });
+
+  await bridge.bindThread("thread-1");
+  const pending = bridge.sendPrompt({
+    id: "wechat-image-gui-mode",
+    text: "请分析这张微信图片。",
+    attachments: [{
+      kind: "image",
+      filePath: "/tmp/wechat-image.jpg",
+      fileName: "wechat-image.jpg",
+      mimeType: "image/jpeg",
+    }],
+  });
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      items: [{
+        type: "agentMessage",
+        id: "assistant-image-1",
+        text: "Image received.",
+        phase: "final_answer",
+      }],
+    },
+  });
+
+  const result = await pending;
+  assert.equal(guiInjected, false);
+  assert.equal(result.finalText, "Image received.");
+  assert.deepEqual(
+    transport.calls.find((call) => call.method === "turn/start")?.params,
+    {
+      threadId: "thread-1",
+      clientUserMessageId: "wechat-image-gui-mode",
+      input: [
+        {
+          type: "text",
+          text: "请分析这张微信图片。",
+          text_elements: [],
+        },
+        {
+          type: "localImage",
+          path: "/tmp/wechat-image.jpg",
+        },
+      ],
+    },
   );
 });
 
