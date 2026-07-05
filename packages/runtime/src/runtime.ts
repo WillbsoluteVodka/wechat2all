@@ -21,6 +21,7 @@ import type {
   MemoryScope,
   MemoryStore,
   RuntimeAction,
+  RuntimeActionResult,
   RuntimeConnector,
   RuntimeEventMap,
   RuntimeMessage,
@@ -277,6 +278,36 @@ export class WeChatRuntime extends EventEmitter implements RuntimeRouteManager {
     return findMatchingRoutes(this.routes.listRoutes(), message);
   }
 
+  private async dispatchActionsForMessage(params: {
+    client: WeChatClient;
+    message: RuntimeMessage;
+    memoryScope: MemoryScope;
+    actions: RuntimeAction[];
+  }): Promise<RuntimeActionResult[]> {
+    const actionsWithContext = params.actions.map((action) =>
+      withDefaultContextToken(action, params.message.replyToken?.contextToken),
+    );
+    const results = await this.actionQueue.executeBatch({
+      client: params.client,
+      actions: actionsWithContext,
+      options: this.actionExecutorOptions,
+    });
+    this.emit("actions", params.message, results);
+
+    for (const result of results) {
+      if (result.ok && !result.deduped && result.action.type === "send_text") {
+        await this.memory.appendMessage(createMemoryMessage({
+          scope: params.memoryScope,
+          role: "assistant",
+          content: result.action.text,
+          sourceMessageId: params.message.id,
+        }));
+      }
+    }
+
+    return results;
+  }
+
   async handleWeixinMessage(
     profileId: string,
     msg: WeixinMessage,
@@ -326,6 +357,12 @@ export class WeChatRuntime extends EventEmitter implements RuntimeRouteManager {
           routes: this,
           media: this.media,
           tts: this.tts,
+          dispatchActions: (nextActions) => this.dispatchActionsForMessage({
+            client: profile.client,
+            message,
+            memoryScope,
+            actions: nextActions,
+          }),
         });
       } catch (err) {
         this.emit("error", err instanceof Error ? err : new Error(String(err)), {
@@ -335,26 +372,12 @@ export class WeChatRuntime extends EventEmitter implements RuntimeRouteManager {
         continue;
       }
 
-      const actionsWithContext = actions.map((action) =>
-        withDefaultContextToken(action, message.replyToken?.contextToken),
-      );
-      const results = await this.actionQueue.executeBatch({
+      await this.dispatchActionsForMessage({
         client: profile.client,
-        actions: actionsWithContext,
-        options: this.actionExecutorOptions,
+        message,
+        memoryScope,
+        actions,
       });
-      this.emit("actions", message, results);
-
-      for (const result of results) {
-        if (result.ok && !result.deduped && result.action.type === "send_text") {
-          await this.memory.appendMessage(createMemoryMessage({
-            scope: memoryScope,
-            role: "assistant",
-            content: result.action.text,
-            sourceMessageId: message.id,
-          }));
-        }
-      }
     }
   }
 }

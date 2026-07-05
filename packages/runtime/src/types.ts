@@ -158,6 +158,7 @@ export interface RuntimeHandlerContext {
   routes: RuntimeRouteManager;
   media?: RuntimeMediaPipeline;
   tts?: RuntimeTTSProvider;
+  dispatchActions?: (actions: RuntimeAction[]) => Promise<RuntimeActionResult[]>;
 }
 
 export type RuntimeHandler = (

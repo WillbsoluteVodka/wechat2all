@@ -32,12 +32,95 @@ import type {
   AgentMemoryAppendTurnParams,
   AgentMemoryProvider,
   RuntimeAction,
+  RuntimeHandlerContext,
   RuntimeMessage,
   RuntimeRoute,
 } from "../src/index.js";
 
 import { MessageItemType, MessageType } from "wechat2all";
 import type { WeChatClient } from "wechat2all";
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function codexTestContext(params: {
+  client?: WeChatClient;
+  media?: RuntimeMediaPipeline;
+  dispatchActions?: RuntimeHandlerContext["dispatchActions"];
+} = {}): RuntimeHandlerContext {
+  return {
+    profileId: "main",
+    connectorId: "codex-bridge",
+    client: params.client ?? {} as WeChatClient,
+    memory: new InMemoryMemoryStore(),
+    memoryScope: { profileId: "main", connectorId: "codex-bridge", conversationId: "user-1" },
+    route: { id: "codex", connectorId: "codex-bridge" },
+    routes: new RuntimeRouteRegistry(),
+    media: params.media,
+    dispatchActions: params.dispatchActions,
+  };
+}
+
+function codexImageMessage(params: {
+  id?: string;
+  imageId?: string;
+  conversationId?: string;
+  senderId?: string;
+  size?: number;
+} = {}): RuntimeMessage {
+  const imageId = params.imageId ?? params.id ?? "image-1";
+  return {
+    id: params.id ?? imageId,
+    platform: "wechat-ilink",
+    profileId: "main",
+    conversationId: params.conversationId ?? "user-1",
+    senderId: params.senderId ?? "user-1",
+    timestamp: 1,
+    kind: "image",
+    attachments: [{
+      id: imageId,
+      kind: "image",
+      size: params.size ?? 5,
+      raw: {
+        type: MessageItemType.IMAGE,
+        msg_id: imageId,
+        image_item: { mid_size: params.size ?? 5 },
+      },
+    }],
+    raw: {},
+  };
+}
+
+function codexTextMessage(text: string, id = "m-text"): RuntimeMessage {
+  return {
+    id,
+    platform: "wechat-ilink",
+    profileId: "main",
+    conversationId: "user-1",
+    senderId: "user-1",
+    timestamp: 1,
+    kind: "text",
+    text,
+    attachments: [],
+    raw: {},
+  };
+}
+
+function imageDownloadClient(params: {
+  fileName?: string;
+  data?: string;
+} = {}): WeChatClient {
+  return {
+    async downloadMedia() {
+      return {
+        kind: "image",
+        fileName: params.fileName ?? "wechat-photo.jpg",
+        data: Buffer.from(params.data ?? "image"),
+      };
+    },
+  } as unknown as WeChatClient;
+}
 
 test("cliPanel uses a tight ASCII header", () => {
   assert.equal(
@@ -346,6 +429,54 @@ test("executes runtime actions against a WeChatClient-like object", async () => 
 
   assert.equal(results[0].ok, true);
   assert.deepEqual(sent, ["user-1:hi"]);
+});
+
+test("runtime exposes async action dispatch to connectors", async () => {
+  const sent: string[] = [];
+  const runtime = new WeChatRuntime({
+    profiles: [
+      {
+        id: "main",
+        credentials: {
+          accountId: "abc@im.bot",
+          token: "token",
+        },
+      },
+    ],
+    connectors: [{
+      id: "async-dispatch",
+      async handleMessage(message, context) {
+        await context.dispatchActions?.([{
+          type: "send_text",
+          conversationId: message.conversationId,
+          text: "async reminder",
+        }]);
+        return [{ type: "noop", reason: "done" }];
+      },
+    }],
+    routes: [
+      {
+        id: "async-route",
+        profileId: "main",
+        connectorId: "async-dispatch",
+        terminal: true,
+      },
+    ],
+  });
+  const client = runtime.getClient("main");
+  client.sendText = async (_to: string, text: string) => {
+    sent.push(text);
+    return "client-id";
+  };
+
+  await runtime.handleWeixinMessage("main", {
+    message_id: 200,
+    from_user_id: "user-1",
+    context_token: "ctx",
+    item_list: [{ type: MessageItemType.TEXT, text_item: { text: "hello" } }],
+  });
+
+  assert.deepEqual(sent, ["async reminder"]);
 });
 
 test("runtime action queue retries failures and can dedupe successful actions", async () => {
@@ -1113,11 +1244,12 @@ test("codex connector binds a GUI thread by /ls index and sends ordinary text to
   assert.match((sendActions[0] as { text: string }).text, /Turn ID: turn-1/);
 });
 
-test("codex connector forwards cached WeChat images to the GUI bridge", async () => {
+test("codex connector caches WeChat images and forwards them with the next text request", async () => {
   const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-image-"));
   let sentPrompt: unknown;
   const connector = createCodexConnector({
     id: "codex-bridge",
+    imagePromptReminderMs: 1_000,
     client: {
       async getStatus() {
         return { state: "idle" };
@@ -1141,63 +1273,366 @@ test("codex connector forwards cached WeChat images to the GUI bridge", async ()
       },
     },
   });
-  const rawImage = {
-    type: MessageItemType.IMAGE,
-    msg_id: "image-1",
-    image_item: { mid_size: 5 },
-  };
-  const client = {
-    async downloadMedia() {
-      return {
-        kind: "image",
-        fileName: "wechat-photo.jpg",
-        data: Buffer.from("image"),
-      };
-    },
-  } as unknown as WeChatClient;
-  const message: RuntimeMessage = {
-    id: "m-image",
-    platform: "wechat-ilink",
-    profileId: "main",
-    conversationId: "user-1",
-    senderId: "user-1",
-    timestamp: 1,
-    kind: "image",
-    attachments: [{
-      id: "image-1",
-      kind: "image",
-      size: 5,
-      raw: rawImage,
-    }],
-    raw: {},
-  };
-
-  const actions = await connector.handleMessage(message, {
-    profileId: "main",
-    connectorId: "codex-bridge",
-    client,
-    memory: new InMemoryMemoryStore(),
-    memoryScope: { profileId: "main", connectorId: "codex-bridge", conversationId: "user-1" },
-    route: { id: "codex", connectorId: "codex-bridge" },
-    routes: new RuntimeRouteRegistry(),
+  const context = codexTestContext({
+    client: imageDownloadClient(),
     media: new RuntimeMediaPipeline({ cacheDir }),
   });
 
-  assert.equal((sentPrompt as { text: string }).text, "请分析这张微信图片。");
-  const attachments = (sentPrompt as { attachments: Array<{ filePath: string; kind: string }> })
-    .attachments;
+  const imageActions = await connector.handleMessage(codexImageMessage({ id: "m-image" }), context);
+  assert.deepEqual(imageActions, [{
+    type: "noop",
+    reason: "codex image cached; waiting for text request",
+  }]);
+  assert.equal(sentPrompt, undefined);
+
+  const actions = await connector.handleMessage(
+    codexTextMessage("这张图里是什么？", "m-text"),
+    context,
+  );
+
+  assert.notEqual(sentPrompt, undefined);
+  const prompt = sentPrompt as unknown as {
+    text: string;
+    attachments: Array<{ filePath: string; kind: string; fileName?: string }>;
+  };
+  assert.equal(prompt.text, "这张图里是什么？");
+  const attachments = prompt.attachments;
   assert.equal(attachments[0].kind, "image");
   assert.match(attachments[0].filePath, /\.jpg$/);
-  assert.equal(
-    (sentPrompt as { attachments: Array<{ fileName?: string }> }).attachments[0].fileName,
-    "wechat-photo.jpg",
-  );
+  assert.equal(prompt.attachments[0].fileName, "wechat-photo.jpg");
   assert.equal(await fs.readFile(attachments[0].filePath, "utf-8"), "image");
   assert.deepEqual(actions, [{
     type: "send_text",
     conversationId: "user-1",
     text: "image received",
   }]);
+});
+
+test("codex connector reminds once when cached images wait without text", async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-reminder-"));
+  let sentPrompt: unknown;
+  const reminderActions: RuntimeAction[] = [];
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    imagePromptReminderMs: 10,
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        sentPrompt = prompt;
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          finalText: "image received",
+        };
+      },
+    },
+  });
+  const context = codexTestContext({
+    client: imageDownloadClient(),
+    media: new RuntimeMediaPipeline({ cacheDir }),
+    async dispatchActions(actions) {
+      reminderActions.push(...actions);
+      return actions.map((action) => ({ action, ok: true }));
+    },
+  });
+
+  await connector.handleMessage(codexImageMessage({ id: "m-image" }), context);
+  await sleepMs(25);
+
+  assert.deepEqual(reminderActions, [{
+    type: "send_text",
+    conversationId: "user-1",
+    text: "请问想对图片做什么操作？",
+  }]);
+  assert.equal(sentPrompt, undefined);
+
+  const actions = await connector.handleMessage(
+    codexTextMessage("帮我分析这张图", "m-text"),
+    context,
+  );
+
+  assert.notEqual(sentPrompt, undefined);
+  const prompt = sentPrompt as unknown as { text: string; attachments: Array<{ kind: string }> };
+  assert.equal(prompt.text, "帮我分析这张图");
+  assert.equal(prompt.attachments[0].kind, "image");
+  assert.deepEqual(actions, [{
+    type: "send_text",
+    conversationId: "user-1",
+    text: "image received",
+  }]);
+});
+
+test("codex connector resets image reminder timer and sends multiple images with next text", async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-multi-image-"));
+  const reminderActions: RuntimeAction[] = [];
+  let sentPrompt: unknown;
+  let downloadCount = 0;
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    imagePromptReminderMs: 50,
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        sentPrompt = prompt;
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          finalText: "two images received",
+        };
+      },
+    },
+  });
+  const context = codexTestContext({
+    client: {
+      async downloadMedia() {
+        downloadCount += 1;
+        return {
+          kind: "image",
+          fileName: `wechat-photo-${downloadCount}.jpg`,
+          data: Buffer.from(`image-${downloadCount}`),
+        };
+      },
+    } as unknown as WeChatClient,
+    media: new RuntimeMediaPipeline({ cacheDir }),
+    async dispatchActions(actions) {
+      reminderActions.push(...actions);
+      return actions.map((action) => ({ action, ok: true }));
+    },
+  });
+
+  await connector.handleMessage(codexImageMessage({ id: "m-image-1" }), context);
+  await sleepMs(20);
+  await connector.handleMessage(codexImageMessage({ id: "m-image-2", imageId: "image-2" }), context);
+  await sleepMs(40);
+  assert.deepEqual(reminderActions, []);
+
+  const actions = await connector.handleMessage(
+    codexTextMessage("比较这两张图", "m-text"),
+    context,
+  );
+
+  assert.equal((sentPrompt as { text: string }).text, "比较这两张图");
+  const attachments = (sentPrompt as { attachments: Array<{ fileName?: string }> }).attachments;
+  assert.deepEqual(attachments.map((attachment) => attachment.fileName), [
+    "wechat-photo-1.jpg",
+    "wechat-photo-2.jpg",
+  ]);
+  assert.deepEqual(actions, [{
+    type: "send_text",
+    conversationId: "user-1",
+    text: "two images received",
+  }]);
+});
+
+test("codex connector commands do not consume pending images", async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-command-pending-"));
+  let sentPrompt: unknown;
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    imagePromptReminderMs: 1_000,
+    client: {
+      async getStatus() {
+        return {
+          state: "idle",
+          currentThreadId: "thread-1",
+          currentProject: "wechat2all",
+          updatedAt: 42,
+        };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        sentPrompt = prompt;
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          finalText: "image consumed",
+        };
+      },
+    },
+  });
+  const context = codexTestContext({
+    client: imageDownloadClient(),
+    media: new RuntimeMediaPipeline({ cacheDir }),
+  });
+
+  await connector.handleMessage(codexImageMessage({ id: "m-image" }), context);
+  const statusActions = await connector.handleMessage(codexTextMessage("/status", "m-status"), context);
+  assert.match((statusActions[0] as { text: string }).text, /◆ Codex - Status/);
+  assert.equal(sentPrompt, undefined);
+
+  const textActions = await connector.handleMessage(
+    codexTextMessage("现在分析这张图", "m-text"),
+    context,
+  );
+  assert.notEqual(sentPrompt, undefined);
+  const prompt = sentPrompt as unknown as { text: string; attachments: unknown[] };
+  assert.equal(prompt.text, "现在分析这张图");
+  assert.equal(prompt.attachments.length, 1);
+  assert.deepEqual(textActions, [{
+    type: "send_text",
+    conversationId: "user-1",
+    text: "image consumed",
+  }]);
+});
+
+test("codex connector clears pending images when returning to the main router", async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-cd-clear-"));
+  let sentPrompt: unknown;
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    imagePromptReminderMs: 1_000,
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        sentPrompt = prompt;
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+        };
+      },
+    },
+  });
+  const context = codexTestContext({
+    client: imageDownloadClient(),
+    media: new RuntimeMediaPipeline({ cacheDir }),
+  });
+
+  await connector.handleMessage(codexImageMessage({ id: "m-image" }), context);
+  await connector.handleMessage(codexTextMessage("/cd ..", "m-cd"), context);
+  await connector.handleMessage(codexTextMessage("图片还在吗", "m-text"), context);
+
+  assert.equal((sentPrompt as { text: string }).text, "图片还在吗");
+  assert.equal((sentPrompt as { attachments?: unknown[] }).attachments, undefined);
+});
+
+test("codex connector keeps the first cached images when the image limit is exceeded", async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-image-limit-"));
+  let sentPrompt: unknown;
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    imageMaxCount: 1,
+    imagePromptReminderMs: 1_000,
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        sentPrompt = prompt;
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          finalText: "one image received",
+        };
+      },
+    },
+  });
+  const context = codexTestContext({
+    client: imageDownloadClient(),
+    media: new RuntimeMediaPipeline({ cacheDir }),
+  });
+
+  await connector.handleMessage(codexImageMessage({ id: "m-image-1" }), context);
+  const overflowActions = await connector.handleMessage(
+    codexImageMessage({ id: "m-image-2", imageId: "image-2" }),
+    context,
+  );
+
+  assert.match((overflowActions[0] as { text: string }).text, /最多缓存 1 张图片/);
+
+  await connector.handleMessage(codexTextMessage("分析保留的图", "m-text"), context);
+  assert.equal((sentPrompt as { attachments: unknown[] }).attachments.length, 1);
+});
+
+test("codex connector expires pending images before a late text request", async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-image-expiry-"));
+  let sentPrompt: unknown;
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    imagePromptReminderMs: 1_000,
+    imagePendingTtlMs: 5,
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        sentPrompt = prompt;
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+        };
+      },
+    },
+  });
+  const context = codexTestContext({
+    client: imageDownloadClient(),
+    media: new RuntimeMediaPipeline({ cacheDir }),
+  });
+
+  await connector.handleMessage(codexImageMessage({ id: "m-image" }), context);
+  await sleepMs(15);
+  await connector.handleMessage(codexTextMessage("这条文字不应该带旧图", "m-text"), context);
+
+  assert.equal((sentPrompt as { text: string }).text, "这条文字不应该带旧图");
+  assert.equal((sentPrompt as { attachments?: unknown[] }).attachments, undefined);
 });
 
 test("codex connector sends Codex output images back to WeChat", async () => {

@@ -147,7 +147,23 @@ export interface CodexConnectorOptions {
   commandPrefixes?: string[];
   tokenUsageReader?: CodexTokenUsageReader;
   replyMode?: CodexReplyMode;
+  imagePromptReminderMs?: number;
+  imagePendingTtlMs?: number;
+  imageMaxCount?: number;
 }
+
+interface PendingImageState {
+  attachments: CodexBridgePromptAttachment[];
+  sourceMessageId: string;
+  updatedAt: number;
+  timer?: ReturnType<typeof setTimeout>;
+  timerVersion: number;
+}
+
+const DEFAULT_IMAGE_PROMPT_REMINDER_MS = 15_000;
+const DEFAULT_IMAGE_PENDING_TTL_MS = 30 * 60_000;
+const DEFAULT_IMAGE_MAX_COUNT = 9;
+const IMAGE_PROMPT_REMINDER_TEXT = "请问想对图片做什么操作？";
 
 function messageText(message: RuntimeMessage): string {
   return message.text?.trim() ?? "";
@@ -236,6 +252,56 @@ function bindCacheKey(message: RuntimeMessage): string {
 
 function conversationQueueKey(message: RuntimeMessage): string {
   return `${message.profileId}\u0000${message.conversationId}`;
+}
+
+function pendingImageKey(message: RuntimeMessage): string {
+  return `${message.profileId}\u0000${message.conversationId}\u0000${message.senderId}`;
+}
+
+function clearPendingImageState(
+  pendingImages: Map<string, PendingImageState>,
+  key: string,
+): void {
+  const state = pendingImages.get(key);
+  if (state?.timer) clearTimeout(state.timer);
+  pendingImages.delete(key);
+}
+
+function freshPendingImageState(
+  pendingImages: Map<string, PendingImageState>,
+  key: string,
+  ttlMs: number,
+): PendingImageState | undefined {
+  const state = pendingImages.get(key);
+  if (!state) return undefined;
+  if (Date.now() - state.updatedAt <= ttlMs) return state;
+  clearPendingImageState(pendingImages, key);
+  return undefined;
+}
+
+function schedulePendingImageReminder(params: {
+  pendingImages: Map<string, PendingImageState>;
+  key: string;
+  message: RuntimeMessage;
+  context: RuntimeHandlerContext;
+  delayMs: number;
+}): void {
+  const state = params.pendingImages.get(params.key);
+  if (!state) return;
+  if (state.timer) clearTimeout(state.timer);
+  state.timerVersion += 1;
+  const timerVersion = state.timerVersion;
+  state.timer = setTimeout(() => {
+    const latest = params.pendingImages.get(params.key);
+    if (!latest || latest.timerVersion !== timerVersion) return;
+    latest.timer = undefined;
+    const dispatched = params.context.dispatchActions?.(textAction(
+      params.message,
+      IMAGE_PROMPT_REMINDER_TEXT,
+    ));
+    void dispatched?.catch(() => undefined);
+  }, params.delayMs);
+  state.timer.unref?.();
 }
 
 function enqueueConversationTask<T>(
@@ -551,12 +617,8 @@ async function promptAttachmentsForMessage(
   return images;
 }
 
-function promptTextForMessage(
-  text: string,
-  attachments: CodexBridgePromptAttachment[],
-): string {
+function promptTextForMessage(text: string): string {
   if (text) return text;
-  if (attachments.length) return "请分析这张微信图片。";
   return "";
 }
 
@@ -623,6 +685,13 @@ function codexOk(title: string, lines: Array<string | undefined>): string {
   ]);
 }
 
+function imageLimitError(maxCount: number): string {
+  return codexError("image limit", [
+    `当前最多缓存 ${maxCount} 张图片。`,
+    `已保留前 ${maxCount} 张图片，请直接发送文字要求。`,
+  ]);
+}
+
 async function resolveBindTarget(
   client: CodexBridgeClient,
   bindTarget: string,
@@ -683,11 +752,16 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
   let replyMode: CodexReplyMode = opts.replyMode ?? "final";
   const cachedBindableThreads = new Map<string, CodexBridgeThread[]>();
   const conversationQueues = new Map<string, Promise<void>>();
+  const pendingImages = new Map<string, PendingImageState>();
+  const imagePromptReminderMs = opts.imagePromptReminderMs ?? DEFAULT_IMAGE_PROMPT_REMINDER_MS;
+  const imagePendingTtlMs = opts.imagePendingTtlMs ?? DEFAULT_IMAGE_PENDING_TTL_MS;
+  const imageMaxCount = opts.imageMaxCount ?? DEFAULT_IMAGE_MAX_COUNT;
   return {
     id: opts.id,
     name: opts.name ?? "Codex Bridge",
     async handleMessage(message, context: RuntimeHandlerContext) {
       if (message.text?.trim() === "/cd ..") {
+        clearPendingImageState(pendingImages, pendingImageKey(message));
         context.routes.clearConversationRoute(message.profileId, message.conversationId);
         return textAction(
           message,
@@ -856,7 +930,53 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
         const detail = error instanceof Error ? error.message : String(error);
         return textAction(message, codexError("media failed", [detail]));
       }
-      const promptText = promptTextForMessage(text, promptAttachments);
+      const imageKey = pendingImageKey(message);
+      const currentPending = freshPendingImageState(
+        pendingImages,
+        imageKey,
+        imagePendingTtlMs,
+      );
+
+      if (!text && promptAttachments.length > 0) {
+        const state = currentPending ?? {
+          attachments: [],
+          sourceMessageId: message.id,
+          updatedAt: Date.now(),
+          timerVersion: 0,
+        };
+        const remainingSlots = imageMaxCount - state.attachments.length;
+        const acceptedAttachments = promptAttachments.slice(0, Math.max(0, remainingSlots));
+        if (acceptedAttachments.length > 0) {
+          state.attachments.push(...acceptedAttachments);
+          state.sourceMessageId = message.id;
+          state.updatedAt = Date.now();
+          pendingImages.set(imageKey, state);
+          schedulePendingImageReminder({
+            pendingImages,
+            key: imageKey,
+            message,
+            context,
+            delayMs: imagePromptReminderMs,
+          });
+        }
+        if (acceptedAttachments.length < promptAttachments.length) {
+          return textAction(message, imageLimitError(imageMaxCount));
+        }
+        return [{ type: "noop", reason: "codex image cached; waiting for text request" }];
+      }
+
+      const pendingForText = text
+        ? freshPendingImageState(pendingImages, imageKey, imagePendingTtlMs)
+        : undefined;
+      const mergedAttachments = [
+        ...(pendingForText?.attachments ?? []),
+        ...promptAttachments,
+      ];
+      if (mergedAttachments.length > imageMaxCount) {
+        return textAction(message, imageLimitError(imageMaxCount));
+      }
+
+      const promptText = promptTextForMessage(text);
       if (!promptText && promptAttachments.length === 0) {
         return textAction(
           message,
@@ -874,7 +994,7 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
         conversationId: message.conversationId,
         senderId: message.senderId,
         text: promptText,
-        attachments: promptAttachments.length ? promptAttachments : undefined,
+        attachments: mergedAttachments.length ? mergedAttachments : undefined,
         sourceMessageId: message.id,
         contextToken: message.replyToken?.contextToken,
         routeId: context.route.id,
@@ -900,6 +1020,7 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
           ]),
         );
       }
+      if (pendingForText) clearPendingImageState(pendingImages, imageKey);
       if (replyMode === "silent" && result.threadId) {
         return textAction(
           message,
