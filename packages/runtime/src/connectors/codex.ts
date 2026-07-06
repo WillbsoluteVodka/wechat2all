@@ -576,14 +576,53 @@ function mediaActions(
     }));
 }
 
+const MARKDOWN_IMAGE_REFERENCE_PATTERN = /!\[[^\]]*]\(([^)\]]+)\)/g;
+const FILE_URL_REFERENCE_PATTERN = /file:\/\/[^\s)\]]+/g;
+
+function fileUrlForPath(filePath: string): string {
+  return `file://${filePath}`;
+}
+
+function stripCodexOutputImageReferences(
+  text: string | undefined,
+  outputFiles: CodexBridgeOutputFile[] | undefined,
+): string | undefined {
+  if (!text?.trim() || !outputFiles?.length) return text;
+  const outputPaths = new Set(
+    outputFiles
+      .filter((file) => file.kind === "image")
+      .flatMap((file) => [file.filePath, fileUrlForPath(file.filePath)]),
+  );
+  const withoutMarkdownImages = text.replace(
+    MARKDOWN_IMAGE_REFERENCE_PATTERN,
+    (match, rawUrl: string) => outputPaths.has(rawUrl.trim()) ? "" : match,
+  );
+  const withoutFileUrls = withoutMarkdownImages.replace(
+    FILE_URL_REFERENCE_PATTERN,
+    (match) => outputPaths.has(match.trim()) ? "" : match,
+  );
+  const withoutRawPaths = [...outputPaths].reduce(
+    (current, value) => value.startsWith("file://")
+      ? current
+      : current.split(value).join(""),
+    withoutFileUrls,
+  );
+  const cleaned = withoutRawPaths
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return cleaned || undefined;
+}
+
 function textAndMediaActions(
   message: RuntimeMessage,
   text: string | undefined,
   outputFiles: CodexBridgeOutputFile[] | undefined,
 ): RuntimeAction[] {
+  const cleanedText = stripCodexOutputImageReferences(text, outputFiles);
   return [
-    ...(text?.trim()
-      ? textAction(message, text)
+    ...(cleanedText
+      ? textAction(message, cleanedText)
       : []),
     ...mediaActions(message, outputFiles),
   ];

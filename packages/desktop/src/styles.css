@@ -101,6 +101,98 @@ input:focus-visible {
   mix-blend-mode: screen;
 }
 
+.window-drag-region {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 92px;
+  z-index: 18;
+  display: block;
+  height: 42px;
+  cursor: default;
+}
+
+.startup-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  width: 100vw;
+  height: 100vh;
+  place-items: center;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  color: rgb(248, 251, 248);
+  background: #000;
+  cursor: pointer;
+  font: inherit;
+  text-align: center;
+  touch-action: manipulation;
+  user-select: none;
+}
+
+.startup-gate:focus-visible {
+  outline: 1px solid oklch(0.82 0.13 154 / 0.72);
+  outline-offset: -8px;
+}
+
+.startup-gate-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.startup-gate-copy {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: min(94vw, 1180px);
+  padding: 32px 20px;
+  place-items: center;
+  opacity: 1;
+  pointer-events: none;
+}
+
+.startup-gate-title {
+  display: block;
+  max-width: 100%;
+  color: rgb(248, 251, 248);
+  font-size: 2.65rem;
+  font-weight: 520;
+  letter-spacing: 0;
+  line-height: 0.94;
+  overflow-wrap: anywhere;
+  text-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.22),
+    0 14px 38px rgba(0, 0, 0, 0.72),
+    0 0 48px rgba(238, 255, 242, 0.1);
+  text-wrap: balance;
+}
+
+@media (min-width: 640px) {
+  .startup-gate-copy {
+    padding: 44px 28px;
+  }
+
+  .startup-gate-title {
+    font-size: 5rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  .startup-gate-title {
+    font-size: 6rem;
+  }
+}
+
+@media (max-width: 380px) {
+  .startup-gate-title {
+    font-size: 2.35rem;
+  }
+}
+
 .empty-shell {
   align-items: center;
   justify-content: center;
@@ -209,7 +301,7 @@ input:focus-visible {
 .sidebar {
   width: 282px;
   flex: 0 0 auto;
-  padding: 22px 16px;
+  padding: 52px 16px 22px;
   border-right: 1px solid oklch(0.75 0.018 165 / 0.18);
   background:
     linear-gradient(180deg, oklch(0.11 0.01 175 / 0.96), oklch(0.055 0.008 190 / 0.98)),

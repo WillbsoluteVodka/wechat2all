@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type KeyboardEvent,
   type PointerEvent,
 } from "react";
 import QRCode from "qrcode";
@@ -34,6 +35,264 @@ const pages: Array<{ key: PageKey; label: string; hint: string }> = [
 ];
 
 type RouteCardStyle = CSSProperties & Record<"--route-signal" | "--route-delay", string>;
+
+function StartupGate(props: { onEnter: () => void }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return undefined;
+
+    const canvasElement = canvas;
+    const gl = canvasElement.getContext("webgl", {
+      antialias: true,
+      powerPreference: "high-performance",
+      preserveDrawingBuffer: true,
+    });
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+    if (!gl) {
+      return undefined;
+    }
+    const glContext = gl;
+
+    const vertexShaderSource = `
+      attribute vec2 position;
+
+      void main() {
+        gl_Position = vec4(position, 0.0, 1.0);
+      }
+    `;
+
+    const fragmentShaderSource = `
+      #define TWO_PI 6.2831853072
+      #define PI 3.14159265359
+
+      precision highp float;
+      uniform vec2 resolution;
+      uniform float time;
+
+      void main(void) {
+        vec2 uv = (gl_FragCoord.xy * 2.0 - resolution.xy) / min(resolution.x, resolution.y);
+        float t = time * 0.05;
+        float lineWidth = 0.002;
+
+        vec3 energy = vec3(0.0);
+        for (int j = 0; j < 3; j++) {
+          for (int i = 0; i < 5; i++) {
+            energy[j] += lineWidth * float(i * i) / abs(
+              fract(t - 0.01 * float(j) + float(i) * 0.01) * 5.0
+              - length(uv)
+              + mod(uv.x + uv.y, 0.2)
+            );
+          }
+        }
+
+        float glow = max(max(energy.r, energy.g), energy.b);
+        float edge = smoothstep(0.025, 0.55, glow);
+        float hotEdge = smoothstep(0.68, 2.05, glow);
+        float intensity = smoothstep(0.0, 0.78, glow);
+        float metalBand = smoothstep(0.02, 0.34, energy.r + energy.b);
+        vec3 channels = 1.0 - exp(-energy * vec3(0.95, 1.45, 1.08));
+        vec3 channelEdges = smoothstep(vec3(0.008), vec3(0.58), energy);
+        vec3 softChannels = smoothstep(vec3(0.002), vec3(0.28), energy);
+
+        vec3 black = vec3(0.0);
+        vec3 graphite = vec3(0.035, 0.039, 0.038);
+        vec3 brushedSilver = vec3(0.52, 0.54, 0.53);
+        vec3 chromeWhite = vec3(0.88, 0.89, 0.86);
+        vec3 metallicGreen = vec3(0.1098, 0.8314, 0.3373);
+        vec3 coldSilver = vec3(0.73, 0.86, 0.78);
+        vec3 paleGreenWhite = vec3(0.82, 1.0, 0.88);
+
+        vec3 metal = graphite * edge * 0.18;
+        metal += brushedSilver * channelEdges.r * 0.82;
+        metal += metallicGreen * channelEdges.g * 0.96;
+        metal += coldSilver * channelEdges.b * 0.74;
+        metal += paleGreenWhite * channelEdges.b * channelEdges.g * 0.46;
+        metal += vec3(0.045, 0.09, 0.055) * metalBand;
+        vec3 softHaze = brushedSilver * softChannels.r * 0.16;
+        softHaze += metallicGreen * softChannels.g * 0.17;
+        softHaze += coldSilver * softChannels.b * 0.14;
+        softHaze *= 1.0 - hotEdge * 0.38;
+
+        float greenHint = smoothstep(0.18, 1.35, energy.g)
+          * smoothstep(0.25, 1.3, glow)
+          * (0.11 + hotEdge * 0.08);
+        float whiteCore = smoothstep(0.55, 1.65, channels.r + channels.g + channels.b);
+        vec3 finalColor = vec3(0.004, 0.014, 0.008);
+        finalColor += metal * (0.12 + intensity * 0.68);
+        finalColor += softHaze;
+        finalColor += metallicGreen * greenHint;
+        finalColor = mix(finalColor, chromeWhite, whiteCore * 0.14 + hotEdge * 0.08);
+        finalColor *= 0.7 + hotEdge * 0.1;
+        finalColor = clamp(finalColor, black, vec3(1.0));
+
+        gl_FragColor = vec4(finalColor, 1.0);
+      }
+    `;
+
+    function createShader(type: number, source: string) {
+      const shader = glContext.createShader(type);
+      if (!shader) return null;
+      glContext.shaderSource(shader, source);
+      glContext.compileShader(shader);
+
+      if (!glContext.getShaderParameter(shader, glContext.COMPILE_STATUS)) {
+        console.error(glContext.getShaderInfoLog(shader));
+        glContext.deleteShader(shader);
+        return null;
+      }
+
+      return shader;
+    }
+
+    const vertexShader = createShader(glContext.VERTEX_SHADER, vertexShaderSource);
+    const fragmentShader = createShader(glContext.FRAGMENT_SHADER, fragmentShaderSource);
+    const program = glContext.createProgram();
+
+    if (!vertexShader || !fragmentShader || !program) {
+      return undefined;
+    }
+
+    glContext.attachShader(program, vertexShader);
+    glContext.attachShader(program, fragmentShader);
+    glContext.linkProgram(program);
+
+    if (!glContext.getProgramParameter(program, glContext.LINK_STATUS)) {
+      console.error(glContext.getProgramInfoLog(program));
+      glContext.deleteProgram(program);
+      glContext.deleteShader(vertexShader);
+      glContext.deleteShader(fragmentShader);
+      return undefined;
+    }
+
+    const positionLocation = glContext.getAttribLocation(program, "position");
+    const resolutionLocation = glContext.getUniformLocation(program, "resolution");
+    const timeLocation = glContext.getUniformLocation(program, "time");
+    const positionBuffer = glContext.createBuffer();
+    let animationId = 0;
+    let width = 1;
+    let height = 1;
+
+    glContext.bindBuffer(glContext.ARRAY_BUFFER, positionBuffer);
+    glContext.bufferData(
+      glContext.ARRAY_BUFFER,
+      new Float32Array([
+        -1, -1,
+        1, -1,
+        -1, 1,
+        -1, 1,
+        1, -1,
+        1, 1,
+      ]),
+      glContext.STATIC_DRAW,
+    );
+
+    function resize() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const rect = canvasElement.getBoundingClientRect();
+      width = Math.max(1, Math.floor(rect.width * dpr));
+      height = Math.max(1, Math.floor(rect.height * dpr));
+      canvasElement.width = width;
+      canvasElement.height = height;
+      glContext.viewport(0, 0, width, height);
+    }
+
+    function render(shaderTime: number) {
+      glContext.useProgram(program);
+      glContext.bindBuffer(glContext.ARRAY_BUFFER, positionBuffer);
+      glContext.enableVertexAttribArray(positionLocation);
+      glContext.vertexAttribPointer(positionLocation, 2, glContext.FLOAT, false, 0, 0);
+      glContext.uniform2f(resolutionLocation, width, height);
+      glContext.uniform1f(timeLocation, shaderTime);
+      glContext.drawArrays(glContext.TRIANGLES, 0, 6);
+    }
+
+    const startedAt = performance.now();
+    const shaderSecondsPerSecond = 1.5;
+
+    function scheduleFrame(callback: (now: number) => void) {
+      if (typeof window.requestAnimationFrame === "function") {
+        return window.requestAnimationFrame(callback);
+      }
+
+      return window.setTimeout(() => {
+        callback(performance.now());
+      }, 1000 / 60);
+    }
+
+    function cancelScheduledFrame(id: number) {
+      if (typeof window.cancelAnimationFrame === "function") {
+        window.cancelAnimationFrame(id);
+        return;
+      }
+
+      window.clearTimeout(id);
+    }
+
+    function animate(now = performance.now()) {
+      animationId = scheduleFrame(animate);
+      const shaderTime = 1.0 + ((now - startedAt) / 1000) * shaderSecondsPerSecond;
+      render(shaderTime);
+    }
+
+    const resizeObserver = new ResizeObserver(resize);
+    resizeObserver.observe(canvasElement);
+    window.addEventListener("resize", resize);
+
+    resize();
+    if (reduceMotion.matches) {
+      render(1.0);
+    } else {
+      animate();
+    }
+
+    return () => {
+      cancelScheduledFrame(animationId);
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", resize);
+      glContext.deleteBuffer(positionBuffer);
+      glContext.deleteProgram(program);
+      glContext.deleteShader(vertexShader);
+      glContext.deleteShader(fragmentShader);
+    };
+  }, []);
+
+  function handleGateKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    props.onEnter();
+  }
+
+  return (
+    <div
+      className="startup-gate"
+      role="button"
+      tabIndex={0}
+      onClick={props.onEnter}
+      onKeyDown={handleGateKeyDown}
+      aria-label="Enter WeConnect dashboard"
+    >
+      <canvas className="startup-gate-canvas" ref={canvasRef} aria-hidden="true" />
+      <WindowDragRegion />
+      <span className="startup-gate-copy" aria-hidden="true">
+        <span className="startup-gate-title">WeConnect</span>
+      </span>
+    </div>
+  );
+}
+
+function WindowDragRegion() {
+  return (
+    <span
+      className="window-drag-region"
+      data-tauri-drag-region="true"
+      aria-hidden="true"
+      onClick={(event) => event.stopPropagation()}
+    />
+  );
+}
 
 function SignalField() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -765,6 +1024,7 @@ function Sidebar(props: {
 }
 
 export function App() {
+  const [startupDismissed, setStartupDismissed] = useState(false);
   const [activePage, setActivePage] = useState<PageKey>("routes");
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
@@ -864,21 +1124,33 @@ export function App() {
     };
   }, [snapshot?.profile.id, qr]);
 
+  const startupGate = startupDismissed ? null : (
+    <StartupGate onEnter={() => setStartupDismissed(true)} />
+  );
+
   if (error) {
     return (
-      <div className="app-shell empty-shell">
-        <AmbientField />
-        <EmptyState title="Dashboard failed to load" body={error} />
-      </div>
+      <>
+        <div className="app-shell empty-shell">
+          <WindowDragRegion />
+          <AmbientField />
+          <EmptyState title="Dashboard failed to load" body={error} />
+        </div>
+        {startupGate}
+      </>
     );
   }
 
   if (!snapshot) {
     return (
-      <div className="app-shell empty-shell">
-        <AmbientField />
-        <EmptyState title="Loading wechat2all" body="Preparing the local dashboard." />
-      </div>
+      <>
+        <div className="app-shell empty-shell">
+          <WindowDragRegion />
+          <AmbientField />
+          <EmptyState title="Loading wechat2all" body="Preparing the local dashboard." />
+        </div>
+        {startupGate}
+      </>
     );
   }
 
@@ -912,59 +1184,63 @@ export function App() {
   }
 
   return (
-    <div
-      className="app-shell"
-      onPointerMove={handleShellPointerMove}
-      onPointerLeave={handleShellPointerLeave}
-    >
-      <AmbientField />
-      <Sidebar active={activePage} onChange={setActivePage} />
-      <section className="content-shell">
-        <header className="topbar">
-          <div>
-            <span className="topbar-kicker">Gateway console</span>
-            <strong>Local WeChat command surface</strong>
-          </div>
-          <div className="topbar-wave" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-            <span />
-          </div>
-          <div className="topbar-status">
-            <StatusPill
-              active={snapshot.profile.running}
-              label={snapshot.profile.running ? "Runtime live" : "Runtime idle"}
+    <>
+      <div
+        className="app-shell"
+        onPointerMove={handleShellPointerMove}
+        onPointerLeave={handleShellPointerLeave}
+      >
+        <WindowDragRegion />
+        <AmbientField />
+        <Sidebar active={activePage} onChange={setActivePage} />
+        <section className="content-shell">
+          <header className="topbar">
+            <div>
+              <span className="topbar-kicker">Gateway console</span>
+              <strong>Local WeChat command surface</strong>
+            </div>
+            <div className="topbar-wave" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+              <span />
+            </div>
+            <div className="topbar-status">
+              <StatusPill
+                active={snapshot.profile.running}
+                label={snapshot.profile.running ? "Runtime live" : "Runtime idle"}
+              />
+              <span>{snapshot.routes.length} routes</span>
+              <span>{snapshot.traces.length} trace lines</span>
+            </div>
+          </header>
+          {activePage === "wechat" ? (
+            <WeChatPage
+              data={snapshot}
+              qr={qr}
+              loginStatus={loginStatus}
+              qrImage={qrImage}
+              qrError={qrError}
+              onRequestQr={() => void onRequestQr()}
             />
-            <span>{snapshot.routes.length} routes</span>
-            <span>{snapshot.traces.length} trace lines</span>
-          </div>
-        </header>
-        {activePage === "wechat" ? (
-          <WeChatPage
-            data={snapshot}
-            qr={qr}
-            loginStatus={loginStatus}
-            qrImage={qrImage}
-            qrError={qrError}
-            onRequestQr={() => void onRequestQr()}
-          />
-        ) : null}
-        {activePage === "routes" ? (
-          <RoutesPage
-            routes={snapshot.routes}
-            traces={snapshot.traces}
-            selectedRouteId={selectedRouteId}
-            onSelect={setSelectedRouteId}
-            onOpenTrace={() => setActivePage("trace")}
-          />
-        ) : null}
-        {activePage === "agents" ? <AgentsPage agents={snapshot.agents} /> : null}
-        {activePage === "trace" ? <TracePage traces={snapshot.traces} /> : null}
-        {activePage === "settings" ? (
-          <SettingsPage settings={snapshot.settings} onSave={onSaveSettings} />
-        ) : null}
-      </section>
-    </div>
+          ) : null}
+          {activePage === "routes" ? (
+            <RoutesPage
+              routes={snapshot.routes}
+              traces={snapshot.traces}
+              selectedRouteId={selectedRouteId}
+              onSelect={setSelectedRouteId}
+              onOpenTrace={() => setActivePage("trace")}
+            />
+          ) : null}
+          {activePage === "agents" ? <AgentsPage agents={snapshot.agents} /> : null}
+          {activePage === "trace" ? <TracePage traces={snapshot.traces} /> : null}
+          {activePage === "settings" ? (
+            <SettingsPage settings={snapshot.settings} onSave={onSaveSettings} />
+          ) : null}
+        </section>
+      </div>
+      {startupGate}
+    </>
   );
 }

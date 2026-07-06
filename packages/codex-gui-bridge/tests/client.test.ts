@@ -1,10 +1,23 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 
 import {
   CodexGuiAppServerBridge,
   type CodexAppServerTransport,
 } from "../src/index.js";
+
+const TINY_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+
+async function tempImagePath(fileName = "image.png"): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-image-test-"));
+  const filePath = path.join(dir, fileName);
+  await fs.writeFile(filePath, Buffer.from(TINY_PNG_BASE64, "base64"));
+  return filePath;
+}
 
 class FakeTransport implements CodexAppServerTransport {
   readonly calls: Array<{ method: string; params?: unknown }> = [];
@@ -308,6 +321,7 @@ test("waits for turn completion and returns final answer text", async () => {
 });
 
 test("returns local image files mentioned by Codex output", async () => {
+  const outputImagePath = await tempImagePath("codex-output.png");
   const transport = new FakeTransport();
   const bridge = new CodexGuiAppServerBridge({ transport, turnTimeoutMs: 1000 });
 
@@ -330,7 +344,7 @@ test("returns local image files mentioned by Codex output", async () => {
         {
           type: "agentMessage",
           id: "assistant-1",
-          text: "Done.\n\n![chart](file:///tmp/codex-output.png)",
+          text: `Done.\n\n![chart](file://${outputImagePath})`,
           phase: "final_answer",
         },
       ],
@@ -342,15 +356,121 @@ test("returns local image files mentioned by Codex output", async () => {
     threadId: "thread-1",
     turnId: "turn-1",
     status: "completed",
-    finalText: "Done.\n\n![chart](file:///tmp/codex-output.png)",
+    finalText: `Done.\n\n![chart](file://${outputImagePath})`,
     outputFiles: [{
       kind: "image",
-      filePath: "/tmp/codex-output.png",
+      filePath: outputImagePath,
       source: "markdown",
     }],
     replyMode: "final",
     error: undefined,
   });
+});
+
+test("returns structured local image files produced by Codex tools", async () => {
+  const outputImagePath = await tempImagePath("codex-generated.png");
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({ transport, turnTimeoutMs: 1000 });
+
+  await bridge.bindThread("thread-1");
+  const pending = bridge.sendPrompt({
+    id: "wechat-message-with-structured-output-image",
+    text: "generate an image",
+  });
+
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      items: [
+        {
+          type: "toolResult",
+          id: "tool-image-1",
+          content: [{
+            type: "image",
+            path: outputImagePath,
+          }],
+        },
+        {
+          type: "agentMessage",
+          id: "assistant-1",
+          text: "Generated.",
+          phase: "final_answer",
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(await pending, {
+    id: "wechat-message-with-structured-output-image",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    status: "completed",
+    finalText: "Generated.",
+    outputFiles: [{
+      kind: "image",
+      filePath: outputImagePath,
+      source: "toolResult",
+    }],
+    replyMode: "final",
+    error: undefined,
+  });
+});
+
+test("returns Codex image generation saved paths", async () => {
+  const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-generated-test-"));
+  const placeholderPath = path.join(outputDir, "_image_id_.png");
+  const materializedPath = path.join(outputDir, "ig_apple.png");
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({ transport, turnTimeoutMs: 1000 });
+
+  await bridge.bindThread("thread-1");
+  const pending = bridge.sendPrompt({
+    id: "wechat-message-with-generated-image",
+    text: "generate an apple image",
+  });
+
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      items: [
+        {
+          type: "imageGeneration",
+          id: "ig_apple",
+          status: "generating",
+          revisedPrompt: "A red apple on a white background.",
+          result: TINY_PNG_BASE64,
+          savedPath: placeholderPath,
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(await pending, {
+    id: "wechat-message-with-generated-image",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    status: "completed",
+    outputFiles: [{
+      kind: "image",
+      filePath: materializedPath,
+      source: "imageGeneration",
+    }],
+    replyMode: "final",
+    error: undefined,
+  });
+  assert.equal(await fs.readFile(materializedPath, "base64"), TINY_PNG_BASE64);
 });
 
 test("final reply mode ignores non-final agent messages", async () => {

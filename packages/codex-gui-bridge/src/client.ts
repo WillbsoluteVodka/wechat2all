@@ -1,5 +1,7 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { CodexAppServerRpc, resolveCodexExecutable } from "./app-server-rpc.js";
@@ -100,7 +102,15 @@ interface ThreadItem {
   imageUrl?: string;
   filePath?: string;
   file_path?: string;
+  imagePath?: string;
+  image_path?: string;
+  localPath?: string;
+  local_path?: string;
+  outputPath?: string;
+  output_path?: string;
   path?: string;
+  savedPath?: string;
+  saved_path?: string;
   url?: string;
 }
 
@@ -846,6 +856,22 @@ const IMAGE_EXTENSION_PATTERN = /\.(?:png|jpe?g|gif|webp|bmp|tiff?)(?:[#?][^\s)\
 const MARKDOWN_IMAGE_PATTERN = /!\[[^\]]*]\(([^)\]]+)\)/g;
 const FILE_URL_PATTERN = /file:\/\/[^\s)\]]+/g;
 const ABSOLUTE_IMAGE_PATH_PATTERN = /\/[^\s)\]]+\.(?:png|jpe?g|gif|webp|bmp|tiff?)(?:[#?][^\s)\]]*)?/gi;
+const IMAGE_PATH_KEYS = [
+  "image_url",
+  "imageUrl",
+  "filePath",
+  "file_path",
+  "imagePath",
+  "image_path",
+  "localPath",
+  "local_path",
+  "outputPath",
+  "output_path",
+  "path",
+  "savedPath",
+  "saved_path",
+  "url",
+] as const;
 
 function stripUrlFragment(value: string): string {
   return value.replace(/[?#].*$/, "");
@@ -870,24 +896,106 @@ function localImagePath(value: unknown, requireImageExtension = false): string |
   return withoutFragment;
 }
 
+function existingLocalImagePath(value: unknown, requireImageExtension = false): string | undefined {
+  const filePath = localImagePath(value, requireImageExtension);
+  if (!filePath || !existsSync(filePath)) return undefined;
+  return filePath;
+}
+
 function outputFilesFromText(text: string, source: string): CodexGuiOutputFile[] {
   const files: CodexGuiOutputFile[] = [];
   for (const match of text.matchAll(MARKDOWN_IMAGE_PATTERN)) {
-    const filePath = localImagePath(match[1], true);
+    const filePath = existingLocalImagePath(match[1], true);
     if (filePath) files.push({ kind: "image", filePath, source: "markdown" });
   }
   for (const match of text.matchAll(FILE_URL_PATTERN)) {
-    const filePath = localImagePath(match[0], true);
+    const filePath = existingLocalImagePath(match[0], true);
     if (filePath) files.push({ kind: "image", filePath, source });
   }
   const textWithoutUrls = text
     .replace(MARKDOWN_IMAGE_PATTERN, " ")
     .replace(FILE_URL_PATTERN, " ");
   for (const match of textWithoutUrls.matchAll(ABSOLUTE_IMAGE_PATH_PATTERN)) {
-    const filePath = localImagePath(match[0], true);
+    const filePath = existingLocalImagePath(match[0], true);
     if (filePath) files.push({ kind: "image", filePath, source });
   }
   return dedupeOutputFiles(files);
+}
+
+function imageBufferFromBase64(value: unknown): { buffer: Buffer; extension: string } | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+
+  const dataUrlMatch = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(trimmed);
+  const raw = dataUrlMatch ? dataUrlMatch[2] : trimmed;
+  if (!/^[a-z0-9+/=\s]+$/i.test(raw)) return undefined;
+
+  try {
+    const buffer = Buffer.from(raw.replace(/\s+/g, ""), "base64");
+    if (buffer.length < 8) return undefined;
+    if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+      return { buffer, extension: ".png" };
+    }
+    if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+      return { buffer, extension: ".jpg" };
+    }
+    if (buffer.subarray(0, 4).toString("ascii") === "GIF8") {
+      return { buffer, extension: ".gif" };
+    }
+    if (
+      buffer.subarray(0, 4).toString("ascii") === "RIFF" &&
+      buffer.subarray(8, 12).toString("ascii") === "WEBP"
+    ) {
+      return { buffer, extension: ".webp" };
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function sanitizedImageBaseName(value: unknown): string {
+  return (typeof value === "string" && value.trim() ? value.trim() : `image-${randomUUID()}`)
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 96) || `image-${randomUUID()}`;
+}
+
+function imageGenerationOutputPath(record: Record<string, unknown>, extension: string): string {
+  const candidates = IMAGE_PATH_KEYS
+    .map((key) => localImagePath(record[key], false))
+    .filter((value): value is string => Boolean(value));
+  const preferred = candidates.find((candidate) => existsSync(candidate));
+  if (preferred) return preferred;
+
+  const declared = candidates.find((candidate) => IMAGE_EXTENSION_PATTERN.test(candidate));
+  if (declared && !path.basename(declared).includes("_image_id_")) return declared;
+
+  const directory = declared
+    ? path.dirname(declared)
+    : path.join(os.tmpdir(), "wechat2all-codex-generated-images");
+  return path.join(directory, `${sanitizedImageBaseName(record.id)}${extension}`);
+}
+
+function materializedImageGenerationFiles(
+  record: Record<string, unknown>,
+  source: string,
+): CodexGuiOutputFile[] {
+  if (record.type !== "imageGeneration") return [];
+  const image = imageBufferFromBase64(record.result);
+  if (!image) return [];
+
+  const filePath = imageGenerationOutputPath(record, image.extension);
+  try {
+    if (!existsSync(filePath)) {
+      mkdirSync(path.dirname(filePath), { recursive: true });
+      writeFileSync(filePath, image.buffer);
+    }
+  } catch {
+    return [];
+  }
+  return [{ kind: "image", filePath, source }];
 }
 
 function outputFilesFromUnknown(
@@ -905,9 +1013,9 @@ function outputFilesFromUnknown(
   if (typeof value !== "object") return [];
 
   const record = value as Record<string, unknown>;
-  const files: CodexGuiOutputFile[] = [];
-  for (const key of ["image_url", "imageUrl", "filePath", "file_path", "path", "url"]) {
-    const filePath = localImagePath(record[key], key === "url");
+  const files: CodexGuiOutputFile[] = materializedImageGenerationFiles(record, source);
+  for (const key of IMAGE_PATH_KEYS) {
+    const filePath = existingLocalImagePath(record[key], key === "url");
     if (filePath) files.push({ kind: "image", filePath, source });
   }
   if (typeof record.text === "string") {

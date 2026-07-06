@@ -1655,7 +1655,7 @@ test("codex connector sends Codex output images back to WeChat", async () => {
           id: prompt.id,
           threadId: "thread-1",
           turnId: "turn-1",
-          finalText: "done",
+          finalText: "done\n\n![chart](file:///tmp/codex-output.png)",
           outputFiles: [{
             kind: "image",
             filePath: "/tmp/codex-output.png",
@@ -1700,6 +1700,45 @@ test("codex connector sends Codex output images back to WeChat", async () => {
       filePath: "/tmp/codex-output.png",
     },
   ]);
+});
+
+test("codex connector sends image-only Codex output without leaking local paths", async () => {
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          finalText: "![generated](file:///tmp/generated-output.png)",
+          outputFiles: [{
+            kind: "image",
+            filePath: "/tmp/generated-output.png",
+            source: "markdown",
+          }],
+        };
+      },
+    },
+  });
+  const actions = await connector.handleMessage(codexTextMessage("生成一张图"), codexTestContext());
+
+  assert.deepEqual(actions, [{
+    type: "send_media",
+    conversationId: "user-1",
+    filePath: "/tmp/generated-output.png",
+  }]);
 });
 
 test("codex connector supports silent reply mode", async () => {
