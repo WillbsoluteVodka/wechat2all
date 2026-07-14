@@ -23,7 +23,10 @@ import {
 } from "@wechat2all/runtime";
 
 import { codexBackend, createCodexBridgeFromEnv } from "./codex.js";
-import { createDashboardSnapshot } from "./dashboard.js";
+import {
+  createDashboardSnapshot,
+  type DashboardRouteStats,
+} from "./dashboard.js";
 import { envNumber, loadLocalEnv, readRouterAddress } from "./env.js";
 import {
   applySavedRouteOverrides,
@@ -36,15 +39,44 @@ import { createTraceLogger } from "./trace.js";
 let routerAddress = readRouterAddress();
 let HOST = routerAddress.host;
 let PORT = routerAddress.port;
-const PROFILE_ID = process.env.WECHAT_RUNTIME_PROFILE ?? "default";
+let PROFILE_ID = process.env.WECHAT_RUNTIME_PROFILE ?? "default";
 const BASE_STATE_DIR = path.join(os.homedir(), ".wechat2all-runtime-bot");
 const stateStore = new FileRuntimeStateStore({ baseDir: BASE_STATE_DIR });
 let codexBridge: CodexBridgeClient | undefined;
+let server: http.Server | undefined;
+
+function finiteMetadataNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, Math.round(value))
+    : undefined;
+}
+
+function actionPerformanceSuffix(result: RuntimeActionResult): string {
+  const performance = result.action.metadata?.performance;
+  const timings = performance && typeof performance === "object"
+    ? performance as Record<string, unknown>
+    : {};
+  const values = [
+    ["download", finiteMetadataNumber(timings.attachmentDownloadMs)],
+    ["wait", finiteMetadataNumber(timings.attachmentWaitMs)],
+    ["codex", finiteMetadataNumber(timings.codexTurnMs)],
+    ["wechat", finiteMetadataNumber(result.durationMs)],
+  ] as const;
+  const parts = values.flatMap(([label, durationMs]) =>
+    durationMs === undefined ? [] : [`${label}=${durationMs}ms`]
+  );
+  return parts.length ? ` (${parts.join(", ")})` : "";
+}
 
 function refreshRouterAddress(): void {
   routerAddress = readRouterAddress();
   HOST = routerAddress.host;
   PORT = routerAddress.port;
+}
+
+function refreshRuntimeSettings(): void {
+  refreshRouterAddress();
+  PROFILE_ID = process.env.WECHAT_RUNTIME_PROFILE ?? "default";
 }
 
 function getCodexBridge(): CodexBridgeClient {
@@ -65,8 +97,30 @@ interface LoginState {
 let runtime: WeChatRuntime | undefined;
 let runtimeStarting = false;
 let loginState: LoginState = { active: false, status: "idle" };
+let loginAbortController: AbortController | undefined;
+let loginRunId = 0;
 const traceLogger = createTraceLogger();
 const trace = traceLogger.trace;
+const routeStats = new Map<string, DashboardRouteStats>();
+
+function localDayKey(date: Date): string {
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function recordRouteHit(routeId: string): void {
+  const now = new Date();
+  const dayKey = localDayKey(now);
+  const previous = routeStats.get(routeId);
+  routeStats.set(routeId, {
+    dayKey,
+    messagesToday: previous?.dayKey === dayKey ? previous.messagesToday + 1 : 1,
+    lastHitAt: now.toISOString(),
+  });
+}
 
 async function buildRuntime(profile: RuntimeProfileConfig): Promise<WeChatRuntime> {
   const savedRoutes = await stateStore.loadRoutes(PROFILE_ID);
@@ -87,6 +141,15 @@ async function buildRuntime(profile: RuntimeProfileConfig): Promise<WeChatRuntim
     deduper: createStateStoreMessageDeduper(stateStore),
     media: new RuntimeMediaPipeline({
       cacheDir: stateStore.mediaDir(PROFILE_ID),
+      download: {
+        timeoutMs: envNumber("WECHAT2ALL_MEDIA_DOWNLOAD_TIMEOUT_MS"),
+        maxRetries: envNumber("WECHAT2ALL_MEDIA_DOWNLOAD_MAX_RETRIES"),
+        retryDelayMs: envNumber("WECHAT2ALL_MEDIA_DOWNLOAD_RETRY_DELAY_MS"),
+      },
+      downloadConcurrency: envNumber("WECHAT2ALL_MEDIA_DOWNLOAD_CONCURRENCY"),
+      cacheTtlMs: envNumber("WECHAT2ALL_MEDIA_CACHE_TTL_MS"),
+      maxCacheBytes: envNumber("WECHAT2ALL_MEDIA_CACHE_MAX_BYTES"),
+      pruneIntervalMs: envNumber("WECHAT2ALL_MEDIA_CACHE_PRUNE_INTERVAL_MS"),
     }),
     tts: createDummyTTSProvider({
       outputDir: path.join(stateStore.profileDir(PROFILE_ID), "tts"),
@@ -102,6 +165,7 @@ async function buildRuntime(profile: RuntimeProfileConfig): Promise<WeChatRuntim
         id: "codex-bridge",
         client: getCodexBridge(),
         replyMode: parseCodexReplyMode(process.env.WECHAT2ALL_CODEX_REPLY_MODE),
+        processingReminderMs: envNumber("WECHAT2ALL_CODEX_PROCESSING_REMINDER_MS"),
       }),
       createMainAssistantConnector({
         id: "main-assistant",
@@ -141,10 +205,17 @@ async function buildRuntime(profile: RuntimeProfileConfig): Promise<WeChatRuntim
   next.on("messageSkipped", (_message, reason) => {
     trace("debug", "message", `Skipped inbound message: ${reason}`);
   });
+  next.on("routeMatched", (_message, route) => {
+    recordRouteHit(route.id);
+  });
   next.on("actions", (message, results: RuntimeActionResult[]) => {
     for (const result of results) {
       const suffix = result.ok ? "ok" : `failed: ${result.error?.message ?? "unknown"}`;
-      trace("info", "action", `${message.conversationId}: ${result.action.type} -> ${suffix}`);
+      trace(
+        "info",
+        "action",
+        `${message.conversationId}: ${result.action.type} -> ${suffix}${actionPerformanceSuffix(result)}`,
+      );
     }
   });
   next.on("error", (error) => {
@@ -209,6 +280,8 @@ async function startQrLogin(): Promise<LoginState> {
     status: "wait",
     startedAt: Date.now(),
   };
+  const runId = ++loginRunId;
+  loginAbortController = new AbortController();
 
   let resolveQr: (state: LoginState) => void;
   let rejectQr: (error: Error) => void;
@@ -219,7 +292,9 @@ async function startQrLogin(): Promise<LoginState> {
 
   void current.getClient(PROFILE_ID).login({
     timeoutMs: 8 * 60_000,
+    signal: loginAbortController.signal,
     onQRCode(qrcodeUrl) {
+      if (runId !== loginRunId) return;
       loginState = {
         ...loginState,
         active: true,
@@ -231,10 +306,13 @@ async function startQrLogin(): Promise<LoginState> {
       resolveQr(loginState);
     },
     onStatus(status) {
+      if (runId !== loginRunId) return;
       loginState = { ...loginState, status };
       trace("info", "login", `QR status: ${status}`);
     },
   }).then(async (result) => {
+    if (runId !== loginRunId) return;
+    loginAbortController = undefined;
     if (!result.connected) {
       loginState = {
         ...loginState,
@@ -266,6 +344,8 @@ async function startQrLogin(): Promise<LoginState> {
     trace("info", "login", `Logged in as ${creds.accountId}`);
     await startRuntimeMonitor();
   }).catch((error: unknown) => {
+    if (runId !== loginRunId) return;
+    loginAbortController = undefined;
     const message = error instanceof Error ? error.message : String(error);
     loginState = {
       ...loginState,
@@ -285,6 +365,23 @@ async function startQrLogin(): Promise<LoginState> {
   ]);
 }
 
+async function unlinkWechatSession(): Promise<void> {
+  loginRunId++;
+  loginAbortController?.abort();
+  loginAbortController = undefined;
+  try {
+    runtime?.stopProfile(PROFILE_ID);
+  } catch {
+    // The profile may already be stopped.
+  }
+  await stateStore.clearCredentials(PROFILE_ID);
+  loginState = { active: false, status: "idle" };
+  runtime = undefined;
+  runtimeStarting = false;
+  await ensureRuntime();
+  trace("info", "login", "Unlinked current WeChat session");
+}
+
 async function dashboardSnapshot(): Promise<unknown> {
   const current = await ensureRuntime();
   return createDashboardSnapshot({
@@ -292,6 +389,7 @@ async function dashboardSnapshot(): Promise<unknown> {
     runtime: current,
     stateStore,
     traces: traceLogger.events(),
+    routeStats,
     routerEndpoint: `http://${HOST}:${PORT}`,
   });
 }
@@ -364,9 +462,33 @@ async function handleRequest(
       });
       return;
     }
+    if (req.method === "POST" && url.pathname === "/login/unlink") {
+      await readJson(req);
+      await unlinkWechatSession();
+      sendJson(res, 200, { ok: true });
+      return;
+    }
     if (req.method === "POST" && url.pathname === "/runtime/start") {
       await startRuntimeMonitor();
       sendJson(res, 200, { ok: true });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/dev/shutdown") {
+      if (process.env.WECHAT2ALL_ENABLE_DEV_SHUTDOWN !== "1") {
+        sendJson(res, 404, { error: "Development shutdown is disabled." });
+        return;
+      }
+      sendJson(res, 200, { ok: true });
+      setImmediate(() => {
+        try {
+          runtime?.stopProfile(PROFILE_ID);
+        } catch {
+          // The profile may already be stopped.
+        }
+        const forceExit = setTimeout(() => process.exit(0), 2_000);
+        forceExit.unref();
+        server?.close(() => process.exit(0));
+      });
       return;
     }
 
@@ -380,14 +502,15 @@ async function handleRequest(
 
 async function main(): Promise<void> {
   loadLocalEnv(trace);
-  refreshRouterAddress();
+  refreshRuntimeSettings();
+  await stateStore.securePermissions();
   await ensureRuntime();
   logCodexBackend();
   if (await stateStore.loadCredentials(PROFILE_ID)) {
     void startRuntimeMonitor();
   }
 
-  const server = http.createServer((req, res) => {
+  server = http.createServer((req, res) => {
     void handleRequest(req, res);
   });
   server.on("error", (error: NodeJS.ErrnoException) => {

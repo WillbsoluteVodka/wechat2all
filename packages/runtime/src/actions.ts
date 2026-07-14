@@ -57,6 +57,7 @@ export async function executeRuntimeAction(params: {
   action: RuntimeAction;
 }): Promise<RuntimeActionResult> {
   const { client, action } = params;
+  const startedAt = Date.now();
   try {
     let result: unknown;
     switch (action.type) {
@@ -101,13 +102,20 @@ export async function executeRuntimeAction(params: {
         result = action.reason;
         break;
     }
-    return { action, ok: true, result, attempts: 1 };
+    return {
+      action,
+      ok: true,
+      result,
+      attempts: 1,
+      durationMs: Date.now() - startedAt,
+    };
   } catch (err) {
     return {
       action,
       ok: false,
       error: err instanceof Error ? err : new Error(String(err)),
       attempts: 1,
+      durationMs: Date.now() - startedAt,
     };
   }
 }
@@ -120,11 +128,16 @@ async function executeRuntimeActionWithRetry(params: {
   const { client, action, options = {} } = params;
   const maxAttempts = Math.max(1, action.maxAttempts ?? options.maxAttempts ?? 1);
   const retryDelayMs = Math.max(0, action.retryDelayMs ?? options.retryDelayMs ?? 0);
+  const startedAt = Date.now();
   let lastResult: RuntimeActionResult | undefined;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const result = await executeRuntimeAction({ client, action });
-    lastResult = { ...result, attempts: attempt };
+    lastResult = {
+      ...result,
+      attempts: attempt,
+      durationMs: Date.now() - startedAt,
+    };
     if (lastResult.ok) return lastResult;
 
     const retry = options.shouldRetry
@@ -138,6 +151,7 @@ async function executeRuntimeActionWithRetry(params: {
     action,
     ok: false,
     attempts: 0,
+    durationMs: Date.now() - startedAt,
     error: new Error("Runtime action was not executed."),
   };
 }
@@ -203,6 +217,7 @@ export class RuntimeActionQueue {
           ok: true,
           attempts: 0,
           deduped: true,
+          durationMs: 0,
           result: "deduped",
         });
         continue;

@@ -22,6 +22,13 @@ export interface CodexAppServerRpcOptions {
   command?: string;
   socketPath?: string;
   timeoutMs?: number;
+  onServerRequest?: (request: CodexAppServerRequest) => void;
+}
+
+export interface CodexAppServerRequest {
+  id: number | string;
+  method: string;
+  params?: unknown;
 }
 
 function stripEnvQuotes(value: string | undefined): string | undefined {
@@ -35,15 +42,24 @@ export function resolveCodexExecutable(env: NodeJS.ProcessEnv = process.env): st
     stripEnvQuotes(env.WECHAT2ALL_CODEX_BIN);
   if (envPath && existsSync(envPath)) return envPath;
 
-  const bundledPath = "/Applications/Codex.app/Contents/Resources/codex";
-  if (existsSync(bundledPath)) return bundledPath;
+  const bundledPaths = [
+    "/Applications/Codex.app/Contents/Resources/codex",
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
+    `${env.HOME ?? ""}/Applications/Codex.app/Contents/Resources/codex`,
+    `${env.HOME ?? ""}/Applications/ChatGPT.app/Contents/Resources/codex`,
+  ];
+  const bundledPath = bundledPaths.find((candidate) => candidate && existsSync(candidate));
+  if (bundledPath) return bundledPath;
 
   return "codex";
 }
 
 export class CodexAppServerRpc implements CodexAppServerTransport {
-  private readonly child: ChildProcessWithoutNullStreams;
+  private child?: ChildProcessWithoutNullStreams;
+  private readonly command: string;
+  private readonly args: string[];
   private readonly defaultTimeoutMs: number;
+  private readonly onServerRequest?: (request: CodexAppServerRequest) => void;
   private readonly notificationHandlers = new Set<
     (method: string, params: unknown) => void
   >();
@@ -55,44 +71,68 @@ export class CodexAppServerRpc implements CodexAppServerTransport {
   private nextId = 1;
   private stdoutBuffer = "";
   private stderrBuffer = "";
-  private closed = false;
+  private disposed = false;
 
   constructor(opts: CodexAppServerRpcOptions = {}) {
-    const command = opts.command ?? resolveCodexExecutable();
-    const args = opts.socketPath
+    this.command = opts.command ?? resolveCodexExecutable();
+    this.args = opts.socketPath
       ? ["app-server", "proxy", "--sock", opts.socketPath]
       : ["app-server", "--stdio"];
     this.defaultTimeoutMs = opts.timeoutMs ?? 8_000;
-    this.child = spawn(command, args, {
+    this.onServerRequest = opts.onServerRequest;
+  }
+
+  private spawnChild(): ChildProcessWithoutNullStreams {
+    const child = spawn(this.command, this.args, {
       stdio: ["pipe", "pipe", "pipe"],
       env: process.env,
     });
+    this.child = child;
+    this.stdoutBuffer = "";
+    this.stderrBuffer = "";
 
-    this.child.stdout.setEncoding("utf-8");
-    this.child.stderr.setEncoding("utf-8");
-    this.child.stdout.on("data", (chunk: string) => this.handleStdout(chunk));
-    this.child.stderr.on("data", (chunk: string) => {
+    child.stdout.setEncoding("utf-8");
+    child.stderr.setEncoding("utf-8");
+    child.stdout.on("data", (chunk: string) => this.handleStdout(chunk));
+    child.stderr.on("data", (chunk: string) => {
       this.stderrBuffer = (this.stderrBuffer + chunk).slice(-16_384);
     });
-    this.child.on("error", (error) => {
-      this.rejectAll(new Error(`${command} ${args.join(" ")} spawn failed: ${error.message}`));
+    child.on("error", (error) => {
+      if (this.child === child) this.child = undefined;
+      this.rejectAll(
+        new Error(`${this.command} ${this.args.join(" ")} spawn failed: ${error.message}`),
+      );
     });
-    this.child.on("exit", (code, signal) => {
-      this.closed = true;
+    child.on("exit", (code, signal) => {
+      if (this.child === child) this.child = undefined;
       if (this.pending.size > 0) {
         this.rejectAll(
           new Error(
-            `${command} ${args.join(" ")} exited before responding: ` +
+            `${this.command} ${this.args.join(" ")} exited before responding: ` +
               `code=${code ?? "null"} signal=${signal ?? "null"} ${this.stderrSummary()}`,
           ),
         );
       }
     });
+    return child;
+  }
+
+  private ensureChild(): ChildProcessWithoutNullStreams {
+    if (this.disposed) throw new Error("Codex app-server transport is already closed.");
+    const child = this.child;
+    if (child && !child.stdin.destroyed && child.stdin.writable) return child;
+    return this.spawnChild();
   }
 
   request<T>(method: string, params?: unknown, timeoutMs = this.defaultTimeoutMs): Promise<T> {
-    if (this.closed) {
+    if (this.disposed) {
       return Promise.reject(new Error("Codex app-server transport is already closed."));
+    }
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = this.ensureChild();
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
     }
 
     const id = this.nextId;
@@ -116,23 +156,42 @@ export class CodexAppServerRpc implements CodexAppServerTransport {
         timer,
       });
 
-      this.child.stdin.write(`${JSON.stringify(message)}\n`, (error) => {
-        if (!error) return;
+      try {
+        child.stdin.write(`${JSON.stringify(message)}\n`, (error) => {
+          if (!error) return;
+          clearTimeout(timer);
+          this.pending.delete(id);
+          if (this.child === child) this.child = undefined;
+          reject(new Error(
+            `Failed to write ${method} to Codex app-server: ${error.message}. ` +
+              this.stderrSummary(),
+          ));
+        });
+      } catch (error) {
         clearTimeout(timer);
         this.pending.delete(id);
-        reject(error);
-      });
+        if (this.child === child) this.child = undefined;
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
   notify(method: string, params?: unknown): void {
-    if (this.closed) return;
+    if (this.disposed) return;
     const message: Record<string, unknown> = {
       jsonrpc: "2.0",
       method,
     };
     if (params !== undefined) message.params = params;
-    this.child.stdin.write(`${JSON.stringify(message)}\n`);
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = this.ensureChild();
+      child.stdin.write(`${JSON.stringify(message)}\n`, (error) => {
+        if (error && this.child === child) this.child = undefined;
+      });
+    } catch {
+      // The next request will report a detailed transport error and retry.
+    }
   }
 
   onNotification(handler: (method: string, params: unknown) => void): () => void {
@@ -143,9 +202,11 @@ export class CodexAppServerRpc implements CodexAppServerTransport {
   }
 
   close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.child.kill("SIGTERM");
+    if (this.disposed) return;
+    this.disposed = true;
+    this.child?.kill("SIGTERM");
+    this.child = undefined;
+    this.rejectAll(new Error("Codex app-server transport was closed."));
   }
 
   private handleStdout(chunk: string): void {
@@ -168,7 +229,12 @@ export class CodexAppServerRpc implements CodexAppServerTransport {
     }
 
     if (message.id != null && message.method) {
-      this.child.stdin.write(`${JSON.stringify({
+      this.onServerRequest?.({
+        id: message.id,
+        method: message.method,
+        params: message.params,
+      });
+      this.child?.stdin.write(`${JSON.stringify({
         jsonrpc: "2.0",
         id: message.id,
         error: {

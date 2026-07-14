@@ -6,11 +6,18 @@ import type {
 import { routeDescription, routeMatchText, routeName } from "./routes.js";
 import type { TraceEvent } from "./trace.js";
 
+export interface DashboardRouteStats {
+  dayKey: string;
+  messagesToday: number;
+  lastHitAt: string;
+}
+
 export interface DashboardSnapshotOptions {
   profileId: string;
   runtime: WeChatRuntime;
   stateStore: Pick<RuntimeStateStore, "loadCredentials">;
   traces: TraceEvent[];
+  routeStats: ReadonlyMap<string, DashboardRouteStats>;
   routerEndpoint: string;
   env?: NodeJS.ProcessEnv;
 }
@@ -24,6 +31,12 @@ export async function createDashboardSnapshot(
   const routes = opts.runtime.listRoutes();
   const dashboardRoutes = routes.filter((route) => route.id !== "main-assistant-commands");
   const mainRoute = dashboardRoutes.find((route) => route.id === "main-assistant-default");
+  const now = new Date();
+  const todayKey = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+  ].join("-");
 
   return {
     profile: {
@@ -37,19 +50,24 @@ export async function createDashboardSnapshot(
         : null,
       sessionExpiresAt: null,
     },
-    routes: dashboardRoutes.map((route) => ({
-      id: route.id,
-      name: routeName(route),
-      description: routeDescription(route),
-      enabled: route.enabled ?? true,
-      priority: route.priority ?? 0,
-      connectorId: route.connectorId,
-      matchText: routeMatchText(route),
-      stats: {
-        messagesToday: 0,
-        lastHitAt: null,
-      },
-    })),
+    routes: dashboardRoutes.map((route) => {
+      const routeStats = opts.routeStats.get(route.id);
+      const currentStats = routeStats?.dayKey === todayKey ? routeStats : undefined;
+
+      return {
+        id: route.id,
+        name: routeName(route),
+        description: routeDescription(route),
+        enabled: route.enabled ?? true,
+        priority: route.priority ?? 0,
+        connectorId: route.connectorId,
+        matchText: routeMatchText(route),
+        stats: {
+          messagesToday: currentStats?.messagesToday ?? 0,
+          lastHitAt: currentStats?.lastHitAt ?? null,
+        },
+      };
+    }),
     agents: [
       {
         id: "main-assistant",

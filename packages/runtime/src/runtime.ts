@@ -322,6 +322,7 @@ export class WeChatRuntime extends EventEmitter implements RuntimeRouteManager {
 
     const matchingRoutes = this.findRoutesForMessage(message);
     for (const route of matchingRoutes) {
+      this.emit("routeMatched", message, route);
       const connector = this.connectors.get(route.connectorId);
       if (!connector) {
         this.emit("error", new Error(`Unknown connector: ${route.connectorId}`), {

@@ -299,6 +299,30 @@ async fn get_login_status(profile_id: String) -> Result<LoginStatus, String> {
 }
 
 #[tauri::command]
+async fn unlink_wechat_session(profile_id: String) -> Result<(), String> {
+    let daemon_url = trim_trailing_slash(&env_or_default(
+        "WECHAT2ALL_ROUTER_DAEMON_URL",
+        DEFAULT_DAEMON_URL,
+    ));
+    let url = format!("{daemon_url}/login/unlink");
+    let response = daemon_http_client()?
+        .post(&url)
+        .json(&serde_json::json!({ "profileId": profile_id }))
+        .send()
+        .await
+        .map_err(|err| format!("Router daemon is not reachable at {daemon_url}: {err}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|err| format!("Failed to read router daemon unlink response: {err}"))?;
+    if !status.is_success() {
+        return Err(daemon_error("Router daemon unlink request", status, &body));
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn save_settings(payload: SaveSettingsPayload) -> SettingsSnapshot {
     SettingsSnapshot {
         llm_provider: payload.llm_provider,
@@ -315,6 +339,7 @@ fn main() {
             get_dashboard_snapshot,
             request_qr_login,
             get_login_status,
+            unlink_wechat_session,
             save_settings
         ])
         .run(tauri::generate_context!())

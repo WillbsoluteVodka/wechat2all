@@ -5,12 +5,46 @@ import { decryptAesEcb } from "./aes-ecb.js";
 import { buildCdnDownloadUrl } from "./cdn-url.js";
 
 const DOWNLOAD_TIMEOUT_MS = 60_000;
+const DOWNLOAD_MAX_RETRIES = 3;
+const DOWNLOAD_RETRY_DELAY_MS = 500;
 
 export interface CdnDownloadOptions {
   /** Download timeout in ms. */
   timeoutMs?: number;
+  /** Maximum download attempts. Non-retriable client errors stop immediately. */
+  maxRetries?: number;
+  /** Delay between retriable attempts in ms. */
+  retryDelayMs?: number;
   /** Optional caller cancellation signal. */
   signal?: AbortSignal;
+}
+
+class CdnDownloadHttpError extends Error {
+  readonly retryable: boolean;
+
+  constructor(message: string, retryable: boolean) {
+    super(message);
+    this.name = "CdnDownloadHttpError";
+    this.retryable = retryable;
+  }
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason instanceof Error ? signal.reason : new Error("aborted"));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason instanceof Error ? signal.reason : new Error("aborted"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function makeTimeoutSignal(
@@ -46,22 +80,54 @@ async function fetchCdnBytes(
   options: CdnDownloadOptions = {},
 ): Promise<Buffer> {
   const timeoutMs = Math.max(1, options.timeoutMs ?? DOWNLOAD_TIMEOUT_MS);
-  const timeout = makeTimeoutSignal(timeoutMs, options.signal);
-  try {
-    const res = await fetch(url, { signal: timeout.signal });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "(unreadable)");
-      throw new Error(`CDN download ${res.status} ${res.statusText}: ${body}`);
+  const maxRetries = Math.max(
+    1,
+    Math.floor(options.maxRetries ?? DOWNLOAD_MAX_RETRIES),
+  );
+  const retryDelayMs = Math.max(
+    0,
+    options.retryDelayMs ?? DOWNLOAD_RETRY_DELAY_MS,
+  );
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+    if (options.signal?.aborted) {
+      throw options.signal.reason instanceof Error
+        ? options.signal.reason
+        : new Error("CDN download aborted");
     }
-    return Buffer.from(await res.arrayBuffer());
-  } catch (err) {
-    if (timeout.timedOut()) {
-      throw new Error(`CDN download timed out after ${timeoutMs}ms`);
+    const timeout = makeTimeoutSignal(timeoutMs, options.signal);
+    try {
+      const res = await fetch(url, { signal: timeout.signal });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "(unreadable)");
+        const retryable = res.status === 408 || res.status === 429 || res.status >= 500;
+        throw new CdnDownloadHttpError(
+          `CDN download ${res.status} ${res.statusText}: ${body}`,
+          retryable,
+        );
+      }
+      return Buffer.from(await res.arrayBuffer());
+    } catch (err) {
+      if (options.signal?.aborted) {
+        throw options.signal.reason instanceof Error ? options.signal.reason : err;
+      }
+      lastError = timeout.timedOut()
+        ? new Error(`CDN download timed out after ${timeoutMs}ms`)
+        : err;
+      if (err instanceof CdnDownloadHttpError && !err.retryable) {
+        throw err;
+      }
+      if (attempt >= maxRetries) break;
+      await sleep(retryDelayMs, options.signal);
+    } finally {
+      timeout.cleanup();
     }
-    throw err;
-  } finally {
-    timeout.cleanup();
   }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(`CDN download failed after ${maxRetries} attempts`);
 }
 
 /**

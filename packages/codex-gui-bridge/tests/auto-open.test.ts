@@ -33,6 +33,7 @@ test("Codex GUI auto-open persists the enabled flag", async () => {
   const disabled = await writeCodexGuiAutoOpen(false, { configPath });
   assert.equal(disabled.enabled, false);
   assert.deepEqual(await readCodexGuiAutoOpen({ configPath }), disabled);
+  assert.equal((await fs.stat(configPath)).mode & 0o077, 0);
 });
 
 test("ensureCodexGuiOpen skips when auto-open is disabled", async () => {
@@ -42,6 +43,9 @@ test("ensureCodexGuiOpen skips when auto-open is disabled", async () => {
   const result = await ensureCodexGuiOpen({
     configPath,
     platform: "darwin",
+    appName: "Codex",
+    appPath: "/Applications/Codex.app",
+    processName: "Codex",
     commandRunner: async (command, args) => {
       calls.push({ command, args });
       return { ok: true, stdout: "", stderr: "" };
@@ -66,6 +70,9 @@ test("ensureCodexGuiOpen opens Codex when enabled and not running", async () => 
   const result = await ensureCodexGuiOpen({
     configPath,
     platform: "darwin",
+    appName: "Codex",
+    appPath: "/Applications/Codex.app",
+    processName: "Codex",
     commandRunner: async (command, args) => {
       calls.push({ command, args });
       if (command === "/usr/bin/pgrep") return { ok: false, stdout: "", stderr: "" };
@@ -98,4 +105,27 @@ test("ensureCodexGuiOpen does not reopen an already running Codex app", async ()
   assert.equal(result.alreadyOpen, true);
   assert.equal(result.opened, false);
   assert.equal(calls.some((call) => call.command === "/usr/bin/open"), false);
+});
+
+test("ensureCodexGuiOpen supports the current ChatGPT app bundle", async () => {
+  const configPath = await tempConfigPath("wechat2all-codex-autoopen-");
+  await writeCodexGuiAutoOpen(true, { configPath });
+  const calls: Array<{ command: string; args: string[] }> = [];
+
+  const result = await ensureCodexGuiOpen({
+    configPath,
+    platform: "darwin",
+    appPath: "/Applications/ChatGPT.app",
+    commandRunner: async (command, args) => {
+      calls.push({ command, args });
+      if (command === "/usr/bin/pgrep") return { ok: false, stdout: "", stderr: "" };
+      return { ok: true, stdout: "", stderr: "" };
+    },
+  });
+
+  assert.equal(result.opened, true);
+  assert.deepEqual(calls.at(-1), {
+    command: "/usr/bin/open",
+    args: ["/Applications/ChatGPT.app"],
+  });
 });

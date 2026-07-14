@@ -91,6 +91,7 @@ export interface RuntimeActionResult {
   error?: Error;
   attempts?: number;
   deduped?: boolean;
+  durationMs?: number;
 }
 
 export interface MemoryScope {
@@ -194,6 +195,7 @@ export interface RuntimeProfileState {
 export interface RuntimeEventMap {
   message: [message: RuntimeMessage];
   messageSkipped: [message: RuntimeMessage, reason: string];
+  routeMatched: [message: RuntimeMessage, route: RuntimeRoute];
   actions: [message: RuntimeMessage, results: RuntimeActionResult[]];
   error: [error: Error, context?: unknown];
   routesChanged: [routes: RuntimeRoute[]];

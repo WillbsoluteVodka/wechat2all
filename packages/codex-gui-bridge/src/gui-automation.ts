@@ -1,8 +1,14 @@
 import { spawn } from "node:child_process";
 
+import { resolveCodexGuiAppTarget } from "./gui-app.js";
+
 export interface CodexGuiAutomationOptions {
   osascriptBin?: string;
+  env?: NodeJS.ProcessEnv;
   appName?: string;
+  appPath?: string;
+  processName?: string;
+  bundleId?: string;
   activateDelayMs?: number;
   sendDelayMs?: number;
   threadId?: string;
@@ -13,10 +19,11 @@ const SCRIPT = `
 on run argv
   set promptText to item 1 of argv
   set appName to item 2 of argv
-  set activateDelaySeconds to (item 3 of argv) as number
-  set targetThreadId to item 4 of argv
-  set threadOpenDelaySeconds to (item 5 of argv) as number
-  set sendDelaySeconds to (item 6 of argv) as number
+  set processName to item 3 of argv
+  set activateDelaySeconds to (item 4 of argv) as number
+  set targetThreadId to item 5 of argv
+  set threadOpenDelaySeconds to (item 6 of argv) as number
+  set sendDelaySeconds to (item 7 of argv) as number
   set oldClipboard to missing value
 
   try
@@ -34,8 +41,8 @@ on run argv
   delay activateDelaySeconds
 
   tell application "System Events"
-    if not (exists process appName) then error appName & " is not running"
-    tell process appName
+    if not (exists process processName) then error processName & " is not running"
+    tell process processName
       set frontmost to true
       delay 0.2
       keystroke "v" using command down
@@ -55,7 +62,7 @@ export async function injectPromptIntoCodexGui(
   text: string,
   opts: CodexGuiAutomationOptions = {},
 ): Promise<void> {
-  const appName = opts.appName ?? "Codex";
+  const target = resolveCodexGuiAppTarget(opts);
   const activateDelaySeconds = String((opts.activateDelayMs ?? 450) / 1000);
   const sendDelaySeconds = String((opts.sendDelayMs ?? 600) / 1000);
   const threadId = opts.threadId?.trim() ?? "";
@@ -67,7 +74,8 @@ export async function injectPromptIntoCodexGui(
         "-e",
         SCRIPT,
         text,
-        appName,
+        target.appName,
+        target.processName,
         activateDelaySeconds,
         threadId,
         threadOpenDelaySeconds,

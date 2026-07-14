@@ -146,6 +146,11 @@ export async function getLoginStatus(profileId: string): Promise<LoginStatus> {
   return invoke<LoginStatus>("get_login_status", { profileId });
 }
 
+export async function unlinkWechatSession(profileId: string): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("unlink_wechat_session", { profileId });
+}
+
 export async function saveSettings(
   payload: SettingsSnapshot,
 ): Promise<SettingsSnapshot> {

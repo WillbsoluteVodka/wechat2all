@@ -1,10 +1,11 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { CodexAppServerRpc, resolveCodexExecutable } from "./app-server-rpc.js";
+import { CodexDesktopIpcRpc } from "./desktop-ipc.js";
 import {
   disabledCodexGuiAlarmState,
   readCodexGuiAlarm,
@@ -17,13 +18,21 @@ import {
   type CodexGuiAutoOpenState,
   writeCodexGuiAutoOpen,
 } from "./auto-open.js";
+import {
+  codexGuiBindingConfigPath,
+  readCodexGuiBinding,
+  writeCodexGuiBinding,
+} from "./binding.js";
 import { injectPromptIntoCodexGui } from "./gui-automation.js";
+import { openCodexGuiThread } from "./gui-app.js";
 import type {
   CodexAppServerTransport,
+  CodexDesktopIpcTransport,
   CodexGuiBinding,
   CodexGuiBridgeOptions,
   CodexGuiDeliveryMode,
   CodexGuiPromptInjector,
+  CodexGuiThreadOpener,
   CodexGuiBridgeTokenUsage,
   CodexGuiBridgeTokenWindow,
   CodexGuiChat,
@@ -82,6 +91,14 @@ interface TurnStartResponse {
     items?: ThreadItem[];
     error?: TurnError | null;
   };
+}
+
+interface DesktopIpcStartTurnResponse {
+  result?: TurnStartResponse;
+}
+
+interface TurnSteerResponse {
+  turnId?: string;
 }
 
 type TurnStatus = "completed" | "interrupted" | "failed" | "inProgress";
@@ -274,7 +291,10 @@ function formatTokenWindow(
 
 export class CodexGuiAppServerBridge {
   private readonly transport: CodexAppServerTransport;
+  private readonly desktopIpcTransport: CodexDesktopIpcTransport;
   private readonly timeoutMs: number;
+  private readonly desktopIpcTimeoutMs: number;
+  private readonly desktopIpcThreadOpenDelayMs: number;
   private readonly turnTimeoutMs: number;
   private readonly guiPollIntervalMs: number;
   private readonly guiThreadOpenDelayMs: number;
@@ -285,12 +305,16 @@ export class CodexGuiAppServerBridge {
   private readonly deliveryMode: CodexGuiDeliveryMode;
   private readonly replyMode: CodexGuiReplyMode;
   private readonly guiPromptInjector: CodexGuiPromptInjector;
+  private readonly guiThreadOpener: CodexGuiThreadOpener;
+  private readonly bindingConfigPath?: string;
   private readonly autoOpenConfigPath?: string;
   private readonly alarmConfigPath?: string;
   private readonly enableAlarmScheduler: boolean;
   private initialized?: Promise<void>;
   private binding: CodexGuiBinding | null;
+  private bindingLoaded: boolean;
   private alarmTimer?: ReturnType<typeof setTimeout>;
+  private readonly activePromptCounts = new Map<string, number>();
 
   constructor(opts: CodexGuiBridgeOptions = {}) {
     this.transport = opts.transport ?? new CodexAppServerRpc({
@@ -299,6 +323,13 @@ export class CodexGuiAppServerBridge {
       timeoutMs: opts.timeoutMs,
     });
     this.timeoutMs = opts.timeoutMs ?? 8_000;
+    this.desktopIpcTimeoutMs = opts.desktopIpcTimeoutMs ?? 30_000;
+    this.desktopIpcThreadOpenDelayMs = opts.desktopIpcThreadOpenDelayMs ?? 1_200;
+    this.desktopIpcTransport = opts.desktopIpcTransport ?? new CodexDesktopIpcRpc({
+      socketPath: opts.desktopIpcSocketPath,
+      timeoutMs: this.desktopIpcTimeoutMs,
+      clientType: opts.clientName ?? "wechat2all-codex-gui-bridge",
+    });
     this.turnTimeoutMs = opts.turnTimeoutMs ?? 180_000;
     this.guiPollIntervalMs = opts.guiPollIntervalMs ?? 1_000;
     this.guiThreadOpenDelayMs = opts.guiThreadOpenDelayMs ?? 900;
@@ -309,6 +340,8 @@ export class CodexGuiAppServerBridge {
     this.deliveryMode = opts.deliveryMode ?? "app-server";
     this.replyMode = opts.replyMode ?? "final";
     this.guiPromptInjector = opts.guiPromptInjector ?? injectPromptIntoCodexGui;
+    this.guiThreadOpener = opts.guiThreadOpener ?? openCodexGuiThread;
+    this.bindingConfigPath = opts.bindingConfigPath;
     this.autoOpenConfigPath = opts.autoOpenConfigPath;
     this.alarmConfigPath = opts.alarmConfigPath;
     this.enableAlarmScheduler = opts.enableAlarmScheduler === true;
@@ -318,6 +351,7 @@ export class CodexGuiAppServerBridge {
           boundAt: Date.now(),
         }
       : null;
+    this.bindingLoaded = Boolean(opts.defaultThreadId);
     if (this.enableAlarmScheduler) {
       void this.startAlarmScheduler();
     }
@@ -329,6 +363,7 @@ export class CodexGuiAppServerBridge {
       this.alarmTimer = undefined;
     }
     this.transport.close?.();
+    this.desktopIpcTransport.close?.();
   }
 
   async listChats(limit = this.listLimit): Promise<CodexGuiChat[]> {
@@ -351,14 +386,21 @@ export class CodexGuiAppServerBridge {
   }
 
   async bindThread(threadId: string): Promise<CodexGuiBinding> {
+    await this.ensureBindingLoaded();
     const normalized = threadId.trim();
     if (!normalized) throw new Error("/bind requires a thread id.");
     const thread = await this.readThread(normalized);
     this.binding = bindingFromThread(thread);
+    if (this.bindingConfigPath) {
+      await writeCodexGuiBinding(this.binding, {
+        configPath: this.bindingConfigPath,
+      });
+    }
     return this.binding;
   }
 
   async getCurrentBinding(): Promise<CodexGuiBinding | null> {
+    await this.ensureBindingLoaded();
     if (!this.binding) return null;
     if (this.binding.title || this.binding.project) return this.binding;
     try {
@@ -367,6 +409,11 @@ export class CodexGuiAppServerBridge {
         ...bindingFromThread(thread),
         boundAt: this.binding.boundAt,
       };
+      if (this.bindingConfigPath) {
+        await writeCodexGuiBinding(this.binding, {
+          configPath: this.bindingConfigPath,
+        }).catch(() => undefined);
+      }
     } catch {
       // Keep the explicit thread id even if the app-server is temporarily down.
     }
@@ -390,14 +437,31 @@ export class CodexGuiAppServerBridge {
       };
     }
 
-    try {
-      const thread = await this.readThread(binding.threadId);
-      const status = threadStatusText(thread.status);
+    if ((this.activePromptCounts.get(binding.threadId) ?? 0) > 0) {
       return {
-        state: status === "active" || status?.startsWith("active:")
-          ? "working"
-          : "idle",
-        summary: status ? `Codex thread status: ${status}` : "Codex thread is reachable.",
+        state: "working",
+        summary: "Codex bridge is waiting for the current turn to finish.",
+        currentThreadId: binding.threadId,
+        currentProject: binding.project,
+        updatedAt: Date.now(),
+      };
+    }
+
+    try {
+      const thread = await this.readThreadWithTurns(binding.threadId);
+      const status = threadStatusText(thread.status);
+      const latestTurn = thread.turns?.at(-1);
+      const turnIsWorking = latestTurn?.status === "inProgress" &&
+        !hasFinalAnswerItem(latestTurn.items ?? []) &&
+        !resultFromItems(latestTurn.items ?? [], "silent").outputFiles?.length;
+      const isWorking = status === "active" || status?.startsWith("active:") || turnIsWorking;
+      return {
+        state: isWorking ? "working" : "idle",
+        summary: turnIsWorking
+          ? `Codex turn ${latestTurn.id} is in progress.`
+          : status
+            ? `Codex thread status: ${status}`
+            : "Codex thread is reachable.",
         currentThreadId: thread.id,
         currentProject: chatFromThread(thread).project ?? thread.cwd,
         updatedAt: Date.now(),
@@ -419,14 +483,25 @@ export class CodexGuiAppServerBridge {
     if (!text && attachments.length === 0) {
       throw new Error("Cannot send an empty Codex prompt.");
     }
+    await this.ensureBindingLoaded();
     const threadId = prompt.threadId?.trim() || this.binding?.threadId;
     if (!threadId) {
       throw new Error("Codex GUI bridge is not bound. Send /ls, then /bind <序号>.");
     }
     const replyMode = prompt.replyMode ?? this.replyMode;
 
+    if (this.deliveryMode === "desktop-ipc") {
+      return this.sendPromptViaDesktopIpc({
+        id: prompt.id ?? randomUUID(),
+        threadId,
+        text,
+        attachments,
+        replyMode,
+      });
+    }
+
     const shouldUseGuiAutomation = this.deliveryMode === "gui-automation" &&
-      attachments.length === 0;
+      attachments.every((attachment) => attachment.kind === "file");
     if (shouldUseGuiAutomation) {
       return this.sendPromptViaGuiAutomation({
         id: prompt.id ?? randomUUID(),
@@ -438,18 +513,52 @@ export class CodexGuiAppServerBridge {
     }
 
     await this.ensureInitialized();
-    await this.transport.request<ThreadResumeResponse>(
+    const threadMetadata = attachments.length > 0
+      ? await this.readThread(threadId)
+      : undefined;
+    const runtimeWorkspaceRoots = threadMetadata
+      ? promptWorkspaceRoots(threadMetadata, attachments)
+      : [];
+    const resumed = await this.transport.request<ThreadResumeResponse>(
       "thread/resume",
-      { threadId },
+      {
+        threadId,
+        ...(runtimeWorkspaceRoots.length ? { runtimeWorkspaceRoots } : {}),
+      },
       this.timeoutMs,
     );
     const id = prompt.id ?? randomUUID();
+    const input = promptInputItems(text, attachments);
+    const activeTurn = await this.activeTurnForThread(resumed.thread);
+    if (activeTurn) {
+      const steered = await this.transport.request<TurnSteerResponse>(
+        "turn/steer",
+        {
+          threadId,
+          clientUserMessageId: id,
+          input,
+          expectedTurnId: activeTurn.id,
+        },
+        this.timeoutMs,
+      );
+      const turnId = steered.turnId ?? activeTurn.id;
+      const completed = await this.waitForTurnCompletion(threadId, turnId, replyMode);
+      return {
+        id,
+        threadId,
+        turnId,
+        replyMode,
+        ...completed,
+      };
+    }
+
     const response = await this.transport.request<TurnStartResponse>(
       "turn/start",
       {
         threadId,
         clientUserMessageId: id,
-        input: promptInputItems(text, attachments),
+        input,
+        ...(runtimeWorkspaceRoots.length ? { runtimeWorkspaceRoots } : {}),
       },
       this.timeoutMs,
     );
@@ -611,6 +720,107 @@ export class CodexGuiAppServerBridge {
     return response.thread;
   }
 
+  private async sendPromptViaDesktopIpc(args: {
+    id: string;
+    threadId: string;
+    text: string;
+    attachments: CodexGuiPromptAttachment[];
+    replyMode: CodexGuiReplyMode;
+  }): Promise<CodexGuiPromptResult> {
+    const thread = await this.readThreadWithTurns(args.threadId);
+    const input = promptInputItems(args.text, args.attachments);
+    const runtimeWorkspaceRoots = promptWorkspaceRoots(thread, args.attachments);
+    const activeTurn = await this.activeTurnForThread(thread);
+
+    if (activeTurn) {
+      const steered = await this.transport.request<TurnSteerResponse>(
+        "turn/steer",
+        {
+          threadId: args.threadId,
+          clientUserMessageId: args.id,
+          input,
+          expectedTurnId: activeTurn.id,
+        },
+        this.timeoutMs,
+      );
+      const turnId = steered.turnId ?? activeTurn.id;
+      return {
+        id: args.id,
+        threadId: args.threadId,
+        turnId,
+        replyMode: args.replyMode,
+        ...await this.waitForTurnCompletion(args.threadId, turnId, args.replyMode),
+      };
+    }
+
+    const startParams = {
+      conversationId: args.threadId,
+      turnStartParams: {
+        input,
+        attachments: [],
+        clientUserMessageId: args.id,
+        ...(runtimeWorkspaceRoots.length ? { runtimeWorkspaceRoots } : {}),
+      },
+    };
+    let response: DesktopIpcStartTurnResponse;
+    try {
+      response = await this.desktopIpcTransport.request<DesktopIpcStartTurnResponse>(
+        "thread-follower-start-turn",
+        startParams,
+        this.desktopIpcTimeoutMs,
+      );
+    } catch (error) {
+      if (!isDesktopIpcNoClientFound(error)) throw error;
+      await this.guiThreadOpener(args.threadId);
+      await sleep(this.desktopIpcThreadOpenDelayMs);
+      response = await this.desktopIpcTransport.request<DesktopIpcStartTurnResponse>(
+        "thread-follower-start-turn",
+        startParams,
+        this.desktopIpcTimeoutMs,
+      );
+    }
+    const turn = response.result?.turn;
+    const turnId = turn?.id;
+    if (!turnId) {
+      throw new Error(
+        "Codex Desktop IPC accepted the request but did not return a turn id.",
+      );
+    }
+    const started = resultFromTurn(turn, args.threadId, turnId, args.replyMode);
+    if (started?.finalText || isTerminalStatus(started?.status)) {
+      return {
+        id: args.id,
+        threadId: args.threadId,
+        turnId,
+        replyMode: args.replyMode,
+        ...started,
+      };
+    }
+
+    return {
+      id: args.id,
+      threadId: args.threadId,
+      turnId,
+      replyMode: args.replyMode,
+      ...await this.waitForTurnCompletion(args.threadId, turnId, args.replyMode),
+    };
+  }
+
+  private async activeTurnForThread(thread: RawThread): Promise<RawTurn | undefined> {
+    if (thread.status?.type !== "active") return undefined;
+    const withTurns = thread.turns?.length ? thread : await this.readThreadWithTurns(thread.id);
+    const activeTurn = [...(withTurns.turns ?? [])]
+      .reverse()
+      .find((turn) => turn.status === "inProgress");
+    if (!activeTurn) {
+      throw new Error(
+        `Codex thread ${thread.id} is active, but its active turn id is unavailable. ` +
+          "Wait for the current operation to settle, then retry.",
+      );
+    }
+    return activeTurn;
+  }
+
   private async sendPromptViaGuiAutomation(args: {
     id: string;
     threadId: string;
@@ -618,33 +828,46 @@ export class CodexGuiAppServerBridge {
     attachments: CodexGuiPromptAttachment[];
     replyMode: CodexGuiReplyMode;
   }): Promise<CodexGuiPromptResult> {
-    const before = await this.readThreadWithTurns(args.threadId);
-    const previousTurnIds = new Set((before.turns ?? []).map((turn) => turn.id));
+    return this.trackActivePrompt(args.threadId, async () => {
+      const before = await this.readThreadWithTurns(args.threadId);
+      const previousTurnIds = new Set((before.turns ?? []).map((turn) => turn.id));
 
-    await this.guiPromptInjector(textWithAttachmentReferences(args.text, args.attachments), {
-      threadId: args.threadId,
-      threadTitle: this.binding?.threadId === args.threadId
-        ? this.binding.title
-        : undefined,
-      threadOpenDelayMs: this.guiThreadOpenDelayMs,
+      await this.guiPromptInjector(textWithAttachmentReferences(args.text, args.attachments), {
+        threadId: args.threadId,
+        threadTitle: this.binding?.threadId === args.threadId
+          ? this.binding.title
+          : undefined,
+        threadOpenDelayMs: this.guiThreadOpenDelayMs,
+      });
+      const completed = await this.waitForNextThreadTurn(
+        args.threadId,
+        previousTurnIds,
+        args.replyMode,
+      );
+
+      return {
+        id: args.id,
+        threadId: args.threadId,
+        turnId: completed.turnId,
+        status: completed.status,
+        finalText: completed.finalText,
+        replyParts: completed.replyParts,
+        ...(completed.outputFiles?.length ? { outputFiles: completed.outputFiles } : {}),
+        replyMode: args.replyMode,
+        error: completed.error,
+      };
     });
-    const completed = await this.waitForNextThreadTurn(
-      args.threadId,
-      previousTurnIds,
-      args.replyMode,
-    );
+  }
 
-    return {
-      id: args.id,
-      threadId: args.threadId,
-      turnId: completed.turnId,
-      status: completed.status,
-      finalText: completed.finalText,
-      replyParts: completed.replyParts,
-      ...(completed.outputFiles?.length ? { outputFiles: completed.outputFiles } : {}),
-      replyMode: args.replyMode,
-      error: completed.error,
-    };
+  private async trackActivePrompt<T>(threadId: string, task: () => Promise<T>): Promise<T> {
+    this.activePromptCounts.set(threadId, (this.activePromptCounts.get(threadId) ?? 0) + 1);
+    try {
+      return await task();
+    } finally {
+      const remaining = (this.activePromptCounts.get(threadId) ?? 1) - 1;
+      if (remaining > 0) this.activePromptCounts.set(threadId, remaining);
+      else this.activePromptCounts.delete(threadId);
+    }
   }
 
   private async waitForNextThreadTurn(
@@ -659,10 +882,10 @@ export class CodexGuiAppServerBridge {
     outputFiles?: CodexGuiOutputFile[];
     error?: string;
   }> {
-    const deadline = Date.now() + this.turnTimeoutMs;
+    const observationDeadline = Date.now() + this.turnTimeoutMs;
     let latestNewTurn: RawTurn | undefined;
 
-    while (Date.now() < deadline) {
+    while (true) {
       const thread = await this.readThreadWithTurns(threadId);
       const newTurns = (thread.turns ?? []).filter((turn) => !previousTurnIds.has(turn.id));
       latestNewTurn = newTurns.at(-1) ?? latestNewTurn;
@@ -674,22 +897,15 @@ export class CodexGuiAppServerBridge {
         };
       }
 
+      if (!latestNewTurn && Date.now() >= observationDeadline) {
+        throw new Error(
+          "Timed out waiting for a new Codex GUI turn. Make sure the Codex app is open, " +
+            "the bound chat is visible, and the app running wechat2all has Accessibility permission.",
+        );
+      }
+
       await sleep(this.guiPollIntervalMs);
     }
-
-    if (latestNewTurn) {
-      return {
-        turnId: latestNewTurn.id,
-        status: latestNewTurn.status ?? "inProgress",
-        ...resultFromItems(latestNewTurn.items ?? [], replyMode),
-        error: errorText(latestNewTurn.error),
-      };
-    }
-
-    throw new Error(
-      "Timed out waiting for a new Codex GUI turn. Make sure the Codex app is open, " +
-        "the bound chat is visible, and the app running wechat2all has Accessibility permission.",
-    );
   }
 
   private waitForTurnCompletion(
@@ -707,23 +923,32 @@ export class CodexGuiAppServerBridge {
 
     return new Promise((resolve, reject) => {
       let unsubscribe: (() => void) | undefined;
-      const timer = setTimeout(() => {
+      let pollTimer: ReturnType<typeof setTimeout> | undefined;
+      let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+      let settled = false;
+      let turnObserved = false;
+
+      const handleObservationTimeout = () => {
+        if (settled || turnObserved) return;
+        settled = true;
+        if (pollTimer) clearTimeout(pollTimer);
         unsubscribe?.();
-        const partial = resultFromItems(completedItems, replyMode);
-        const hasPartial = Boolean(
-          partial.finalText ||
-            (partial.replyParts && partial.replyParts.length > 0) ||
-            (partial.outputFiles && partial.outputFiles.length > 0),
-        );
-        if (hasPartial) {
-          resolve({
-            status: "inProgress",
-            ...partial,
-          });
-          return;
+        reject(new Error(
+          `Codex turn ${turnId} was not observable within ${this.turnTimeoutMs}ms. ` +
+            "The target thread may be busy in another Codex process.",
+        ));
+      };
+      timeoutTimer = setTimeout(handleObservationTimeout, this.turnTimeoutMs);
+      timeoutTimer.unref?.();
+
+      const markTurnObserved = () => {
+        if (turnObserved) return;
+        turnObserved = true;
+        if (timeoutTimer) {
+          clearTimeout(timeoutTimer);
+          timeoutTimer = undefined;
         }
-        reject(new Error(`Timed out waiting for Codex turn ${turnId} to complete.`));
-      }, this.turnTimeoutMs);
+      };
 
       const finish = (result: {
         status?: TurnStatus;
@@ -732,22 +957,77 @@ export class CodexGuiAppServerBridge {
         outputFiles?: CodexGuiOutputFile[];
         error?: string;
       }) => {
-        clearTimeout(timer);
+        if (settled) return;
+        settled = true;
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+        if (pollTimer) clearTimeout(pollTimer);
         unsubscribe?.();
         resolve(result);
+      };
+
+      const poll = async (): Promise<void> => {
+        if (settled) return;
+        try {
+          const thread = await this.readThreadWithTurns(threadId);
+          const observed = (thread.turns ?? []).find((turn) => turn.id === turnId);
+          if (observed) {
+            markTurnObserved();
+            const items = mergeThreadItems(
+              completedItems,
+              observed.items ?? [],
+            );
+            const parsed = resultFromItems(items, replyMode);
+            if (hasFinalAnswerItem(items) || parsed.outputFiles?.length) {
+              finish({
+                status: observed.status,
+                ...parsed,
+                error: errorText(observed.error),
+              });
+              return;
+            }
+            if (isTerminalStatus(observed.status)) {
+              finish({
+                status: observed.status,
+                ...resultFromItems(
+                  items,
+                  replyMode,
+                ),
+                error: errorText(observed.error),
+              });
+              return;
+            }
+          }
+        } catch {
+          // Notifications remain authoritative while transient polling fails.
+        }
+        if (!settled) {
+          pollTimer = setTimeout(poll, this.guiPollIntervalMs);
+          pollTimer.unref?.();
+        }
       };
 
       unsubscribe = this.transport.onNotification?.((method, params) => {
         if (method === "item/completed") {
           const notification = params as ItemCompletedNotification;
           if (notification.threadId !== threadId || notification.turnId !== turnId) return;
-          if (notification.item) completedItems.push(notification.item);
+          markTurnObserved();
+          if (notification.item) {
+            completedItems.push(notification.item);
+            const parsed = resultFromItems(completedItems, replyMode);
+            if (hasFinalAnswerItem(completedItems) || parsed.outputFiles?.length) {
+              finish({
+                status: "inProgress",
+                ...parsed,
+              });
+            }
+          }
           return;
         }
 
         if (method === "turn/completed") {
           const notification = params as TurnCompletedNotification;
           if (notification.threadId !== threadId || notification.turn?.id !== turnId) return;
+          markTurnObserved();
           const items = mergeThreadItems(completedItems, notification.turn.items ?? []);
           finish({
             status: notification.turn.status,
@@ -757,16 +1037,13 @@ export class CodexGuiAppServerBridge {
         }
       });
 
-      if (!unsubscribe) {
-        clearTimeout(timer);
-        resolve({});
-      }
+      void poll();
     });
   }
 
   private ensureInitialized(): Promise<void> {
     if (!this.initialized) {
-      this.initialized = (async () => {
+      const attempt = (async () => {
         await this.transport.request(
           "initialize",
           {
@@ -785,8 +1062,21 @@ export class CodexGuiAppServerBridge {
         );
         this.transport.notify?.("initialized", {});
       })();
+      this.initialized = attempt;
+      void attempt.catch(() => {
+        if (this.initialized === attempt) this.initialized = undefined;
+      });
     }
     return this.initialized;
+  }
+
+  private async ensureBindingLoaded(): Promise<void> {
+    if (this.bindingLoaded) return;
+    this.bindingLoaded = true;
+    if (!this.bindingConfigPath) return;
+    this.binding = await readCodexGuiBinding({
+      configPath: this.bindingConfigPath,
+    });
   }
 }
 
@@ -794,15 +1084,25 @@ function isTerminalStatus(status: TurnStatus | undefined): boolean {
   return status === "completed" || status === "interrupted" || status === "failed";
 }
 
+function hasFinalAnswerItem(items: ThreadItem[]): boolean {
+  return items.some((item) =>
+    item.type === "agentMessage" &&
+    item.phase === "final_answer" &&
+    typeof item.text === "string" &&
+    item.text.trim().length > 0
+  );
+}
+
+function isDesktopIpcNoClientFound(error: unknown): boolean {
+  return error instanceof Error && /\bno-client-found\b/i.test(error.message);
+}
+
 function isCompletedTurnForGuiPolling(turn: RawTurn): boolean {
+  if (hasFinalAnswerItem(turn.items ?? [])) return true;
+  if (resultFromItems(turn.items ?? [], "silent").outputFiles?.length) return true;
   if (turn.status === "completed" || turn.status === "failed") return true;
   if (turn.status !== "interrupted") return false;
-  return Boolean(
-    resultFromItems(turn.items ?? [], "final").finalText ||
-      resultFromItems(turn.items ?? [], "stream").replyParts?.length ||
-      resultFromItems(turn.items ?? [], "final").outputFiles?.length ||
-      errorText(turn.error),
-  );
+  return Boolean(errorText(turn.error));
 }
 
 function sleep(ms: number): Promise<void> {
@@ -812,7 +1112,8 @@ function sleep(ms: number): Promise<void> {
 function isUsablePromptAttachment(
   attachment: CodexGuiPromptAttachment,
 ): boolean {
-  return attachment.kind === "image" && attachment.filePath.trim().length > 0;
+  return (attachment.kind === "image" || attachment.kind === "file") &&
+    attachment.filePath.trim().length > 0;
 }
 
 function promptInputItems(
@@ -820,14 +1121,16 @@ function promptInputItems(
   attachments: CodexGuiPromptAttachment[],
 ): unknown[] {
   const input: unknown[] = [];
-  if (text) {
+  const textWithAttachments = textWithAttachmentReferences(text, attachments);
+  if (textWithAttachments) {
     input.push({
       type: "text",
-      text,
+      text: textWithAttachments,
       text_elements: [],
     });
   }
   for (const attachment of attachments) {
+    if (attachment.kind !== "image") continue;
     input.push({
       type: "localImage",
       path: attachment.filePath,
@@ -836,27 +1139,56 @@ function promptInputItems(
   return input;
 }
 
+function promptWorkspaceRoots(
+  thread: RawThread,
+  attachments: CodexGuiPromptAttachment[],
+): string[] {
+  const roots = [
+    thread.cwd,
+    ...attachments.map((attachment) => path.dirname(path.resolve(attachment.filePath))),
+  ].filter((value): value is string => Boolean(value && path.isAbsolute(value)));
+  return [...new Set(roots)];
+}
+
 function textWithAttachmentReferences(
   text: string,
   attachments: CodexGuiPromptAttachment[],
 ): string {
-  if (!attachments.length) return text;
-  const lines = attachments.map((attachment, index) => {
+  const fileAttachments = attachments.filter((attachment) => attachment.kind === "file");
+  if (!fileAttachments.length) return text;
+  const lines = fileAttachments.map((attachment, index) => {
     const label = attachment.fileName ? `${attachment.fileName}: ` : "";
-    return `image ${index + 1}: ${label}${attachment.filePath}`;
+    const size = typeof attachment.size === "number" ? ` (${attachment.size} bytes)` : "";
+    const mime = attachment.mimeType ? ` [${attachment.mimeType}]` : "";
+    return `- file ${index + 1}: ${label}${attachment.filePath}${mime}${size}`;
   });
   return [
     ...(text ? [text, ""] : []),
-    "WeChat image attachments:",
+    "WeChat attachments for this request are cached on this computer.",
+    "Use these local paths directly when answering:",
     ...lines,
   ].join("\n");
 }
 
-const IMAGE_EXTENSION_PATTERN = /\.(?:png|jpe?g|gif|webp|bmp|tiff?)(?:[#?][^\s)\]]*)?$/i;
+const IMAGE_EXTENSIONS = "png|jpe?g|gif|webp|bmp|tiff?";
+const FILE_EXTENSIONS =
+  "pdf|docx?|xlsx?|pptx?|csv|tsv|txt|md|rtf|epub|json|jsonl|ya?ml|toml|ini|log|xml|html?|css|scss|less|sql|db|sqlite3?|py|js|mjs|cjs|jsx|ts|tsx|sh|zsh|fish|rs|go|java|kt|swift|c|cc|cpp|h|hpp|rb|php|tex|ics|vcf|parquet|zip|rar|7z|tar|gz|dmg|pkg|mp3|m4a|aac|amr|opus|silk|spx|wav|ogg|flac|aiff?|caf|mp4|m4v|mov|webm|mkv|avi";
+const IMAGE_EXTENSION_PATTERN = new RegExp(
+  `\\.(?:${IMAGE_EXTENSIONS})(?:[#?][^\\s)\\]]*)?$`,
+  "i",
+);
+const FILE_EXTENSION_PATTERN =
+  new RegExp(`\\.(?:${FILE_EXTENSIONS})(?:[#?][^\\s)\\]]*)?$`, "i");
 const MARKDOWN_IMAGE_PATTERN = /!\[[^\]]*]\(([^)\]]+)\)/g;
+const MARKDOWN_LINK_PATTERN = /!?\[[^\]]*]\(([^)\]]+)\)/g;
 const FILE_URL_PATTERN = /file:\/\/[^\s)\]]+/g;
-const ABSOLUTE_IMAGE_PATH_PATTERN = /\/[^\s)\]]+\.(?:png|jpe?g|gif|webp|bmp|tiff?)(?:[#?][^\s)\]]*)?/gi;
-const IMAGE_PATH_KEYS = [
+const ABSOLUTE_IMAGE_PATH_PATTERN = new RegExp(
+  `\\/[^\\n\\r]+?\\.(?:${IMAGE_EXTENSIONS})(?:[#?][^\\s)\\]]*)?`,
+  "gi",
+);
+const ABSOLUTE_FILE_PATH_PATTERN =
+  new RegExp(`\\/[^\\n\\r]+?\\.(?:${FILE_EXTENSIONS})(?:[#?][^\\s)\\]]*)?`, "gi");
+const FILE_PATH_KEYS = [
   "image_url",
   "imageUrl",
   "filePath",
@@ -877,9 +1209,25 @@ function stripUrlFragment(value: string): string {
   return value.replace(/[?#].*$/, "");
 }
 
-function localImagePath(value: unknown, requireImageExtension = false): string | undefined {
+function stripPathWrappers(value: string): string {
+  return value
+    .trim()
+    .replace(/^<|>$/g, "")
+    .replace(/^["'“‘]|["'”’]$/g, "")
+    .replace(/[.,;:!?，。；：！？）)]$/g, "");
+}
+
+function decodeLocalPath(value: string): string {
+  try {
+    return decodeURI(value);
+  } catch {
+    return value;
+  }
+}
+
+function localFilePath(value: unknown, requireImageExtension = false): string | undefined {
   if (typeof value !== "string") return undefined;
-  const cleaned = value.trim().replace(/^<|>$/g, "");
+  const cleaned = stripPathWrappers(value);
   if (!cleaned) return undefined;
   try {
     if (cleaned.startsWith("file://")) {
@@ -890,34 +1238,70 @@ function localImagePath(value: unknown, requireImageExtension = false): string |
   } catch {
     return undefined;
   }
-  const withoutFragment = stripUrlFragment(cleaned);
+  const withoutFragment = decodeLocalPath(stripUrlFragment(cleaned));
   if (!path.isAbsolute(withoutFragment)) return undefined;
   if (requireImageExtension && !IMAGE_EXTENSION_PATTERN.test(withoutFragment)) return undefined;
   return withoutFragment;
 }
 
-function existingLocalImagePath(value: unknown, requireImageExtension = false): string | undefined {
-  const filePath = localImagePath(value, requireImageExtension);
-  if (!filePath || !existsSync(filePath)) return undefined;
+function existingLocalFilePath(value: unknown, requireImageExtension = false): string | undefined {
+  const filePath = localFilePath(value, requireImageExtension);
+  if (!filePath || !isRegularFile(filePath)) return undefined;
   return filePath;
+}
+
+function isRegularFile(filePath: string): boolean {
+  try {
+    return statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function outputFileKind(filePath: string): CodexGuiOutputFile["kind"] {
+  return IMAGE_EXTENSION_PATTERN.test(filePath) ? "image" : "file";
+}
+
+function outputFileFromPath(
+  filePath: string | undefined,
+  source: string,
+): CodexGuiOutputFile | undefined {
+  if (!filePath) return undefined;
+  return {
+    kind: outputFileKind(filePath),
+    filePath,
+    source,
+  };
 }
 
 function outputFilesFromText(text: string, source: string): CodexGuiOutputFile[] {
   const files: CodexGuiOutputFile[] = [];
-  for (const match of text.matchAll(MARKDOWN_IMAGE_PATTERN)) {
-    const filePath = existingLocalImagePath(match[1], true);
-    if (filePath) files.push({ kind: "image", filePath, source: "markdown" });
+  for (const match of text.matchAll(MARKDOWN_LINK_PATTERN)) {
+    const filePath = existingLocalFilePath(match[1], true) ??
+      existingLocalFilePath(match[1], false);
+    const file = outputFileFromPath(filePath, "markdown");
+    if (file) files.push(file);
   }
   for (const match of text.matchAll(FILE_URL_PATTERN)) {
-    const filePath = existingLocalImagePath(match[0], true);
-    if (filePath) files.push({ kind: "image", filePath, source });
+    const filePath = existingLocalFilePath(match[0], false);
+    const file = outputFileFromPath(filePath, source);
+    if (file) files.push(file);
   }
   const textWithoutUrls = text
     .replace(MARKDOWN_IMAGE_PATTERN, " ")
+    .replace(MARKDOWN_LINK_PATTERN, " ")
     .replace(FILE_URL_PATTERN, " ");
   for (const match of textWithoutUrls.matchAll(ABSOLUTE_IMAGE_PATH_PATTERN)) {
-    const filePath = existingLocalImagePath(match[0], true);
-    if (filePath) files.push({ kind: "image", filePath, source });
+    const filePath = existingLocalFilePath(match[0], true);
+    const file = outputFileFromPath(filePath, source);
+    if (file) files.push(file);
+  }
+  for (const match of textWithoutUrls.matchAll(ABSOLUTE_FILE_PATH_PATTERN)) {
+    const filePath = existingLocalFilePath(match[0], false);
+    if (filePath && FILE_EXTENSION_PATTERN.test(filePath)) {
+      const file = outputFileFromPath(filePath, source);
+      if (file) files.push(file);
+    }
   }
   return dedupeOutputFiles(files);
 }
@@ -963,10 +1347,10 @@ function sanitizedImageBaseName(value: unknown): string {
 }
 
 function imageGenerationOutputPath(record: Record<string, unknown>, extension: string): string {
-  const candidates = IMAGE_PATH_KEYS
-    .map((key) => localImagePath(record[key], false))
+  const candidates = FILE_PATH_KEYS
+    .map((key) => localFilePath(record[key], false))
     .filter((value): value is string => Boolean(value));
-  const preferred = candidates.find((candidate) => existsSync(candidate));
+  const preferred = candidates.find((candidate) => isRegularFile(candidate));
   if (preferred) return preferred;
 
   const declared = candidates.find((candidate) => IMAGE_EXTENSION_PATTERN.test(candidate));
@@ -988,10 +1372,12 @@ function materializedImageGenerationFiles(
 
   const filePath = imageGenerationOutputPath(record, image.extension);
   try {
+    if (existsSync(filePath) && !isRegularFile(filePath)) return [];
     if (!existsSync(filePath)) {
       mkdirSync(path.dirname(filePath), { recursive: true });
       writeFileSync(filePath, image.buffer);
     }
+    if (!isRegularFile(filePath)) return [];
   } catch {
     return [];
   }
@@ -1014,9 +1400,10 @@ function outputFilesFromUnknown(
 
   const record = value as Record<string, unknown>;
   const files: CodexGuiOutputFile[] = materializedImageGenerationFiles(record, source);
-  for (const key of IMAGE_PATH_KEYS) {
-    const filePath = existingLocalImagePath(record[key], key === "url");
-    if (filePath) files.push({ kind: "image", filePath, source });
+  for (const key of FILE_PATH_KEYS) {
+    const filePath = existingLocalFilePath(record[key], false);
+    const file = outputFileFromPath(filePath, source);
+    if (file) files.push(file);
   }
   if (typeof record.text === "string") {
     files.push(...outputFilesFromText(record.text, source));
@@ -1152,6 +1539,16 @@ export function createCodexGuiBridgeClientFromEnv(
     codexCommand: stripEnvQuotes(env.CODEX_CLI_PATH) ??
       stripEnvQuotes(env.WECHAT2ALL_CODEX_BIN),
     socketPath: stripEnvQuotes(env.WECHAT2ALL_CODEX_APP_SERVER_SOCKET),
+    desktopIpcSocketPath: stripEnvQuotes(env.WECHAT2ALL_CODEX_DESKTOP_IPC_SOCKET),
+    desktopIpcTimeoutMs: envNumber(env, "WECHAT2ALL_CODEX_DESKTOP_IPC_TIMEOUT_MS"),
+    desktopIpcThreadOpenDelayMs: envNumber(
+      env,
+      "WECHAT2ALL_CODEX_DESKTOP_IPC_THREAD_OPEN_DELAY_MS",
+    ),
+    bindingConfigPath: codexGuiBindingConfigPath({
+      env,
+      configPath: stripEnvQuotes(env.WECHAT2ALL_CODEX_GUI_BINDING_FILE),
+    }),
     autoOpenConfigPath: stripEnvQuotes(env.WECHAT2ALL_CODEX_GUI_AUTOOPEN_FILE),
     alarmConfigPath: stripEnvQuotes(env.WECHAT2ALL_CODEX_GUI_ALARM_FILE),
     enableAlarmScheduler: opts.enableAlarmScheduler,
@@ -1160,6 +1557,8 @@ export function createCodexGuiBridgeClientFromEnv(
     replyMode: parseReplyMode(env.WECHAT2ALL_CODEX_REPLY_MODE),
     timeoutMs: envNumber(env, "WECHAT2ALL_CODEX_APP_SERVER_TIMEOUT_MS"),
     turnTimeoutMs: envNumber(env, "WECHAT2ALL_CODEX_TURN_TIMEOUT_MS"),
+    inProgressGraceMs: envNumber(env, "WECHAT2ALL_CODEX_IN_PROGRESS_GRACE_MS"),
+    compactionGraceMs: envNumber(env, "WECHAT2ALL_CODEX_COMPACTION_GRACE_MS"),
     guiPollIntervalMs: envNumber(env, "WECHAT2ALL_CODEX_GUI_POLL_INTERVAL_MS"),
     guiThreadOpenDelayMs: envNumber(env, "WECHAT2ALL_CODEX_GUI_THREAD_OPEN_DELAY_MS"),
     listLimit: envNumber(env, "WECHAT2ALL_CODEX_LIST_LIMIT"),
@@ -1170,7 +1569,11 @@ function parseDeliveryMode(
   value: string | undefined,
 ): CodexGuiDeliveryMode | undefined {
   const mode = stripEnvQuotes(value);
-  if (mode === "app-server" || mode === "gui-automation") return mode;
+  if (
+    mode === "app-server" ||
+    mode === "desktop-ipc" ||
+    mode === "gui-automation"
+  ) return mode;
   return undefined;
 }
 

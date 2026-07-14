@@ -42,14 +42,15 @@ export interface CodexGuiPrompt {
 }
 
 export interface CodexGuiPromptAttachment {
-  kind: "image";
+  kind: "image" | "file";
   filePath: string;
   fileName?: string;
   mimeType?: string;
+  size?: number;
 }
 
 export interface CodexGuiOutputFile {
-  kind: "image";
+  kind: "image" | "file";
   filePath: string;
   mimeType?: string;
   source?: string;
@@ -67,7 +68,7 @@ export interface CodexGuiPromptResult {
   error?: string;
 }
 
-export type CodexGuiDeliveryMode = "app-server" | "gui-automation";
+export type CodexGuiDeliveryMode = "app-server" | "desktop-ipc" | "gui-automation";
 export type CodexGuiReplyMode = "final" | "silent" | "stream";
 
 export interface CodexGuiPromptInjectionContext {
@@ -81,6 +82,8 @@ export type CodexGuiPromptInjector = (
   context?: CodexGuiPromptInjectionContext,
 ) => Promise<void>;
 
+export type CodexGuiThreadOpener = (threadId: string) => Promise<void>;
+
 export interface CodexAppServerTransport {
   request<T>(method: string, params?: unknown, timeoutMs?: number): Promise<T>;
   notify?(method: string, params?: unknown): void;
@@ -90,10 +93,20 @@ export interface CodexAppServerTransport {
   close?(): void;
 }
 
+export interface CodexDesktopIpcTransport {
+  request<T>(method: string, params?: unknown, timeoutMs?: number): Promise<T>;
+  close?(): void;
+}
+
 export interface CodexGuiBridgeOptions {
   transport?: CodexAppServerTransport;
+  desktopIpcTransport?: CodexDesktopIpcTransport;
   codexCommand?: string;
   socketPath?: string;
+  desktopIpcSocketPath?: string;
+  desktopIpcTimeoutMs?: number;
+  desktopIpcThreadOpenDelayMs?: number;
+  bindingConfigPath?: string;
   autoOpenConfigPath?: string;
   alarmConfigPath?: string;
   enableAlarmScheduler?: boolean;
@@ -101,8 +114,11 @@ export interface CodexGuiBridgeOptions {
   deliveryMode?: CodexGuiDeliveryMode;
   replyMode?: CodexGuiReplyMode;
   guiPromptInjector?: CodexGuiPromptInjector;
+  guiThreadOpener?: CodexGuiThreadOpener;
   timeoutMs?: number;
   turnTimeoutMs?: number;
+  inProgressGraceMs?: number;
+  compactionGraceMs?: number;
   guiPollIntervalMs?: number;
   guiThreadOpenDelayMs?: number;
   listLimit?: number;

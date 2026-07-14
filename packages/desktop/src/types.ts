@@ -1,4 +1,4 @@
-export type PageKey = "wechat" | "routes" | "agents" | "trace" | "settings";
+export type PageKey = "home" | "config" | "routes" | "agents" | "trace";
 
 export interface ProfileStatus {
   id: string;

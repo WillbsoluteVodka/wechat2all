@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { resolveCodexGuiAppTarget } from "./gui-app.js";
+
 export interface CodexGuiAutoOpenState {
   enabled: boolean;
   updatedAt?: number;
@@ -111,8 +113,14 @@ export async function writeCodexGuiAutoOpen(
     enabled,
     updatedAt: Date.now(),
   };
-  await fs.mkdir(path.dirname(configPath), { recursive: true });
-  await fs.writeFile(configPath, `${JSON.stringify(state, null, 2)}\n`, "utf-8");
+  const dir = path.dirname(configPath);
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  await fs.chmod(dir, 0o700).catch(() => undefined);
+  await fs.writeFile(configPath, `${JSON.stringify(state, null, 2)}\n`, {
+    encoding: "utf-8",
+    mode: 0o600,
+  });
+  await fs.chmod(configPath, 0o600).catch(() => undefined);
   return state;
 }
 
@@ -164,17 +172,14 @@ export async function ensureCodexGuiOpen(
   const env = opts.env ?? process.env;
   const platform = opts.platform ?? process.platform;
   const commandRunner = opts.commandRunner ?? defaultCommandRunner;
-  const appName = opts.appName ??
-    stripEnvQuotes(env.WECHAT2ALL_CODEX_GUI_APP_NAME) ??
-    "Codex";
-  const appPath = opts.appPath ??
-    stripEnvQuotes(env.WECHAT2ALL_CODEX_GUI_APP_PATH) ??
-    `/Applications/${appName}.app`;
-  const processName = opts.processName ??
-    stripEnvQuotes(env.WECHAT2ALL_CODEX_GUI_PROCESS_NAME) ??
-    appName;
-  const bundleId = opts.bundleId ??
-    stripEnvQuotes(env.WECHAT2ALL_CODEX_GUI_BUNDLE_ID);
+  const target = resolveCodexGuiAppTarget({
+    env,
+    appName: opts.appName,
+    appPath: opts.appPath,
+    processName: opts.processName,
+    bundleId: opts.bundleId,
+  });
+  const { appName, appPath, processName, bundleId } = target;
   const autoOpenOverride = parseBoolean(env.WECHAT2ALL_CODEX_AUTOOPEN);
   const state = opts.force || autoOpenOverride === true
     ? { enabled: true }

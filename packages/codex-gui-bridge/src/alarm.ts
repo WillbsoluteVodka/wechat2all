@@ -94,8 +94,14 @@ export async function writeCodexGuiAlarm(
   opts: CodexGuiAlarmPathOptions = {},
 ): Promise<CodexGuiAlarmState> {
   const configPath = codexGuiAlarmConfigPath(opts);
-  await fs.mkdir(path.dirname(configPath), { recursive: true });
-  await fs.writeFile(configPath, `${JSON.stringify(state, null, 2)}\n`, "utf-8");
+  const dir = path.dirname(configPath);
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  await fs.chmod(dir, 0o700).catch(() => undefined);
+  await fs.writeFile(configPath, `${JSON.stringify(state, null, 2)}\n`, {
+    encoding: "utf-8",
+    mode: 0o600,
+  });
+  await fs.chmod(configPath, 0o600).catch(() => undefined);
   return state;
 }
 

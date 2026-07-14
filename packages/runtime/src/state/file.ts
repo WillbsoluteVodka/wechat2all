@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -30,8 +31,22 @@ interface ProcessedMessagesFile {
 const DEFAULT_MAX_PROCESSED_MESSAGES = 5_000;
 const DEFAULT_PROCESSED_MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
+function safeProfileDirName(profileId: string): string {
+  const safe = profileId
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^[._-]+|[._-]+$/g, "") || "profile";
+  if (safe === profileId) return safe;
+  const digest = crypto
+    .createHash("sha256")
+    .update(profileId)
+    .digest("hex")
+    .slice(0, 8);
+  return `${safe}-${digest}`;
+}
+
 async function ensureDir(dir: string): Promise<void> {
-  await fs.mkdir(dir, { recursive: true });
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  await fs.chmod(dir, 0o700).catch(() => undefined);
 }
 
 async function readJson<T>(filePath: string): Promise<T | null> {
@@ -45,8 +60,12 @@ async function readJson<T>(filePath: string): Promise<T | null> {
 async function writeJson(filePath: string, value: unknown): Promise<void> {
   await ensureDir(path.dirname(filePath));
   const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`;
-  await fs.writeFile(tmpPath, JSON.stringify(value, null, 2), "utf-8");
+  await fs.writeFile(tmpPath, JSON.stringify(value, null, 2), {
+    encoding: "utf-8",
+    mode: 0o600,
+  });
   await fs.rename(tmpPath, filePath);
+  await fs.chmod(filePath, 0o600).catch(() => undefined);
 }
 
 async function removeFile(filePath: string): Promise<void> {
@@ -54,6 +73,24 @@ async function removeFile(filePath: string): Promise<void> {
     await fs.unlink(filePath);
   } catch {
     // Missing files are fine for a local state store.
+  }
+}
+
+async function secureStateTree(dir: string): Promise<void> {
+  await fs.chmod(dir, 0o700).catch(() => undefined);
+  let entries: Dirent<string>[];
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const child = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      await secureStateTree(child);
+    } else if (entry.isFile()) {
+      await fs.chmod(child, 0o600).catch(() => undefined);
+    }
   }
 }
 
@@ -74,7 +111,7 @@ export class FileRuntimeStateStore implements RuntimeStateStore {
   profileDir(profileId: string): string {
     return profileId === "default"
       ? this.baseDir
-      : path.join(this.baseDir, "profiles", profileId);
+      : path.join(this.baseDir, "profiles", safeProfileDirName(profileId));
   }
 
   credentialsPath(profileId: string): string {
@@ -99,6 +136,11 @@ export class FileRuntimeStateStore implements RuntimeStateStore {
 
   mediaDir(profileId: string): string {
     return path.join(this.profileDir(profileId), "media");
+  }
+
+  async securePermissions(): Promise<void> {
+    await ensureDir(this.baseDir);
+    await secureStateTree(this.baseDir);
   }
 
   async loadCredentials(profileId: string): Promise<RuntimeSavedCredentials | null> {

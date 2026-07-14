@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 export * from "./types.js";
 export * from "./app-server-rpc.js";
+export * from "./desktop-ipc.js";
 export * from "./alarm.js";
 export * from "./auto-open.js";
+export * from "./binding.js";
+export * from "./gui-app.js";
 export * from "./gui-automation.js";
 export * from "./client.js";
 

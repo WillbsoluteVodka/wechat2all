@@ -3,10 +3,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 
 import {
   CodexGuiAppServerBridge,
   type CodexAppServerTransport,
+  type CodexDesktopIpcTransport,
 } from "../src/index.js";
 
 const TINY_PNG_BASE64 =
@@ -19,12 +21,22 @@ async function tempImagePath(fileName = "image.png"): Promise<string> {
   return filePath;
 }
 
+async function tempFilePath(fileName = "report.pdf", content = "file"): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-file-test-"));
+  const filePath = path.join(dir, fileName);
+  await fs.writeFile(filePath, content);
+  return filePath;
+}
+
 class FakeTransport implements CodexAppServerTransport {
   readonly calls: Array<{ method: string; params?: unknown }> = [];
   readonly notifications: Array<{ method: string; params?: unknown }> = [];
   readonly notificationHandlers = new Set<(method: string, params: unknown) => void>();
   readonly guiInjectedTextByThread = new Map<string, string>();
   readonly guiTurnReadCounts = new Map<string, number>();
+  readonly appServerTurnsByThread = new Map<string, Array<Record<string, unknown>>>();
+  threadStatus: { type: string; activeFlags?: unknown[] } = { type: "idle" };
+  activeTurn?: Record<string, unknown>;
 
   async request<T>(method: string, params?: unknown): Promise<T> {
     this.calls.push({ method, params });
@@ -43,7 +55,7 @@ class FakeTransport implements CodexAppServerTransport {
             name: "Bridge work",
             preview: "first message",
             cwd: "/tmp/wechat2all",
-            status: { type: "idle" },
+            status: this.threadStatus,
             recencyAt: 1_785_000_000,
             modelProvider: "openai",
           }],
@@ -60,9 +72,13 @@ class FakeTransport implements CodexAppServerTransport {
             recencyAt: 1_785_000_000,
             modelProvider: "openai",
             turns: readParams.includeTurns
-              ? this.guiInjectedTextByThread.has(readParams.threadId)
-                ? [this.guiTurn(readParams.threadId)]
-                : []
+              ? [
+                  ...(this.activeTurn ? [this.activeTurn] : []),
+                  ...(this.appServerTurnsByThread.get(readParams.threadId) ?? []),
+                  ...(this.guiInjectedTextByThread.has(readParams.threadId)
+                    ? [this.guiTurn(readParams.threadId)]
+                    : []),
+                ]
               : undefined,
           },
         } as T;
@@ -72,11 +88,14 @@ class FakeTransport implements CodexAppServerTransport {
             id: (params as { threadId: string }).threadId,
             name: "Bridge work",
             cwd: "/tmp/wechat2all",
-            status: { type: "idle" },
+            status: this.threadStatus,
+            turns: this.activeTurn ? [this.activeTurn] : undefined,
           },
         } as T;
       case "turn/start":
         return { turn: { id: "turn-1" } } as T;
+      case "turn/steer":
+        return { turnId: (params as { expectedTurnId: string }).expectedTurnId } as T;
       case "account/rateLimits/read":
         return {
           rateLimits: {
@@ -146,6 +165,56 @@ class FakeTransport implements CodexAppServerTransport {
   }
 }
 
+class FakeDesktopIpcTransport implements CodexDesktopIpcTransport {
+  readonly calls: Array<{ method: string; params?: unknown }> = [];
+
+  constructor(
+    private readonly appServer: FakeTransport,
+    private noClientFailures = 0,
+  ) {}
+
+  async request<T>(method: string, params?: unknown): Promise<T> {
+    this.calls.push({ method, params });
+    if (this.noClientFailures > 0) {
+      this.noClientFailures -= 1;
+      throw new Error(
+        "Codex Desktop IPC thread-follower-start-turn failed: no-client-found.",
+      );
+    }
+    const request = params as {
+      conversationId: string;
+      turnStartParams: { input: unknown[] };
+    };
+    this.appServer.appServerTurnsByThread.set(request.conversationId, [{
+      id: "desktop-ipc-turn-1",
+      status: "completed",
+      error: null,
+      items: [
+        {
+          type: "userMessage",
+          id: "desktop-ipc-user-1",
+          content: request.turnStartParams.input,
+        },
+        {
+          type: "agentMessage",
+          id: "desktop-ipc-agent-1",
+          text: "Desktop IPC final answer.",
+          phase: "final_answer",
+        },
+      ],
+    }]);
+    return {
+      result: {
+        turn: {
+          id: "desktop-ipc-turn-1",
+          status: "inProgress",
+          items: [],
+        },
+      },
+    } as T;
+  }
+}
+
 test("lists chats and binds a thread through app-server protocol", async () => {
   const transport = new FakeTransport();
   const bridge = new CodexGuiAppServerBridge({ transport });
@@ -160,6 +229,57 @@ test("lists chats and binds a thread through app-server protocol", async () => {
   assert.equal(binding.project, "wechat2all");
   assert.equal(transport.calls[0].method, "initialize");
   assert.deepEqual(transport.notifications, [{ method: "initialized", params: {} }]);
+});
+
+test("persists a bound thread and restores it in a new bridge instance", async () => {
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-binding-"));
+  const bindingConfigPath = path.join(stateDir, "private", "binding.json");
+  const first = new CodexGuiAppServerBridge({
+    transport: new FakeTransport(),
+    bindingConfigPath,
+  });
+
+  const binding = await first.bindThread("thread-1");
+  first.close();
+
+  const secondTransport = new FakeTransport();
+  const second = new CodexGuiAppServerBridge({
+    transport: secondTransport,
+    bindingConfigPath,
+  });
+  assert.deepEqual(await second.getCurrentBinding(), binding);
+  assert.equal(secondTransport.calls.length, 0);
+  assert.equal((await fs.stat(bindingConfigPath)).mode & 0o077, 0);
+  assert.equal((await fs.stat(path.dirname(bindingConfigPath))).mode & 0o077, 0);
+  second.close();
+});
+
+test("reports working from the latest in-progress turn when thread status is idle", async () => {
+  const transport = new FakeTransport();
+  transport.appServerTurnsByThread.set("thread-1", [{
+    id: "active-turn-1",
+    status: "inProgress",
+    items: [{ id: "user-1", type: "userMessage" }],
+  }]);
+  const bridge = new CodexGuiAppServerBridge({ transport });
+
+  await bridge.bindThread("thread-1");
+  const working = await bridge.getStatus();
+
+  assert.equal(working.state, "working");
+  assert.match(working.summary ?? "", /active-turn-1.*in progress/);
+
+  transport.appServerTurnsByThread.set("thread-1", [{
+    id: "active-turn-1",
+    status: "inProgress",
+    items: [{
+      id: "assistant-1",
+      type: "agentMessage",
+      phase: "final_answer",
+      text: "Done.",
+    }],
+  }]);
+  assert.equal((await bridge.getStatus()).state, "idle");
 });
 
 test("starts a turn with standardized text input on the bound thread", async () => {
@@ -208,6 +328,104 @@ test("starts a turn with standardized text input on the bound thread", async () 
       }],
     },
   );
+});
+
+test("desktop-ipc mode sends text to the exact owning GUI thread", async () => {
+  const transport = new FakeTransport();
+  const desktopIpcTransport = new FakeDesktopIpcTransport(transport);
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    desktopIpcTransport,
+    deliveryMode: "desktop-ipc",
+  });
+
+  await bridge.bindThread("thread-1");
+  const result = await bridge.sendPrompt({
+    id: "wechat-desktop-ipc-text",
+    text: "continue in the bound GUI task",
+  });
+
+  assert.equal(result.turnId, "desktop-ipc-turn-1");
+  assert.equal(result.finalText, "Desktop IPC final answer.");
+  assert.equal(
+    transport.calls.some((call) => call.method === "turn/start"),
+    false,
+  );
+  assert.deepEqual(desktopIpcTransport.calls, [{
+    method: "thread-follower-start-turn",
+    params: {
+      conversationId: "thread-1",
+      turnStartParams: {
+        input: [{
+          type: "text",
+          text: "continue in the bound GUI task",
+          text_elements: [],
+        }],
+        attachments: [],
+        clientUserMessageId: "wechat-desktop-ipc-text",
+        runtimeWorkspaceRoots: ["/tmp/wechat2all"],
+      },
+    },
+  }]);
+});
+
+test("desktop-ipc mode opens an unloaded GUI thread and retries once", async () => {
+  const transport = new FakeTransport();
+  const desktopIpcTransport = new FakeDesktopIpcTransport(transport, 1);
+  const openedThreads: string[] = [];
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    desktopIpcTransport,
+    deliveryMode: "desktop-ipc",
+    desktopIpcThreadOpenDelayMs: 1,
+    guiThreadOpener: async (threadId) => {
+      openedThreads.push(threadId);
+    },
+  });
+
+  await bridge.bindThread("thread-1");
+  const result = await bridge.sendPrompt({
+    id: "wechat-desktop-ipc-open-thread",
+    text: "continue in an unloaded GUI task",
+  });
+
+  assert.equal(result.finalText, "Desktop IPC final answer.");
+  assert.deepEqual(openedThreads, ["thread-1"]);
+  assert.equal(desktopIpcTransport.calls.length, 2);
+  assert.deepEqual(desktopIpcTransport.calls[0], desktopIpcTransport.calls[1]);
+});
+
+test("desktop-ipc mode sends localImage input through the exact GUI thread", async () => {
+  const imagePath = await tempImagePath("wechat-image.png");
+  const transport = new FakeTransport();
+  const desktopIpcTransport = new FakeDesktopIpcTransport(transport);
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    desktopIpcTransport,
+    deliveryMode: "desktop-ipc",
+  });
+
+  await bridge.bindThread("thread-1");
+  const result = await bridge.sendPrompt({
+    id: "wechat-desktop-ipc-image",
+    text: "describe this image",
+    attachments: [{ kind: "image", filePath: imagePath, mimeType: "image/png" }],
+  });
+
+  assert.equal(result.finalText, "Desktop IPC final answer.");
+  const params = desktopIpcTransport.calls[0]?.params as {
+    conversationId: string;
+    turnStartParams: { input: unknown[]; runtimeWorkspaceRoots: string[] };
+  };
+  assert.equal(params.conversationId, "thread-1");
+  assert.deepEqual(params.turnStartParams.input, [
+    { type: "text", text: "describe this image", text_elements: [] },
+    { type: "localImage", path: imagePath },
+  ]);
+  assert.deepEqual(params.turnStartParams.runtimeWorkspaceRoots, [
+    "/tmp/wechat2all",
+    path.dirname(imagePath),
+  ]);
 });
 
 test("starts a turn with image attachments on the bound thread", async () => {
@@ -261,10 +479,268 @@ test("starts a turn with image attachments on the bound thread", async () => {
     {
       threadId: "thread-1",
       clientUserMessageId: "wechat-image-message-1",
-      input: [{
-        type: "localImage",
-        path: "/tmp/wechat-image.jpg",
+      input: [
+        {
+          type: "localImage",
+          path: "/tmp/wechat-image.jpg",
+        },
+      ],
+      runtimeWorkspaceRoots: ["/tmp/wechat2all", "/tmp"],
+    },
+  );
+  assert.deepEqual(
+    transport.calls.find((call) => call.method === "thread/resume")?.params,
+    {
+      threadId: "thread-1",
+      runtimeWorkspaceRoots: ["/tmp/wechat2all", "/tmp"],
+    },
+  );
+});
+
+test("steers image prompts into an active bound turn instead of starting another turn", async () => {
+  const transport = new FakeTransport();
+  transport.threadStatus = { type: "active", activeFlags: [] };
+  transport.activeTurn = {
+    id: "active-turn-1",
+    status: "inProgress",
+    items: [],
+  };
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    guiPollIntervalMs: 1,
+    turnTimeoutMs: 1000,
+  });
+
+  await bridge.bindThread("thread-1");
+  const pending = bridge.sendPrompt({
+    id: "wechat-active-image",
+    text: "用一句话描述图中主体",
+    attachments: [{
+      kind: "image",
+      filePath: "/tmp/wechat-image.jpg",
+      fileName: "wechat-image.jpg",
+      mimeType: "image/jpeg",
+    }],
+  });
+  while (!transport.calls.some((call) => call.method === "turn/steer")) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "active-turn-1",
+      status: "completed",
+      error: null,
+      items: [{
+        type: "agentMessage",
+        id: "assistant-active-image",
+        text: "图中主体是一座白色建筑。",
+        phase: "final_answer",
       }],
+    },
+  });
+
+  const result = await pending;
+  assert.equal(result.finalText, "图中主体是一座白色建筑。");
+  assert.equal(transport.calls.some((call) => call.method === "turn/start"), false);
+  assert.deepEqual(
+    transport.calls.find((call) => call.method === "thread/resume")?.params,
+    {
+      threadId: "thread-1",
+      runtimeWorkspaceRoots: ["/tmp/wechat2all", "/tmp"],
+    },
+  );
+  assert.deepEqual(
+    transport.calls.find((call) => call.method === "turn/steer")?.params,
+    {
+      threadId: "thread-1",
+      clientUserMessageId: "wechat-active-image",
+      input: [
+        {
+          type: "text",
+          text: "用一句话描述图中主体",
+          text_elements: [],
+        },
+        {
+          type: "localImage",
+          path: "/tmp/wechat-image.jpg",
+        },
+      ],
+      expectedTurnId: "active-turn-1",
+    },
+  );
+});
+
+test("polls the bound thread when the completion notification is missed", async () => {
+  const transport = new FakeTransport();
+  transport.appServerTurnsByThread.set("thread-1", [{
+    id: "turn-1",
+    status: "completed",
+    error: null,
+    items: [{
+      type: "agentMessage",
+      id: "assistant-polled",
+      text: "Recovered from thread polling.",
+      phase: "final_answer",
+    }],
+  }]);
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    guiPollIntervalMs: 1,
+    turnTimeoutMs: 1000,
+  });
+
+  await bridge.bindThread("thread-1");
+  const result = await bridge.sendPrompt({
+    id: "wechat-missed-notification",
+    text: "recover this reply",
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.finalText, "Recovered from thread polling.");
+});
+
+test("extends the turn deadline while a long thread is compacting context", async () => {
+  const transport = new FakeTransport();
+  transport.appServerTurnsByThread.set("thread-1", [{
+    id: "turn-1",
+    status: "inProgress",
+    error: null,
+    items: [{
+      id: "compaction-1",
+      type: "contextCompaction",
+    }],
+  }]);
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    guiPollIntervalMs: 1,
+    turnTimeoutMs: 20,
+    compactionGraceMs: 100,
+  });
+
+  await bridge.bindThread("thread-1");
+  const pending = bridge.sendPrompt({
+    id: "wechat-image-after-long-chat",
+    text: "describe this image",
+    attachments: [{
+      kind: "image",
+      filePath: "/tmp/wechat-image.jpg",
+      mimeType: "image/jpeg",
+    }],
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  transport.appServerTurnsByThread.set("thread-1", [{
+    id: "turn-1",
+    status: "completed",
+    error: null,
+    items: [
+      { id: "compaction-1", type: "contextCompaction" },
+      {
+        id: "assistant-after-compaction",
+        type: "agentMessage",
+        text: "A gray cat is standing beside a window.",
+        phase: "final_answer",
+      },
+    ],
+  }]);
+
+  const result = await pending;
+  assert.equal(result.status, "completed");
+  assert.equal(result.finalText, "A gray cat is standing beside a window.");
+});
+
+test("keeps listening after the configured timeout while work is active", async () => {
+  const transport = new FakeTransport();
+  transport.appServerTurnsByThread.set("thread-1", [{
+    id: "turn-1",
+    status: "inProgress",
+    error: null,
+    items: [{ id: "user-1", type: "userMessage" }],
+  }]);
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    guiPollIntervalMs: 1,
+    turnTimeoutMs: 20,
+    inProgressGraceMs: 100,
+  });
+
+  await bridge.bindThread("thread-1");
+  const pending = bridge.sendPrompt({
+    id: "wechat-active-work",
+    text: "finish this active request",
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 140));
+  transport.appServerTurnsByThread.set("thread-1", [{
+    id: "turn-1",
+    status: "completed",
+    error: null,
+    items: [{
+      id: "assistant-active-work",
+      type: "agentMessage",
+      text: "The active request finished after the observation deadline.",
+      phase: "final_answer",
+    }],
+  }]);
+
+  const result = await pending;
+  assert.equal(result.status, "completed");
+  assert.equal(result.finalText, "The active request finished after the observation deadline.");
+});
+
+test("starts a turn with file attachments as local path references", async () => {
+  const filePath = await tempFilePath("report.pdf", "pdf-content");
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({ transport });
+
+  await bridge.bindThread("thread-1");
+  const pending = bridge.sendPrompt({
+    id: "wechat-file-message-1",
+    text: "总结这个文件",
+    attachments: [{
+      kind: "file",
+      filePath,
+      fileName: "report.pdf",
+      mimeType: "application/pdf",
+      size: 11,
+    }],
+  });
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      items: [{
+        type: "agentMessage",
+        id: "assistant-1",
+        text: "File summary.",
+        phase: "final_answer",
+      }],
+    },
+  });
+
+  const result = await pending;
+  assert.equal(result.finalText, "File summary.");
+  assert.deepEqual(
+    transport.calls.find((call) => call.method === "turn/start")?.params,
+    {
+      threadId: "thread-1",
+      clientUserMessageId: "wechat-file-message-1",
+      input: [{
+        type: "text",
+        text:
+          "总结这个文件\n\n" +
+          "WeChat attachments for this request are cached on this computer.\n" +
+          "Use these local paths directly when answering:\n" +
+          `- file 1: report.pdf: ${filePath} [application/pdf] (11 bytes)`,
+        text_elements: [],
+      }],
+      runtimeWorkspaceRoots: ["/tmp/wechat2all", path.dirname(filePath)],
     },
   );
 });
@@ -417,6 +893,241 @@ test("returns structured local image files produced by Codex tools", async () =>
       filePath: outputImagePath,
       source: "toolResult",
     }],
+    replyMode: "final",
+    error: undefined,
+  });
+});
+
+test("returns structured local files produced by Codex tools", async () => {
+  const outputFilePath = await tempFilePath("analysis.csv", "name,value\napple,1\n");
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({ transport, turnTimeoutMs: 1000 });
+
+  await bridge.bindThread("thread-1");
+  const pending = bridge.sendPrompt({
+    id: "wechat-message-with-structured-output-file",
+    text: "generate a csv",
+  });
+
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      items: [
+        {
+          type: "toolResult",
+          id: "tool-file-1",
+          content: [{
+            type: "file",
+            path: outputFilePath,
+          }],
+        },
+        {
+          type: "agentMessage",
+          id: "assistant-1",
+          text: `Generated [analysis.csv](file://${outputFilePath}).`,
+          phase: "final_answer",
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(await pending, {
+    id: "wechat-message-with-structured-output-file",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    status: "completed",
+    finalText: `Generated [analysis.csv](file://${outputFilePath}).`,
+    outputFiles: [{
+      kind: "file",
+      filePath: outputFilePath,
+      source: "toolResult",
+    }],
+    replyMode: "final",
+    error: undefined,
+  });
+});
+
+test("returns local files from encoded file URLs with spaces", async () => {
+  const outputFilePath = await tempFilePath("My Report.pdf", "pdf bytes");
+  const outputFileUrl = pathToFileURL(outputFilePath).href;
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({ transport, turnTimeoutMs: 1000 });
+
+  await bridge.bindThread("thread-1");
+  const pending = bridge.sendPrompt({
+    id: "wechat-message-with-spaced-output-file",
+    text: "generate a report",
+  });
+
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      items: [{
+        type: "agentMessage",
+        id: "assistant-1",
+        text: `Generated [My Report.pdf](${outputFileUrl}).`,
+        phase: "final_answer",
+      }],
+    },
+  });
+
+  assert.deepEqual(await pending, {
+    id: "wechat-message-with-spaced-output-file",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    status: "completed",
+    finalText: `Generated [My Report.pdf](${outputFileUrl}).`,
+    outputFiles: [{
+      kind: "file",
+      filePath: outputFilePath,
+      source: "markdown",
+    }],
+    replyMode: "final",
+    error: undefined,
+  });
+});
+
+test("returns plain absolute paths for generated source-code files", async () => {
+  const outputFilePath = await tempFilePath("automation.py", "print('done')\n");
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({ transport, turnTimeoutMs: 1000 });
+
+  await bridge.bindThread("thread-1");
+  const pending = bridge.sendPrompt({
+    id: "wechat-message-with-source-output-file",
+    text: "generate a Python script",
+  });
+
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      items: [{
+        type: "agentMessage",
+        id: "assistant-1",
+        text: `Saved script at ${outputFilePath}.`,
+        phase: "final_answer",
+      }],
+    },
+  });
+
+  assert.deepEqual(await pending, {
+    id: "wechat-message-with-source-output-file",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    status: "completed",
+    finalText: `Saved script at ${outputFilePath}.`,
+    outputFiles: [{
+      kind: "file",
+      filePath: outputFilePath,
+      source: "agentMessage",
+    }],
+    replyMode: "final",
+    error: undefined,
+  });
+});
+
+test("returns local audio files mentioned by Codex output", async () => {
+  const outputFilePath = await tempFilePath("answer.silk", "voice bytes");
+  const outputFileUrl = pathToFileURL(outputFilePath).href;
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({ transport, turnTimeoutMs: 1000 });
+
+  await bridge.bindThread("thread-1");
+  const pending = bridge.sendPrompt({
+    id: "wechat-message-with-output-audio",
+    text: "generate voice",
+  });
+
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      items: [{
+        type: "agentMessage",
+        id: "assistant-1",
+        text: `Generated [answer.silk](${outputFileUrl}).`,
+        phase: "final_answer",
+      }],
+    },
+  });
+
+  assert.deepEqual(await pending, {
+    id: "wechat-message-with-output-audio",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    status: "completed",
+    finalText: `Generated [answer.silk](${outputFileUrl}).`,
+    outputFiles: [{
+      kind: "file",
+      filePath: outputFilePath,
+      source: "markdown",
+    }],
+    replyMode: "final",
+    error: undefined,
+  });
+});
+
+test("ignores output paths that are directories", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-dir-output-"));
+  const directoryPath = path.join(dir, "not-a-file.png");
+  await fs.mkdir(directoryPath);
+  const directoryUrl = pathToFileURL(directoryPath).href;
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({ transport, turnTimeoutMs: 1000 });
+
+  await bridge.bindThread("thread-1");
+  const pending = bridge.sendPrompt({
+    id: "wechat-message-with-directory-output",
+    text: "generate an image",
+  });
+
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      items: [{
+        type: "agentMessage",
+        id: "assistant-1",
+        text: `Generated [not-a-file.png](${directoryUrl}).`,
+        phase: "final_answer",
+      }],
+    },
+  });
+
+  assert.deepEqual(await pending, {
+    id: "wechat-message-with-directory-output",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    status: "completed",
+    finalText: `Generated [not-a-file.png](${directoryUrl}).`,
     replyMode: "final",
     error: undefined,
   });
@@ -638,6 +1349,45 @@ test("gui-automation mode injects into Codex GUI and polls bound thread", async 
   );
 });
 
+test("gui-automation mode sends regular files as validated local path context", async () => {
+  const transport = new FakeTransport();
+  const filePath = await tempFilePath("gui-report.pdf", "pdf-content");
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    deliveryMode: "gui-automation",
+    guiPollIntervalMs: 1,
+    turnTimeoutMs: 1000,
+    guiPromptInjector: async (text, context) => {
+      transport.guiInjectedTextByThread.set(context?.threadId ?? "frontmost-thread", text);
+    },
+  });
+
+  await bridge.bindThread("thread-1");
+  const result = await bridge.sendPrompt({
+    id: "wechat-gui-file",
+    text: "summarize this PDF",
+    attachments: [{
+      kind: "file",
+      filePath,
+      fileName: "gui-report.pdf",
+      mimeType: "application/pdf",
+    }],
+  });
+
+  assert.equal(result.finalText, "GUI final answer.");
+  assert.equal(
+    transport.guiInjectedTextByThread.get("thread-1"),
+    [
+      "summarize this PDF",
+      "",
+      "WeChat attachments for this request are cached on this computer.",
+      "Use these local paths directly when answering:",
+      `- file 1: gui-report.pdf: ${filePath} [application/pdf]`,
+    ].join("\n"),
+  );
+  assert.equal(transport.calls.some((call) => call.method === "turn/start"), false);
+});
+
 test("gui-automation mode sends image attachments through app-server localImage", async () => {
   const transport = new FakeTransport();
   let guiInjected = false;
@@ -699,6 +1449,7 @@ test("gui-automation mode sends image attachments through app-server localImage"
           path: "/tmp/wechat-image.jpg",
         },
       ],
+      runtimeWorkspaceRoots: ["/tmp/wechat2all", "/tmp"],
     },
   );
 });

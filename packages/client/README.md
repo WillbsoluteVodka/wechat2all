@@ -274,9 +274,9 @@ API failures are raised as `WeChatApiError` with structured fields such as
 `timedOut`. Long-poll timeouts are normal and return an empty update response
 instead of throwing.
 
-CDN upload/download helpers default to 60-second per-request timeouts. Uploads
-retry transient server/network failures up to 3 attempts by default; 4xx client
-errors are not retried. Pass media options to override `timeoutMs`,
+CDN upload/download helpers default to 60-second per-request timeouts. Both
+directions retry transient server/network failures up to 3 attempts by default;
+permanent 4xx client errors are not retried. Pass media options to override `timeoutMs`,
 `maxRetries`, `retryDelayMs`, or `signal`.
 
 ### Voice And Stickers

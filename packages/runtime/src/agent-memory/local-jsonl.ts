@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -25,7 +26,17 @@ interface LocalJsonlRecord {
 }
 
 function safeSegment(value: string): string {
-  return value.trim().replace(/[^a-zA-Z0-9_.-]+/g, "-") || "unknown";
+  const original = value.trim();
+  const safe = original
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^[._-]+|[._-]+$/g, "") || "unknown";
+  if (safe === original) return safe;
+  const digest = crypto
+    .createHash("sha256")
+    .update(value)
+    .digest("hex")
+    .slice(0, 8);
+  return `${safe}-${digest}`;
 }
 
 function recordPath(baseDir: string, profileId: string): string {
@@ -104,7 +115,9 @@ export function createLocalJsonlAgentMemoryProvider(
     id: opts.id ?? "local-jsonl-agent-memory",
     async appendTurn(params: AgentMemoryAppendTurnParams): Promise<void> {
       const filePath = recordPath(opts.baseDir, params.scope.profileId);
-      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      const dir = path.dirname(filePath);
+      await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+      await fs.chmod(dir, 0o700).catch(() => undefined);
       const record: LocalJsonlRecord = {
         id: `turn-${Date.now()}-${Math.random().toString(36).slice(2)}`,
         type: "turn",
@@ -114,7 +127,11 @@ export function createLocalJsonlAgentMemoryProvider(
         output: params.output,
         metadata: params.metadata,
       };
-      await fs.appendFile(filePath, `${JSON.stringify(record)}\n`, "utf-8");
+      await fs.appendFile(filePath, `${JSON.stringify(record)}\n`, {
+        encoding: "utf-8",
+        mode: 0o600,
+      });
+      await fs.chmod(filePath, 0o600).catch(() => undefined);
     },
     async search(params: AgentMemorySearchParams): Promise<AgentMemoryHit[]> {
       const filePath = recordPath(opts.baseDir, params.scope.profileId);

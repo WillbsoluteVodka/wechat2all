@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 
 import {
   InMemoryMemoryStore,
@@ -42,6 +43,40 @@ import type { WeChatClient } from "wechat2all";
 
 function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function tempOutputFile(fileName: string, content = "output"): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-output-"));
+  const filePath = path.join(dir, fileName);
+  await fs.writeFile(filePath, content);
+  return filePath;
+}
+
+function assertRuntimeActions(
+  actual: RuntimeAction[],
+  expected: RuntimeAction[],
+): void {
+  const withoutPerformance = actual.map((action) => {
+    const metadata = action.metadata;
+    if (!metadata || !("performance" in metadata)) return action;
+
+    const performance = metadata.performance as Record<string, unknown> | undefined;
+    if (performance) {
+      for (const value of Object.values(performance)) {
+        if (value === undefined) continue;
+        assert.equal(typeof value, "number");
+        assert.ok((value as number) >= 0);
+      }
+    }
+
+    const { performance: _performance, ...remainingMetadata } = metadata;
+    const { metadata: _metadata, ...remainingAction } = action;
+    return Object.keys(remainingMetadata).length
+      ? { ...remainingAction, metadata: remainingMetadata } as RuntimeAction
+      : remainingAction as RuntimeAction;
+  });
+
+  assert.deepEqual(withoutPerformance, expected);
 }
 
 function codexTestContext(params: {
@@ -92,6 +127,39 @@ function codexImageMessage(params: {
   };
 }
 
+function codexFileMessage(params: {
+  id?: string;
+  fileId?: string;
+  fileName?: string;
+  conversationId?: string;
+  senderId?: string;
+  size?: number;
+} = {}): RuntimeMessage {
+  const fileId = params.fileId ?? params.id ?? "file-1";
+  const fileName = params.fileName ?? "report.pdf";
+  return {
+    id: params.id ?? fileId,
+    platform: "wechat-ilink",
+    profileId: "main",
+    conversationId: params.conversationId ?? "user-1",
+    senderId: params.senderId ?? "user-1",
+    timestamp: 1,
+    kind: "file",
+    attachments: [{
+      id: fileId,
+      kind: "file",
+      fileName,
+      size: params.size ?? 5,
+      raw: {
+        type: MessageItemType.FILE,
+        msg_id: fileId,
+        file_item: { file_name: fileName, len: String(params.size ?? 5) },
+      },
+    }],
+    raw: {},
+  };
+}
+
 function codexTextMessage(text: string, id = "m-text"): RuntimeMessage {
   return {
     id,
@@ -117,6 +185,21 @@ function imageDownloadClient(params: {
         kind: "image",
         fileName: params.fileName ?? "wechat-photo.jpg",
         data: Buffer.from(params.data ?? "image"),
+      };
+    },
+  } as unknown as WeChatClient;
+}
+
+function fileDownloadClient(params: {
+  fileName?: string;
+  data?: string;
+} = {}): WeChatClient {
+  return {
+    async downloadMedia() {
+      return {
+        kind: "file",
+        fileName: params.fileName ?? "report.pdf",
+        data: Buffer.from(params.data ?? "file"),
       };
     },
   } as unknown as WeChatClient;
@@ -383,6 +466,8 @@ test("file runtime state store persists credentials, routes, sync buf, and proce
   assert.equal((await store.loadCredentials("default"))?.token, "token");
   assert.equal(await store.loadSyncBuf("default"), "sync-buf");
   assert.deepEqual(await store.loadRoutes("default"), [{ id: "r1", connectorId: "c1" }]);
+  assert.equal((await fs.stat(store.credentialsPath("default"))).mode & 0o077, 0);
+  assert.equal((await fs.stat(store.routesPath("default"))).mode & 0o077, 0);
   assert.equal(await store.hasProcessedMessage("default", "k1"), false);
 
   await store.markProcessedMessage({
@@ -411,6 +496,42 @@ test("file runtime state store handles concurrent processed-message writes", asy
 
   assert.equal(await store.hasProcessedMessage("default", "k0"), true);
   assert.equal(await store.hasProcessedMessage("default", "k19"), true);
+});
+
+test("file runtime state store keeps unsafe profile ids inside the state root", async () => {
+  const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-state-safe-profile-"));
+  const store = new FileRuntimeStateStore({ baseDir });
+  const profileId = "../outside/profile";
+  const profileDir = store.profileDir(profileId);
+  const relative = path.relative(baseDir, profileDir);
+
+  assert.equal(relative.startsWith(".."), false);
+  assert.equal(path.isAbsolute(relative), false);
+
+  await store.saveCredentials(profileId, {
+    accountId: "abc@im.bot",
+    token: "token",
+  });
+  assert.equal((await store.loadCredentials(profileId))?.token, "token");
+  assert.equal(path.relative(baseDir, store.credentialsPath(profileId)).startsWith(".."), false);
+});
+
+test("file runtime state store hardens permissions for existing local state", async () => {
+  const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-state-permissions-"));
+  const nestedDir = path.join(baseDir, "media", "default");
+  const nestedFile = path.join(nestedDir, "legacy.jpg");
+  await fs.mkdir(nestedDir, { recursive: true, mode: 0o755 });
+  await fs.writeFile(nestedFile, "legacy", { mode: 0o644 });
+  await fs.chmod(baseDir, 0o755);
+  await fs.chmod(nestedDir, 0o755);
+  await fs.chmod(nestedFile, 0o644);
+
+  const store = new FileRuntimeStateStore({ baseDir });
+  await store.securePermissions();
+
+  assert.equal((await fs.stat(baseDir)).mode & 0o077, 0);
+  assert.equal((await fs.stat(nestedDir)).mode & 0o077, 0);
+  assert.equal((await fs.stat(nestedFile)).mode & 0o077, 0);
 });
 
 test("executes runtime actions against a WeChatClient-like object", async () => {
@@ -551,6 +672,31 @@ test("local JSONL agent memory appends and searches turns", async () => {
   const hits = await memory.search({ scope, query: "拿铁", limit: 3 });
   assert.equal(hits.length, 1);
   assert.match(hits[0].content, /拿铁/);
+  const memoryFile = path.join(baseDir, "main", "turns.jsonl");
+  assert.equal((await fs.stat(memoryFile)).mode & 0o077, 0);
+});
+
+test("local JSONL agent memory keeps unsafe profile ids inside its base dir", async () => {
+  const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-memory-safe-profile-"));
+  const memory = createLocalJsonlAgentMemoryProvider({ baseDir });
+  const scope = {
+    profileId: "../../outside/profile",
+    routeId: "main-assistant-default",
+    connectorId: "main-assistant",
+    conversationId: "user-1",
+    senderId: "user-1",
+  };
+
+  await memory.appendTurn({
+    scope,
+    input: { role: "user", content: "local only" },
+  });
+
+  const entries = await fs.readdir(baseDir, { recursive: true });
+  const memoryFile = entries.find((entry) => entry.endsWith("turns.jsonl"));
+  assert.notEqual(memoryFile, undefined);
+  const resolved = path.resolve(baseDir, memoryFile ?? "");
+  assert.equal(path.relative(baseDir, resolved).startsWith(".."), false);
 });
 
 test("Mem0 agent memory maps scope to REST add and search requests", async () => {
@@ -926,7 +1072,7 @@ test("agent connector maps agent text responses to runtime actions", async () =>
     routes: new RuntimeRouteRegistry(),
   });
 
-  assert.deepEqual(actions, [{
+  assertRuntimeActions(actions, [{
     type: "send_text",
     conversationId: "user-1",
     text: "agent saw hello",
@@ -969,7 +1115,7 @@ test("MCP connector calls a tool and maps text results to actions", async () => 
   });
 
   assert.equal((toolArgs as { text?: string }).text, "hello");
-  assert.deepEqual(actions, [{
+  assertRuntimeActions(actions, [{
     type: "send_text",
     conversationId: "user-1",
     text: "mcp response",
@@ -1196,6 +1342,8 @@ test("codex connector binds a GUI thread by /ls index and sends ordinary text to
           id: prompt.id,
           threadId: binding?.threadId,
           turnId: "turn-1",
+          status: "completed" as const,
+          finalText: "continued",
         };
       },
     },
@@ -1240,8 +1388,70 @@ test("codex connector binds a GUI thread by /ls index and sends ordinary text to
   }, context);
 
   assert.deepEqual((sentPrompt as { text: string }).text, "continue please");
-  assert.match((sendActions[0] as { text: string }).text, /已发送到 Codex GUI chat/);
-  assert.match((sendActions[0] as { text: string }).text, /Turn ID: turn-1/);
+  assert.equal((sendActions[0] as { text: string }).text, "continued");
+});
+
+test("codex connector reports progress periodically and keeps waiting for the final reply", async () => {
+  let finishTurn: (() => void) | undefined;
+  const turnGate = new Promise<void>((resolve) => {
+    finishTurn = resolve;
+  });
+  const progressActions: RuntimeAction[] = [];
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    processingReminderMs: 10,
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        await turnGate;
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          status: "completed" as const,
+          finalText: "最终回复",
+        };
+      },
+    },
+  });
+  const context = codexTestContext({
+    async dispatchActions(actions) {
+      progressActions.push(...actions);
+      return actions.map((action) => ({ action, ok: true }));
+    },
+  });
+
+  const response = connector.handleMessage(codexTextMessage("处理一个任务"), context);
+  await sleepMs(25);
+  assert.ok(progressActions.length >= 1);
+  assert.equal(
+    progressActions.every((action) =>
+      action.type === "send_text" && action.text === "请稍等，正在处理。"
+    ),
+    true,
+  );
+
+  finishTurn?.();
+  const actions = await response;
+  const reminderCount = progressActions.length;
+  await sleepMs(20);
+
+  assert.equal(progressActions.length, reminderCount);
+  assertRuntimeActions(actions, [{
+    type: "send_text",
+    conversationId: "user-1",
+    text: "最终回复",
+  }]);
 });
 
 test("codex connector caches WeChat images and forwards them with the next text request", async () => {
@@ -1279,9 +1489,9 @@ test("codex connector caches WeChat images and forwards them with the next text 
   });
 
   const imageActions = await connector.handleMessage(codexImageMessage({ id: "m-image" }), context);
-  assert.deepEqual(imageActions, [{
+  assertRuntimeActions(imageActions, [{
     type: "noop",
-    reason: "codex image cached; waiting for text request",
+    reason: "codex attachment cached; waiting for text request",
   }]);
   assert.equal(sentPrompt, undefined);
 
@@ -1301,7 +1511,7 @@ test("codex connector caches WeChat images and forwards them with the next text 
   assert.match(attachments[0].filePath, /\.jpg$/);
   assert.equal(prompt.attachments[0].fileName, "wechat-photo.jpg");
   assert.equal(await fs.readFile(attachments[0].filePath, "utf-8"), "image");
-  assert.deepEqual(actions, [{
+  assertRuntimeActions(actions, [{
     type: "send_text",
     conversationId: "user-1",
     text: "image received",
@@ -1353,7 +1563,7 @@ test("codex connector reminds once when cached images wait without text", async 
   assert.deepEqual(reminderActions, [{
     type: "send_text",
     conversationId: "user-1",
-    text: "请问想对图片做什么操作？",
+    text: "请问想对这些附件做什么操作？",
   }]);
   assert.equal(sentPrompt, undefined);
 
@@ -1366,11 +1576,60 @@ test("codex connector reminds once when cached images wait without text", async 
   const prompt = sentPrompt as unknown as { text: string; attachments: Array<{ kind: string }> };
   assert.equal(prompt.text, "帮我分析这张图");
   assert.equal(prompt.attachments[0].kind, "image");
-  assert.deepEqual(actions, [{
+  assertRuntimeActions(actions, [{
     type: "send_text",
     conversationId: "user-1",
     text: "image received",
   }]);
+});
+
+test("codex connector stops the attachment reminder while a text request is running", async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-no-late-reminder-"));
+  const reminderActions: RuntimeAction[] = [];
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    imagePromptReminderMs: 10,
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        await sleepMs(40);
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          finalText: "finished",
+        };
+      },
+    },
+  });
+  const context = codexTestContext({
+    client: imageDownloadClient(),
+    media: new RuntimeMediaPipeline({ cacheDir }),
+    async dispatchActions(actions) {
+      reminderActions.push(...actions);
+      return actions.map((action) => ({ action, ok: true }));
+    },
+  });
+
+  await connector.handleMessage(codexImageMessage({ id: "m-image" }), context);
+  const response = connector.handleMessage(
+    codexTextMessage("分析这张图", "m-text"),
+    context,
+  );
+  await sleepMs(25);
+  assert.deepEqual(reminderActions, []);
+  await response;
+  assert.deepEqual(reminderActions, []);
 });
 
 test("codex connector resets image reminder timer and sends multiple images with next text", async () => {
@@ -1439,7 +1698,7 @@ test("codex connector resets image reminder timer and sends multiple images with
     "wechat-photo-1.jpg",
     "wechat-photo-2.jpg",
   ]);
-  assert.deepEqual(actions, [{
+  assertRuntimeActions(actions, [{
     type: "send_text",
     conversationId: "user-1",
     text: "two images received",
@@ -1498,10 +1757,216 @@ test("codex connector commands do not consume pending images", async () => {
   const prompt = sentPrompt as unknown as { text: string; attachments: unknown[] };
   assert.equal(prompt.text, "现在分析这张图");
   assert.equal(prompt.attachments.length, 1);
-  assert.deepEqual(textActions, [{
+  assertRuntimeActions(textActions, [{
     type: "send_text",
     conversationId: "user-1",
     text: "image consumed",
+  }]);
+});
+
+test("codex connector reports and clears local media cache", async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-cache-command-"));
+  let sentPrompt: unknown;
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    imagePromptReminderMs: 1_000,
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        sentPrompt = prompt;
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+        };
+      },
+    },
+  });
+  const context = codexTestContext({
+    client: imageDownloadClient(),
+    media: new RuntimeMediaPipeline({ cacheDir }),
+  });
+
+  await connector.handleMessage(codexImageMessage({ id: "m-image" }), context);
+  const statusActions = await connector.handleMessage(codexTextMessage("/cache", "m-cache"), context);
+  assert.match((statusActions[0] as { text: string }).text, /◆ Codex - Cache/);
+  assert.match((statusActions[0] as { text: string }).text, /文件数: 1/);
+
+  const clearActions = await connector.handleMessage(
+    codexTextMessage("/cache clear", "m-cache-clear"),
+    context,
+  );
+  assert.match((clearActions[0] as { text: string }).text, /◆ Codex - Cache Cleared/);
+  assert.match((clearActions[0] as { text: string }).text, /清理文件数: 1/);
+
+  await connector.handleMessage(codexTextMessage("图片还在吗", "m-text"), context);
+  assert.equal((sentPrompt as { text: string }).text, "图片还在吗");
+  assert.equal((sentPrompt as { attachments?: unknown[] }).attachments, undefined);
+});
+
+test("codex connector cache clear drops pending attachments across the profile", async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-cache-clear-profile-"));
+  const prompts: unknown[] = [];
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    imagePromptReminderMs: 1_000,
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        prompts.push(prompt);
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+        };
+      },
+    },
+  });
+  const context = codexTestContext({
+    client: imageDownloadClient(),
+    media: new RuntimeMediaPipeline({ cacheDir }),
+  });
+
+  await connector.handleMessage(codexImageMessage({ id: "m-image-1" }), context);
+  await connector.handleMessage(
+    codexImageMessage({
+      id: "m-image-2",
+      imageId: "image-2",
+      conversationId: "user-2",
+      senderId: "user-2",
+    }),
+    context,
+  );
+  const clearActions = await connector.handleMessage(
+    codexTextMessage("/cache clear", "m-cache-clear"),
+    context,
+  );
+  assert.match((clearActions[0] as { text: string }).text, /清理文件数: 2/);
+
+  await connector.handleMessage({
+    ...codexTextMessage("第二个会话的图还在吗", "m-text-2"),
+    conversationId: "user-2",
+    senderId: "user-2",
+  }, context);
+
+  const prompt = prompts.at(-1) as { text: string; attachments?: unknown[] };
+  assert.equal(prompt.text, "第二个会话的图还在吗");
+  assert.equal(prompt.attachments, undefined);
+});
+
+test("codex connector drops stale pending attachment paths before sending text", async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-stale-pending-"));
+  let sentPrompt: unknown;
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    imagePromptReminderMs: 1_000,
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        sentPrompt = prompt;
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+        };
+      },
+    },
+  });
+  const context = codexTestContext({
+    client: imageDownloadClient(),
+    media: new RuntimeMediaPipeline({ cacheDir }),
+  });
+
+  await connector.handleMessage(codexImageMessage({ id: "m-image" }), context);
+  const files = await fs.readdir(path.join(cacheDir, "main"));
+  await fs.unlink(path.join(cacheDir, "main", files[0]));
+
+  await connector.handleMessage(codexTextMessage("这张图还在吗", "m-text"), context);
+
+  assert.equal((sentPrompt as { text: string }).text, "这张图还在吗");
+  assert.equal((sentPrompt as { attachments?: unknown[] }).attachments, undefined);
+});
+
+test("codex connector retains direct mixed-message attachments after a failed prompt", async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-retry-attachment-"));
+  const prompts: Array<{ text: string; attachments?: Array<{ filePath: string }> }> = [];
+  let attempts = 0;
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return { threadId: "thread-1", boundAt: 1 };
+      },
+      async sendPrompt(prompt) {
+        attempts += 1;
+        prompts.push(prompt);
+        if (attempts === 1) throw new Error("temporary app-server failure");
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-2",
+          finalText: "retry succeeded",
+        };
+      },
+    },
+  });
+  const context = codexTestContext({
+    client: imageDownloadClient(),
+    media: new RuntimeMediaPipeline({ cacheDir }),
+  });
+  const mixed: RuntimeMessage = {
+    ...codexImageMessage({ id: "m-mixed" }),
+    kind: "mixed",
+    text: "分析这张图",
+  };
+
+  const failed = await connector.handleMessage(mixed, context);
+  assert.match((failed[0] as { text: string }).text, /temporary app-server failure/);
+  assert.equal(prompts[0].attachments?.length, 1);
+
+  const retried = await connector.handleMessage(
+    codexTextMessage("重试刚才的请求", "m-retry"),
+    context,
+  );
+  assert.equal(prompts[1].attachments?.length, 1);
+  assert.equal(prompts[1].attachments?.[0].filePath, prompts[0].attachments?.[0].filePath);
+  assertRuntimeActions(retried, [{
+    type: "send_text",
+    conversationId: "user-1",
+    text: "retry succeeded",
   }]);
 });
 
@@ -1546,7 +2011,68 @@ test("codex connector clears pending images when returning to the main router", 
   assert.equal((sentPrompt as { attachments?: unknown[] }).attachments, undefined);
 });
 
-test("codex connector keeps the first cached images when the image limit is exceeded", async () => {
+test("codex connector caches WeChat files and forwards them with the next text request", async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-file-"));
+  let sentPrompt: unknown;
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    imagePromptReminderMs: 1_000,
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        sentPrompt = prompt;
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          finalText: "file received",
+        };
+      },
+    },
+  });
+  const context = codexTestContext({
+    client: fileDownloadClient({ data: "pdf-content" }),
+    media: new RuntimeMediaPipeline({ cacheDir }),
+  });
+
+  const fileActions = await connector.handleMessage(codexFileMessage({ id: "m-file" }), context);
+  assertRuntimeActions(fileActions, [{
+    type: "noop",
+    reason: "codex attachment cached; waiting for text request",
+  }]);
+  assert.equal(sentPrompt, undefined);
+
+  const actions = await connector.handleMessage(
+    codexTextMessage("总结这个文件", "m-text"),
+    context,
+  );
+
+  const prompt = sentPrompt as unknown as {
+    text: string;
+    attachments: Array<{ filePath: string; kind: string; fileName?: string }>;
+  };
+  assert.equal(prompt.text, "总结这个文件");
+  assert.equal(prompt.attachments[0].kind, "file");
+  assert.equal(prompt.attachments[0].fileName, "report.pdf");
+  assert.equal(await fs.readFile(prompt.attachments[0].filePath, "utf-8"), "pdf-content");
+  assertRuntimeActions(actions, [{
+    type: "send_text",
+    conversationId: "user-1",
+    text: "file received",
+  }]);
+});
+
+test("codex connector keeps the first cached attachments when the attachment limit is exceeded", async () => {
   const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-image-limit-"));
   let sentPrompt: unknown;
   const connector = createCodexConnector({
@@ -1587,7 +2113,7 @@ test("codex connector keeps the first cached images when the image limit is exce
     context,
   );
 
-  assert.match((overflowActions[0] as { text: string }).text, /最多缓存 1 张图片/);
+  assert.match((overflowActions[0] as { text: string }).text, /最多缓存 1 个附件/);
 
   await connector.handleMessage(codexTextMessage("分析保留的图", "m-text"), context);
   assert.equal((sentPrompt as { attachments: unknown[] }).attachments.length, 1);
@@ -1636,6 +2162,7 @@ test("codex connector expires pending images before a late text request", async 
 });
 
 test("codex connector sends Codex output images back to WeChat", async () => {
+  const outputImagePath = await tempOutputFile("codex-output.png", "png");
   const connector = createCodexConnector({
     id: "codex-bridge",
     client: {
@@ -1655,10 +2182,10 @@ test("codex connector sends Codex output images back to WeChat", async () => {
           id: prompt.id,
           threadId: "thread-1",
           turnId: "turn-1",
-          finalText: "done\n\n![chart](file:///tmp/codex-output.png)",
+          finalText: `done\n\n![chart](file://${outputImagePath})`,
           outputFiles: [{
             kind: "image",
-            filePath: "/tmp/codex-output.png",
+            filePath: outputImagePath,
             source: "markdown",
           }],
         };
@@ -1688,7 +2215,7 @@ test("codex connector sends Codex output images back to WeChat", async () => {
     routes: new RuntimeRouteRegistry(),
   });
 
-  assert.deepEqual(actions, [
+  assertRuntimeActions(actions, [
     {
       type: "send_text",
       conversationId: "user-1",
@@ -1697,12 +2224,13 @@ test("codex connector sends Codex output images back to WeChat", async () => {
     {
       type: "send_media",
       conversationId: "user-1",
-      filePath: "/tmp/codex-output.png",
+      filePath: outputImagePath,
     },
   ]);
 });
 
 test("codex connector sends image-only Codex output without leaking local paths", async () => {
+  const outputImagePath = await tempOutputFile("generated-output.png", "png");
   const connector = createCodexConnector({
     id: "codex-bridge",
     client: {
@@ -1722,10 +2250,10 @@ test("codex connector sends image-only Codex output without leaking local paths"
           id: prompt.id,
           threadId: "thread-1",
           turnId: "turn-1",
-          finalText: "![generated](file:///tmp/generated-output.png)",
+          finalText: `![generated](file://${outputImagePath})`,
           outputFiles: [{
             kind: "image",
-            filePath: "/tmp/generated-output.png",
+            filePath: outputImagePath,
             source: "markdown",
           }],
         };
@@ -1734,11 +2262,288 @@ test("codex connector sends image-only Codex output without leaking local paths"
   });
   const actions = await connector.handleMessage(codexTextMessage("生成一张图"), codexTestContext());
 
-  assert.deepEqual(actions, [{
+  assertRuntimeActions(actions, [{
     type: "send_media",
     conversationId: "user-1",
-    filePath: "/tmp/generated-output.png",
+    filePath: outputImagePath,
   }]);
+});
+
+test("codex connector sends Codex output files back to WeChat", async () => {
+  const outputFilePath = await tempOutputFile("codex-report.pdf", "pdf");
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          finalText: `done\n\n[report.pdf](file://${outputFilePath})`,
+          outputFiles: [{
+            kind: "file",
+            filePath: outputFilePath,
+            source: "toolResult",
+          }],
+        };
+      },
+    },
+  });
+
+  const actions = await connector.handleMessage(codexTextMessage("生成一个 PDF"), codexTestContext());
+
+  assertRuntimeActions(actions, [
+    {
+      type: "send_text",
+      conversationId: "user-1",
+      text: "done",
+    },
+    {
+      type: "send_media",
+      conversationId: "user-1",
+      filePath: outputFilePath,
+    },
+  ]);
+});
+
+test("codex connector strips encoded output file URLs before sending text", async () => {
+  const outputFilePath = await tempOutputFile("Codex Report.pdf", "pdf");
+  const outputFileUrl = pathToFileURL(outputFilePath).href;
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          finalText: `done\n\n[Codex Report.pdf](${outputFileUrl})`,
+          outputFiles: [{
+            kind: "file",
+            filePath: outputFilePath,
+            source: "markdown",
+          }],
+        };
+      },
+    },
+  });
+
+  const actions = await connector.handleMessage(codexTextMessage("生成一个有空格文件名的 PDF"), codexTestContext());
+
+  assertRuntimeActions(actions, [
+    {
+      type: "send_text",
+      conversationId: "user-1",
+      text: "done",
+    },
+    {
+      type: "send_media",
+      conversationId: "user-1",
+      filePath: outputFilePath,
+    },
+  ]);
+});
+
+test("codex connector sends audio output files as WeChat voice messages", async () => {
+  const outputVoicePath = await tempOutputFile("answer.silk", "voice");
+  const outputVoiceUrl = pathToFileURL(outputVoicePath).href;
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          finalText: `done\n\n[answer.silk](${outputVoiceUrl})`,
+          outputFiles: [{
+            kind: "file",
+            filePath: outputVoicePath,
+            mimeType: "audio/silk",
+            source: "markdown",
+          }],
+        };
+      },
+    },
+  });
+
+  const actions = await connector.handleMessage(codexTextMessage("生成一条语音"), codexTestContext());
+
+  assertRuntimeActions(actions, [
+    {
+      type: "send_text",
+      conversationId: "user-1",
+      text: "done",
+    },
+    {
+      type: "send_voice",
+      conversationId: "user-1",
+      filePath: outputVoicePath,
+    },
+  ]);
+});
+
+test("codex connector sends unsupported voice-bubble audio formats as files", async () => {
+  const outputAudioPath = await tempOutputFile("answer.flac", "audio");
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          outputFiles: [{
+            kind: "file",
+            filePath: outputAudioPath,
+            mimeType: "audio/flac",
+          }],
+        };
+      },
+    },
+  });
+
+  const actions = await connector.handleMessage(
+    codexTextMessage("生成 flac 音频"),
+    codexTestContext(),
+  );
+
+  assertRuntimeActions(actions, [{
+    type: "send_media",
+    conversationId: "user-1",
+    filePath: outputAudioPath,
+  }]);
+});
+
+test("codex connector skips missing Codex output files before WeChat send_media", async () => {
+  const missingDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-missing-output-"));
+  const missingPath = path.join(missingDir, "missing.png");
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          finalText: `![generated](file://${missingPath})`,
+          outputFiles: [{
+            kind: "image",
+            filePath: missingPath,
+            source: "markdown",
+          }],
+        };
+      },
+    },
+  });
+
+  const actions = await connector.handleMessage(codexTextMessage("生成一张图"), codexTestContext());
+
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0].type, "send_text");
+  assert.match((actions[0] as { text: string }).text, /Output File Missing/);
+  assert.doesNotMatch((actions[0] as { text: string }).text, new RegExp(missingPath));
+});
+
+test("codex connector skips directory output paths before WeChat send_media", async () => {
+  const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-directory-output-"));
+  const directoryPath = path.join(outputDir, "not-a-file.pdf");
+  await fs.mkdir(directoryPath);
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          finalText: `Generated [not-a-file.pdf](${pathToFileURL(directoryPath).href})`,
+          outputFiles: [{
+            kind: "file",
+            filePath: directoryPath,
+            source: "markdown",
+          }],
+        };
+      },
+    },
+  });
+
+  const actions = await connector.handleMessage(codexTextMessage("生成一个 PDF"), codexTestContext());
+
+  assert.equal(actions.some((action) => action.type === "send_media"), false);
+  const texts = actions
+    .filter((action): action is Extract<RuntimeAction, { type: "send_text" }> =>
+      action.type === "send_text")
+    .map((action) => action.text);
+  assert.equal(texts.some((text) => /Output File Missing/.test(text)), true);
+  assert.equal(texts.some((text) => /不是普通文件/.test(text)), true);
+  assert.equal(texts.some((text) => text.includes(directoryPath)), false);
 });
 
 test("codex connector supports silent reply mode", async () => {
@@ -1868,9 +2673,63 @@ test("codex connector supports stream reply mode", async () => {
   }, context);
 
   assert.equal(sentReplyMode, "stream");
-  assert.deepEqual(sendActions, [
+  assertRuntimeActions(sendActions, [
     { type: "send_text", conversationId: "user-1", text: "part one" },
     { type: "send_text", conversationId: "user-1", text: "part two" },
+  ]);
+});
+
+test("codex connector stream mode strips output file references and sends media", async () => {
+  const outputImagePath = await tempOutputFile("stream-output.png", "png");
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return {
+          threadId: "thread-1",
+          title: "Bridge chat",
+          project: "wechat2all",
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          status: "completed",
+          replyParts: [
+            "图片已经生成。",
+            `![generated](file://${outputImagePath})`,
+          ],
+          outputFiles: [{
+            kind: "image",
+            filePath: outputImagePath,
+            source: "markdown",
+          }],
+          replyMode: prompt.replyMode,
+        };
+      },
+    },
+    replyMode: "stream",
+  });
+
+  const actions = await connector.handleMessage(codexTextMessage("生成一张图"), codexTestContext());
+
+  assertRuntimeActions(actions, [
+    {
+      type: "send_text",
+      conversationId: "user-1",
+      text: "图片已经生成。",
+    },
+    {
+      type: "send_media",
+      conversationId: "user-1",
+      filePath: outputImagePath,
+    },
   ]);
 });
 
@@ -2009,7 +2868,7 @@ test("codex connector queues prompts per conversation", async () => {
     id: "codex-bridge",
     client: {
       async getStatus() {
-        return { state: "idle" };
+        return { state: "working" };
       },
       async getCurrentBinding() {
         return {
@@ -2057,6 +2916,13 @@ test("codex connector queues prompts per conversation", async () => {
   while (sentPrompts.length === 0) {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
+  const statusActions = await connector.handleMessage({
+    ...baseMessage,
+    id: "m-status",
+    text: "/status",
+  }, context);
+  assert.match((statusActions[0] as { text: string }).text, /正在处理任务/);
+
   const second = connector.handleMessage({
     ...baseMessage,
     id: "m2",
@@ -2148,7 +3014,7 @@ test("codex connector ignores unknown slash commands inside its route", async ()
     routes: new RuntimeRouteRegistry(),
   });
 
-  assert.deepEqual(actions, [{
+  assertRuntimeActions(actions, [{
     type: "noop",
     reason: "unknown codex route command: /unknown",
   }]);
@@ -2192,10 +3058,335 @@ test("runtime media pipeline downloads and caches attachments", async () => {
 
   assert.equal(media.length, 1);
   assert.equal(media[0].size, 5);
+  assert.equal(media[0].fileName, "report.pdf");
+  assert.equal(media[0].mimeType, "application/pdf");
   assert.equal(
     await fs.readFile(media[0].filePath ?? "", "utf-8"),
     "hello",
   );
+  assert.equal((await fs.stat(media[0].filePath ?? "")).mode & 0o077, 0);
+});
+
+test("runtime media pipeline keeps unsafe profile ids inside the cache dir", async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-media-safe-profile-"));
+  const pipeline = new RuntimeMediaPipeline({ cacheDir });
+  const message: RuntimeMessage = {
+    id: "m1",
+    platform: "wechat-ilink",
+    profileId: "../outside/profile",
+    conversationId: "user-1",
+    senderId: "user-1",
+    timestamp: 1,
+    kind: "file",
+    attachments: [{
+      id: "a1",
+      kind: "file",
+      fileName: "../../evil.pdf",
+      size: 5,
+      raw: {
+        type: MessageItemType.FILE,
+        file_item: { file_name: "../../evil.pdf", len: "5" },
+      },
+    }],
+    raw: {},
+  };
+  const client = {
+    async downloadMedia() {
+      return {
+        kind: "file",
+        fileName: "../../evil.pdf",
+        data: Buffer.from("hello"),
+      };
+    },
+  } as unknown as WeChatClient;
+
+  const [media] = await pipeline.downloadMessageMedia({ client, message });
+  const relative = path.relative(cacheDir, media.filePath ?? "");
+
+  assert.equal(relative.startsWith(".."), false);
+  assert.equal(path.isAbsolute(relative), false);
+  assert.equal(await fs.readFile(media.filePath ?? "", "utf-8"), "hello");
+
+  const stats = await pipeline.getCacheStats("../outside/profile");
+  assert.equal(stats.fileCount, 1);
+  assert.equal(path.relative(cacheDir, stats.cacheDir ?? "").startsWith(".."), false);
+});
+
+test("runtime media pipeline infers names and mime types for unnamed voice media", async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-media-voice-"));
+  const pipeline = new RuntimeMediaPipeline({ cacheDir });
+  const raw = {
+    type: MessageItemType.VOICE,
+    voice_item: { playtime: 1200 },
+  };
+  const message: RuntimeMessage = {
+    id: "m1",
+    platform: "wechat-ilink",
+    profileId: "main",
+    conversationId: "user-1",
+    senderId: "user-1",
+    timestamp: 1,
+    kind: "voice",
+    attachments: [{
+      id: "voice-1",
+      kind: "voice",
+      raw,
+    }],
+    raw: {},
+  };
+  const client = {
+    async downloadMedia() {
+      return {
+        kind: "voice",
+        data: Buffer.from("voice"),
+      };
+    },
+  } as unknown as WeChatClient;
+
+  const media = await pipeline.downloadMessageMedia({ client, message });
+
+  assert.equal(media.length, 1);
+  assert.match(media[0].fileName ?? "", /\.silk$/);
+  assert.equal(media[0].mimeType, "audio/silk");
+  assert.equal(await fs.readFile(media[0].filePath ?? "", "utf-8"), "voice");
+});
+
+test("runtime media pipeline avoids cache collisions for same-name files", async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-media-collision-"));
+  const pipeline = new RuntimeMediaPipeline({ cacheDir });
+  const raw = {
+    type: MessageItemType.FILE,
+    file_item: { file_name: "report.pdf", len: "5" },
+  };
+  const baseMessage: RuntimeMessage = {
+    id: "m1",
+    platform: "wechat-ilink",
+    profileId: "main",
+    conversationId: "user-1",
+    senderId: "user-1",
+    timestamp: 1,
+    kind: "file",
+    attachments: [{
+      id: "a1",
+      kind: "file",
+      fileName: "report.pdf",
+      size: 5,
+      raw,
+    }],
+    raw: {},
+  };
+  let count = 0;
+  const client = {
+    async downloadMedia() {
+      count += 1;
+      return {
+        kind: "file",
+        fileName: "report.pdf",
+        data: Buffer.from(`hello-${count}`),
+      };
+    },
+  } as unknown as WeChatClient;
+
+  const first = await pipeline.downloadMessageMedia({ client, message: baseMessage });
+  const second = await pipeline.downloadMessageMedia({
+    client,
+    message: {
+      ...baseMessage,
+      id: "m2",
+    },
+  });
+
+  assert.notEqual(first[0].filePath, second[0].filePath);
+  assert.equal(await fs.readFile(first[0].filePath ?? "", "utf-8"), "hello-1");
+  assert.equal(await fs.readFile(second[0].filePath ?? "", "utf-8"), "hello-2");
+});
+
+test("runtime media pipeline avoids same-message collisions for equal-size attachments", async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-media-same-message-"));
+  const pipeline = new RuntimeMediaPipeline({ cacheDir, downloadConcurrency: 2 });
+  const message: RuntimeMessage = {
+    id: "m1",
+    platform: "wechat-ilink",
+    profileId: "main",
+    conversationId: "user-1",
+    senderId: "user-1",
+    timestamp: 1,
+    kind: "file",
+    attachments: ["a", "b"].map((marker) => ({
+      kind: "file" as const,
+      fileName: "report.pdf",
+      size: 5,
+      raw: {
+        msg_id: marker,
+        type: MessageItemType.FILE,
+        file_item: { file_name: "report.pdf", len: "5" },
+      },
+    })),
+    raw: {},
+  };
+  const client = {
+    async downloadMedia(item: { msg_id?: string }) {
+      return {
+        kind: "file",
+        fileName: "report.pdf",
+        data: Buffer.from(item.msg_id === "a" ? "aaaaa" : "bbbbb"),
+      };
+    },
+  } as unknown as WeChatClient;
+
+  const media = await pipeline.downloadMessageMedia({ client, message });
+
+  assert.equal(media.length, 2);
+  assert.notEqual(media[0].filePath, media[1].filePath);
+  assert.equal(await fs.readFile(media[0].filePath ?? "", "utf-8"), "aaaaa");
+  assert.equal(await fs.readFile(media[1].filePath ?? "", "utf-8"), "bbbbb");
+});
+
+test("runtime media pipeline downloads multiple attachments concurrently in source order", async () => {
+  const pipeline = new RuntimeMediaPipeline({ downloadConcurrency: 2 });
+  const message: RuntimeMessage = {
+    id: "m1",
+    platform: "wechat-ilink",
+    profileId: "main",
+    conversationId: "user-1",
+    senderId: "user-1",
+    timestamp: 1,
+    kind: "mixed",
+    attachments: ["1", "2", "3"].map((marker) => ({
+      kind: "image" as const,
+      raw: {
+        msg_id: marker,
+        type: MessageItemType.IMAGE,
+        image_item: {},
+      },
+    })),
+    raw: {},
+  };
+  let active = 0;
+  let maxActive = 0;
+  const client = {
+    async downloadMedia(item: { msg_id?: string }) {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await sleepMs(item.msg_id === "1" ? 20 : 5);
+      active -= 1;
+      return {
+        kind: "image",
+        data: Buffer.from(item.msg_id ?? ""),
+      };
+    },
+  } as unknown as WeChatClient;
+
+  const media = await pipeline.downloadMessageMedia({ client, message });
+
+  assert.equal(maxActive, 2);
+  assert.deepEqual(media.map((item) => item.data.toString("utf-8")), ["1", "2", "3"]);
+});
+
+test("runtime media pipeline waits for all concurrent downloads before reporting failures", async () => {
+  const pipeline = new RuntimeMediaPipeline({ downloadConcurrency: 2 });
+  const message: RuntimeMessage = {
+    id: "m1",
+    platform: "wechat-ilink",
+    profileId: "main",
+    conversationId: "user-1",
+    senderId: "user-1",
+    timestamp: 1,
+    kind: "mixed",
+    attachments: ["fail", "finish"].map((marker) => ({
+      kind: "file" as const,
+      fileName: `${marker}.txt`,
+      raw: {
+        msg_id: marker,
+        type: MessageItemType.FILE,
+        file_item: { file_name: `${marker}.txt` },
+      },
+    })),
+    raw: {},
+  };
+  let secondFinished = false;
+  const client = {
+    async downloadMedia(item: { msg_id?: string }) {
+      if (item.msg_id === "fail") throw new Error("temporary CDN failure");
+      await sleepMs(20);
+      secondFinished = true;
+      return { kind: "file", data: Buffer.from("done") };
+    },
+  } as unknown as WeChatClient;
+
+  await assert.rejects(
+    () => pipeline.downloadMessageMedia({ client, message }),
+    /Failed to download 1 of 2 attachment\(s\): #1: temporary CDN failure/,
+  );
+  assert.equal(secondFinished, true);
+});
+
+test("runtime media pipeline prunes expired cache files", async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-media-ttl-"));
+  const profileDir = path.join(cacheDir, "main");
+  await fs.mkdir(profileDir, { recursive: true });
+  const oldFile = path.join(profileDir, "old.bin");
+  const freshFile = path.join(profileDir, "fresh.bin");
+  await fs.writeFile(oldFile, "old");
+  await fs.writeFile(freshFile, "fresh");
+  const oldDate = new Date(Date.now() - 60_000);
+  await fs.utimes(oldFile, oldDate, oldDate);
+
+  const pipeline = new RuntimeMediaPipeline({
+    cacheDir,
+    cacheTtlMs: 1_000,
+  });
+  await pipeline.pruneCache();
+
+  await assert.rejects(() => fs.stat(oldFile));
+  assert.equal(await fs.readFile(freshFile, "utf-8"), "fresh");
+});
+
+test("runtime media pipeline prunes oldest files over cache size limit", async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-media-size-"));
+  const profileDir = path.join(cacheDir, "main");
+  await fs.mkdir(profileDir, { recursive: true });
+  const oldFile = path.join(profileDir, "old.bin");
+  const freshFile = path.join(profileDir, "fresh.bin");
+  await fs.writeFile(oldFile, "12345");
+  await fs.writeFile(freshFile, "abcde");
+  const oldDate = new Date(Date.now() - 60_000);
+  await fs.utimes(oldFile, oldDate, oldDate);
+
+  const pipeline = new RuntimeMediaPipeline({
+    cacheDir,
+    cacheTtlMs: 0,
+    maxCacheBytes: 5,
+  });
+  await pipeline.pruneCache();
+
+  await assert.rejects(() => fs.stat(oldFile));
+  assert.equal(await fs.readFile(freshFile, "utf-8"), "abcde");
+});
+
+test("runtime media pipeline reports and clears cache by profile", async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-media-clear-"));
+  const mainDir = path.join(cacheDir, "main");
+  const otherDir = path.join(cacheDir, "other");
+  await fs.mkdir(mainDir, { recursive: true });
+  await fs.mkdir(otherDir, { recursive: true });
+  await fs.writeFile(path.join(mainDir, "one.bin"), "123");
+  await fs.writeFile(path.join(mainDir, "two.bin"), "45");
+  await fs.writeFile(path.join(otherDir, "keep.bin"), "keep");
+  const pipeline = new RuntimeMediaPipeline({ cacheDir });
+
+  const before = await pipeline.getCacheStats("main");
+  assert.equal(before.fileCount, 2);
+  assert.equal(before.totalBytes, 5);
+
+  const cleared = await pipeline.clearCache("main");
+  assert.equal(cleared.fileCount, 2);
+  assert.equal(cleared.totalBytes, 5);
+
+  const after = await pipeline.getCacheStats("main");
+  assert.equal(after.fileCount, 0);
+  assert.equal(after.totalBytes, 0);
+  assert.equal(await fs.readFile(path.join(otherDir, "keep.bin"), "utf-8"), "keep");
 });
 
 test("dummy TTS provider writes a local test artifact", async () => {
@@ -2533,5 +3724,124 @@ test("WeChatRuntime handles message -> connector -> action -> memory", async () 
   assert.deepEqual(memory.map((m) => [m.role, m.content]), [
     ["user", "hello"],
     ["assistant", "Echo: hello"],
+  ]);
+});
+
+test("WeChatRuntime handles inbound file -> Codex -> text, image, file, and voice outputs", async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-e2e-media-cache-"));
+  const outputImage = await tempOutputFile("result.png", "image-output");
+  const outputFile = await tempOutputFile("result.pdf", "file-output");
+  const outputVoice = await tempOutputFile("result.silk", "voice-output");
+  const codexPrompts: Array<{
+    text: string;
+    attachments?: Array<{ kind: string; filePath: string; fileName?: string }>;
+  }> = [];
+  const sent: Array<{
+    type: "text" | "media" | "voice";
+    filePath?: string;
+    text?: string;
+    contextToken?: string;
+  }> = [];
+  const runtime = new WeChatRuntime({
+    profiles: [{
+      id: "main",
+      credentials: {
+        accountId: "abc@im.bot",
+        token: "token",
+      },
+    }],
+    media: new RuntimeMediaPipeline({ cacheDir }),
+    connectors: [createCodexConnector({
+      id: "codex-bridge",
+      imagePromptReminderMs: 60_000,
+      client: {
+        async getStatus() {
+          return { state: "idle" };
+        },
+        async getCurrentBinding() {
+          return { threadId: "thread-1", boundAt: 1 };
+        },
+        async sendPrompt(prompt) {
+          codexPrompts.push(prompt);
+          return {
+            id: prompt.id,
+            threadId: "thread-1",
+            turnId: "turn-1",
+            finalText: "任务已完成。",
+            outputFiles: [
+              { kind: "image", filePath: outputImage },
+              { kind: "file", filePath: outputFile },
+              { kind: "file", filePath: outputVoice, mimeType: "audio/silk" },
+            ],
+          };
+        },
+      },
+    })],
+    routes: [{
+      id: "codex",
+      profileId: "main",
+      connectorId: "codex-bridge",
+      terminal: true,
+    }],
+  });
+  const client = runtime.getClient("main");
+  client.downloadMedia = async () => ({
+    kind: "file",
+    fileName: "input.pdf",
+    data: Buffer.from("input-pdf"),
+  });
+  client.sendText = async (_to, text, contextToken) => {
+    sent.push({ type: "text", text, contextToken });
+    return "text-client-id";
+  };
+  client.sendMedia = async (_to, filePath, _caption, contextToken) => {
+    sent.push({ type: "media", filePath, contextToken });
+    return "media-client-id";
+  };
+  client.sendVoice = async (_to, filePath, _options, contextToken) => {
+    sent.push({ type: "voice", filePath, contextToken });
+    return "voice-client-id";
+  };
+
+  await runtime.handleWeixinMessage("main", {
+    message_id: 4001,
+    from_user_id: "user-1",
+    context_token: "ctx-file",
+    item_list: [{
+      type: MessageItemType.FILE,
+      file_item: {
+        file_name: "input.pdf",
+        len: "9",
+        media: { encrypt_query_param: "input", aes_key: "unused" },
+      },
+    }],
+  });
+  assert.equal(codexPrompts.length, 0);
+  assert.deepEqual(sent, []);
+
+  await runtime.handleWeixinMessage("main", {
+    message_id: 4002,
+    from_user_id: "user-1",
+    context_token: "ctx-text",
+    item_list: [{
+      type: MessageItemType.TEXT,
+      text_item: { text: "总结这个 PDF，并把结果文件发回来" },
+    }],
+  });
+
+  const codexPrompt = codexPrompts[0];
+  assert.equal(codexPrompt.text, "总结这个 PDF，并把结果文件发回来");
+  assert.equal(codexPrompt.attachments?.length, 1);
+  assert.equal(codexPrompt.attachments?.[0].kind, "file");
+  assert.equal(codexPrompt.attachments?.[0].fileName, "input.pdf");
+  assert.equal(
+    await fs.readFile(codexPrompt.attachments?.[0].filePath ?? "", "utf-8"),
+    "input-pdf",
+  );
+  assert.deepEqual(sent, [
+    { type: "text", text: "任务已完成。", contextToken: "ctx-text" },
+    { type: "media", filePath: outputImage, contextToken: "ctx-text" },
+    { type: "media", filePath: outputFile, contextToken: "ctx-text" },
+    { type: "voice", filePath: outputVoice, contextToken: "ctx-text" },
   ]);
 });

@@ -1,4 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { statSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+import { getMimeFromFilename } from "wechat2all";
 
 import type {
   RuntimeAction,
@@ -6,6 +10,7 @@ import type {
   RuntimeHandlerContext,
   RuntimeMessage,
 } from "../types.js";
+import type { RuntimeMediaCacheStats } from "../media/pipeline.js";
 
 export type CodexBridgeStatusState =
   | "idle"
@@ -62,7 +67,7 @@ export interface CodexBridgePrompt {
 }
 
 export interface CodexBridgePromptAttachment {
-  kind: "image";
+  kind: "image" | "file";
   filePath: string;
   fileName?: string;
   mimeType?: string;
@@ -70,7 +75,7 @@ export interface CodexBridgePromptAttachment {
 }
 
 export interface CodexBridgeOutputFile {
-  kind: "image";
+  kind: "image" | "file";
   filePath: string;
   mimeType?: string;
   source?: string;
@@ -150,6 +155,7 @@ export interface CodexConnectorOptions {
   imagePromptReminderMs?: number;
   imagePendingTtlMs?: number;
   imageMaxCount?: number;
+  processingReminderMs?: number;
 }
 
 interface PendingImageState {
@@ -160,10 +166,18 @@ interface PendingImageState {
   timerVersion: number;
 }
 
+interface CodexActionTiming {
+  attachmentDownloadMs?: number;
+  attachmentWaitMs?: number;
+  codexTurnMs?: number;
+}
+
 const DEFAULT_IMAGE_PROMPT_REMINDER_MS = 15_000;
 const DEFAULT_IMAGE_PENDING_TTL_MS = 30 * 60_000;
 const DEFAULT_IMAGE_MAX_COUNT = 9;
-const IMAGE_PROMPT_REMINDER_TEXT = "请问想对图片做什么操作？";
+const DEFAULT_PROCESSING_REMINDER_MS = 2 * 60_000;
+const ATTACHMENT_PROMPT_REMINDER_TEXT = "请问想对这些附件做什么操作？";
+const PROCESSING_REMINDER_TEXT = "请稍等，正在处理。";
 
 function messageText(message: RuntimeMessage): string {
   return message.text?.trim() ?? "";
@@ -232,6 +246,15 @@ function parseAlarmCommand(text: string): string | "show" | "off" | null {
   return raw;
 }
 
+function parseCacheCommand(text: string): "show" | "clear" | "invalid" | null {
+  const match = text.trim().match(/^\/cache(?:\s+(.+))?$/i);
+  if (!match) return null;
+  const raw = match[1]?.trim().toLowerCase();
+  if (!raw || ["status", "info", "ls", "show"].includes(raw)) return "show";
+  if (["clear", "clean", "purge", "rm", "reset", "清理", "清空"].includes(raw)) return "clear";
+  return "invalid";
+}
+
 function isCurrentCommand(text: string): boolean {
   return /^(current|pwd|binding|where|当前|绑定)$/i.test(text);
 }
@@ -267,6 +290,16 @@ function clearPendingImageState(
   pendingImages.delete(key);
 }
 
+function clearPendingImageStatesForProfile(
+  pendingImages: Map<string, PendingImageState>,
+  profileId: string,
+): void {
+  const prefix = `${profileId}\u0000`;
+  for (const key of pendingImages.keys()) {
+    if (key.startsWith(prefix)) clearPendingImageState(pendingImages, key);
+  }
+}
+
 function freshPendingImageState(
   pendingImages: Map<string, PendingImageState>,
   key: string,
@@ -297,11 +330,39 @@ function schedulePendingImageReminder(params: {
     latest.timer = undefined;
     const dispatched = params.context.dispatchActions?.(textAction(
       params.message,
-      IMAGE_PROMPT_REMINDER_TEXT,
+      ATTACHMENT_PROMPT_REMINDER_TEXT,
     ));
     void dispatched?.catch(() => undefined);
   }, params.delayMs);
   state.timer.unref?.();
+}
+
+function suspendPendingImageReminder(state: PendingImageState): void {
+  if (state.timer) clearTimeout(state.timer);
+  state.timer = undefined;
+  state.timerVersion += 1;
+}
+
+function startProcessingReminder(params: {
+  message: RuntimeMessage;
+  context: RuntimeHandlerContext;
+  intervalMs: number;
+}): () => void {
+  const dispatchActions = params.context.dispatchActions;
+  if (!dispatchActions || params.intervalMs <= 0) return () => undefined;
+
+  let dispatching = false;
+  const timer = setInterval(() => {
+    if (dispatching) return;
+    dispatching = true;
+    void dispatchActions(
+      textAction(params.message, PROCESSING_REMINDER_TEXT),
+    ).catch(() => undefined).finally(() => {
+      dispatching = false;
+    });
+  }, params.intervalMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
 }
 
 function enqueueConversationTask<T>(
@@ -317,6 +378,30 @@ function enqueueConversationTask<T>(
     if (queues.get(key) === settled) queues.delete(key);
   });
   return current;
+}
+
+function existingPromptAttachments(
+  attachments: CodexBridgePromptAttachment[],
+): CodexBridgePromptAttachment[] {
+  return attachments.filter((attachment) => isRegularFile(attachment.filePath));
+}
+
+function retainPendingAttachmentsAfterFailure(params: {
+  pendingImages: Map<string, PendingImageState>;
+  key: string;
+  attachments: CodexBridgePromptAttachment[];
+  sourceMessageId: string;
+}): void {
+  const attachments = existingPromptAttachments(params.attachments);
+  if (!attachments.length) return;
+  const previous = params.pendingImages.get(params.key);
+  if (previous) suspendPendingImageReminder(previous);
+  params.pendingImages.set(params.key, {
+    attachments,
+    sourceMessageId: params.sourceMessageId,
+    updatedAt: Date.now(),
+    timerVersion: (previous?.timerVersion ?? 0) + 1,
+  });
 }
 
 function visibleBindableThreads(threads: CodexBridgeThread[]): CodexBridgeThread[] {
@@ -533,6 +618,12 @@ function helpText(replyMode: CodexReplyMode): string {
     "/alarm <HH:mm>",
     "  设置 24 小时制时间，到点向绑定的 Codex chat 发送 dummy 你好",
     "",
+    "/cache",
+    "  查看本地附件 cache 的路径、文件数和大小",
+    "",
+    "/cache clear",
+    "  清理当前 profile 的附件 cache",
+    "",
     "任意普通文本",
     "  发送到已绑定的 Codex chat",
     "",
@@ -563,41 +654,103 @@ function textAction(message: RuntimeMessage, text: string): RuntimeAction[] {
   }];
 }
 
+function withCodexTiming(
+  actions: RuntimeAction[],
+  timing: CodexActionTiming,
+): RuntimeAction[] {
+  const hasTiming = Object.values(timing).some((value) => typeof value === "number");
+  if (!hasTiming) return actions;
+  return actions.map((action) => ({
+    ...action,
+    metadata: {
+      ...action.metadata,
+      performance: timing,
+    },
+  }));
+}
+
 function mediaActions(
   message: RuntimeMessage,
   outputFiles: CodexBridgeOutputFile[] | undefined,
 ): RuntimeAction[] {
   return (outputFiles ?? [])
-    .filter((file) => file.kind === "image" && file.filePath.trim().length > 0)
-    .map((file) => ({
-      type: "send_media" as const,
-      conversationId: message.conversationId,
-      filePath: file.filePath,
-    }));
+    .filter((file) => isSendableOutputFile(file))
+    .map((file) => outputFileAction(message, file));
 }
 
-const MARKDOWN_IMAGE_REFERENCE_PATTERN = /!\[[^\]]*]\(([^)\]]+)\)/g;
+function isSendableOutputFile(file: CodexBridgeOutputFile): boolean {
+  return (file.kind === "image" || file.kind === "file") &&
+    file.filePath.trim().length > 0 &&
+    isRegularFile(file.filePath);
+}
+
+function isRegularFile(filePath: string): boolean {
+  try {
+    return statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function outputFileMimeType(file: CodexBridgeOutputFile): string {
+  return file.mimeType ?? getMimeFromFilename(file.filePath);
+}
+
+function isVoiceOutputFile(file: CodexBridgeOutputFile): boolean {
+  const mimeType = outputFileMimeType(file);
+  if (!mimeType.startsWith("audio/")) return false;
+  return /\.(?:silk|amr|mp3|ogg|spx|wav|pcm)$/i.test(file.filePath);
+}
+
+function outputFileAction(
+  message: RuntimeMessage,
+  file: CodexBridgeOutputFile,
+): RuntimeAction {
+  if (isVoiceOutputFile(file)) {
+    return {
+      type: "send_voice",
+      conversationId: message.conversationId,
+      filePath: file.filePath,
+    };
+  }
+  return {
+    type: "send_media",
+    conversationId: message.conversationId,
+    filePath: file.filePath,
+  };
+}
+
+function missingOutputFiles(
+  outputFiles: CodexBridgeOutputFile[] | undefined,
+): CodexBridgeOutputFile[] {
+  return (outputFiles ?? []).filter((file) =>
+    (file.kind === "image" || file.kind === "file") &&
+    file.filePath.trim().length > 0 &&
+    !isRegularFile(file.filePath),
+  );
+}
+
+const MARKDOWN_FILE_REFERENCE_PATTERN = /!?\[[^\]]*]\(([^)\]]+)\)/g;
 const FILE_URL_REFERENCE_PATTERN = /file:\/\/[^\s)\]]+/g;
 
 function fileUrlForPath(filePath: string): string {
-  return `file://${filePath}`;
+  return pathToFileURL(filePath).href;
 }
 
-function stripCodexOutputImageReferences(
+function stripCodexOutputFileReferences(
   text: string | undefined,
   outputFiles: CodexBridgeOutputFile[] | undefined,
 ): string | undefined {
   if (!text?.trim() || !outputFiles?.length) return text;
   const outputPaths = new Set(
     outputFiles
-      .filter((file) => file.kind === "image")
       .flatMap((file) => [file.filePath, fileUrlForPath(file.filePath)]),
   );
-  const withoutMarkdownImages = text.replace(
-    MARKDOWN_IMAGE_REFERENCE_PATTERN,
+  const withoutMarkdownLinks = text.replace(
+    MARKDOWN_FILE_REFERENCE_PATTERN,
     (match, rawUrl: string) => outputPaths.has(rawUrl.trim()) ? "" : match,
   );
-  const withoutFileUrls = withoutMarkdownImages.replace(
+  const withoutFileUrls = withoutMarkdownLinks.replace(
     FILE_URL_REFERENCE_PATTERN,
     (match) => outputPaths.has(match.trim()) ? "" : match,
   );
@@ -619,41 +772,79 @@ function textAndMediaActions(
   text: string | undefined,
   outputFiles: CodexBridgeOutputFile[] | undefined,
 ): RuntimeAction[] {
-  const cleanedText = stripCodexOutputImageReferences(text, outputFiles);
+  const cleanedText = stripCodexOutputFileReferences(text, outputFiles);
   return [
     ...(cleanedText
       ? textAction(message, cleanedText)
       : []),
     ...mediaActions(message, outputFiles),
+    ...missingOutputFileWarningActions(message, outputFiles),
   ];
+}
+
+function streamTextAndMediaActions(
+  message: RuntimeMessage,
+  replyParts: string[],
+  outputFiles: CodexBridgeOutputFile[] | undefined,
+): RuntimeAction[] {
+  const textActions = replyParts
+    .map((part) => stripCodexOutputFileReferences(part, outputFiles))
+    .filter((part): part is string => Boolean(part?.trim()))
+    .map((part) => ({
+      type: "send_text" as const,
+      conversationId: message.conversationId,
+      text: part,
+    }));
+  return [
+    ...textActions,
+    ...mediaActions(message, outputFiles),
+    ...missingOutputFileWarningActions(message, outputFiles),
+  ];
+}
+
+function missingOutputFileWarningActions(
+  message: RuntimeMessage,
+  outputFiles: CodexBridgeOutputFile[] | undefined,
+): RuntimeAction[] {
+  const missingFiles = missingOutputFiles(outputFiles);
+  if (!missingFiles.length) return [];
+  return textAction(message, codexError("output file missing", [
+    "Codex 返回了本地文件路径，但文件不存在或不是普通文件，已跳过发送。",
+    "可以让 Codex 重新生成文件，或检查生成路径是否仍然可访问。",
+  ]));
 }
 
 async function promptAttachmentsForMessage(
   message: RuntimeMessage,
   context: RuntimeHandlerContext,
 ): Promise<CodexBridgePromptAttachment[]> {
-  const hasImage = message.attachments.some((attachment) => attachment.kind === "image");
-  if (!hasImage) return [];
+  const hasMediaAttachment = message.attachments.some((attachment) =>
+    attachment.kind === "image" ||
+    attachment.kind === "file" ||
+    attachment.kind === "video" ||
+    attachment.kind === "voice"
+  );
+  if (!hasMediaAttachment) return [];
   if (!context.media) {
-    throw new Error("Runtime media pipeline is not configured; cannot forward WeChat images.");
+    throw new Error("Runtime media pipeline is not configured; cannot forward WeChat attachments.");
   }
   const media = await context.media.downloadMessageMedia({
     client: context.client,
     message,
   });
-  const images = media
-    .filter((item) => item.kind === "image" && item.filePath)
+  const attachments = media
+    .filter((item) => item.filePath)
     .map((item) => ({
-      kind: "image" as const,
+      kind: item.kind === "image" ? "image" as const : "file" as const,
       filePath: item.filePath ?? "",
       fileName: item.fileName,
       mimeType: item.mimeType,
       size: item.size,
     }));
-  if (!images.length) {
-    throw new Error("WeChat image was received, but no local image file could be cached.");
+  if (!attachments.length) {
+    throw new Error("WeChat attachment was received, but no local file could be cached.");
   }
-  return images;
+  return attachments;
 }
 
 function promptTextForMessage(text: string): string {
@@ -724,10 +915,10 @@ function codexOk(title: string, lines: Array<string | undefined>): string {
   ]);
 }
 
-function imageLimitError(maxCount: number): string {
-  return codexError("image limit", [
-    `当前最多缓存 ${maxCount} 张图片。`,
-    `已保留前 ${maxCount} 张图片，请直接发送文字要求。`,
+function attachmentLimitError(maxCount: number): string {
+  return codexError("attachment limit", [
+    `当前最多缓存 ${maxCount} 个附件。`,
+    `已保留前 ${maxCount} 个附件，请直接发送文字要求。`,
   ]);
 }
 
@@ -784,6 +975,44 @@ function formatTokenUsageForWechat(usage: CodexTokenUsage): string {
   ]);
 }
 
+function formatBytes(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = units[0];
+  for (let index = 0; index < units.length - 1 && value >= 1024; index += 1) {
+    value /= 1024;
+    unit = units[index + 1];
+  }
+  const formatted = unit === "B" ? String(bytes) : value.toFixed(value >= 10 ? 1 : 2);
+  return `${formatted} ${unit}`;
+}
+
+function formatCacheStats(stats: RuntimeMediaCacheStats): string {
+  return codexPanel([
+    "codex / cache",
+    "",
+    "- 本地附件 cache",
+    stats.cacheDir ? `- 路径: ${stats.cacheDir}` : "- 路径: 未配置",
+    stats.profileId ? `- profile: ${stats.profileId}` : undefined,
+    `- 文件数: ${stats.fileCount}`,
+    `- 大小: ${formatBytes(stats.totalBytes)}`,
+    stats.oldestMtimeMs ? `- 最早文件: ${formatTime(stats.oldestMtimeMs)}` : undefined,
+    stats.newestMtimeMs ? `- 最新文件: ${formatTime(stats.newestMtimeMs)}` : undefined,
+    "",
+    "/cache clear",
+    "  清理当前 profile 的附件 cache",
+  ]);
+}
+
+function formatCacheCleared(stats: RuntimeMediaCacheStats): string {
+  return codexOk("cache cleared", [
+    "已清理当前 profile 的附件 cache。",
+    stats.cacheDir ? `路径: ${stats.cacheDir}` : undefined,
+    `清理文件数: ${stats.fileCount}`,
+    `释放空间: ${formatBytes(stats.totalBytes)}`,
+  ]);
+}
+
 export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnector {
   const prefixes = opts.commandPrefixes ?? [];
   const tokenUsageReader = opts.tokenUsageReader ??
@@ -795,6 +1024,7 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
   const imagePromptReminderMs = opts.imagePromptReminderMs ?? DEFAULT_IMAGE_PROMPT_REMINDER_MS;
   const imagePendingTtlMs = opts.imagePendingTtlMs ?? DEFAULT_IMAGE_PENDING_TTL_MS;
   const imageMaxCount = opts.imageMaxCount ?? DEFAULT_IMAGE_MAX_COUNT;
+  const processingReminderMs = opts.processingReminderMs ?? DEFAULT_PROCESSING_REMINDER_MS;
   return {
     id: opts.id,
     name: opts.name ?? "Codex Bridge",
@@ -812,6 +1042,12 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
             "  /ls",
           ]),
         );
+      }
+
+      const immediateText = stripPrefix(messageText(message), prefixes);
+      if (isStatusCommand(immediateText)) {
+        await rememberTarget(opts.client, message);
+        return textAction(message, formatStatus(await opts.client.getStatus()));
       }
 
       return enqueueConversationTask(
@@ -844,8 +1080,33 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
         return textAction(message, helpText(replyMode));
       }
 
-      if (isStatusCommand(text)) {
-        return textAction(message, formatStatus(await opts.client.getStatus()));
+      const cacheCommand = parseCacheCommand(text);
+      if (cacheCommand !== null) {
+        if (!context.media) {
+          return textAction(
+            message,
+            codexError("cache unavailable", [
+              "当前 runtime 没有配置 media cache。",
+            ]),
+          );
+        }
+        if (cacheCommand === "invalid") {
+          return textAction(message, codexUsage("/cache [clear]", "查看或清理本地附件 cache。"));
+        }
+        try {
+          if (cacheCommand === "clear") {
+            clearPendingImageStatesForProfile(pendingImages, message.profileId);
+            return textAction(message, formatCacheCleared(
+              await context.media.clearCache(message.profileId),
+            ));
+          }
+          return textAction(message, formatCacheStats(
+            await context.media.getCacheStats(message.profileId),
+          ));
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          return textAction(message, codexError("cache failed", [detail]));
+        }
       }
 
       const nextReplyMode = parseModeCommand(text);
@@ -962,15 +1223,33 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
         );
       }
 
+      const imageKey = pendingImageKey(message);
+      const pendingForText = text
+        ? freshPendingImageState(pendingImages, imageKey, imagePendingTtlMs)
+        : undefined;
+      const attachmentWaitMs = pendingForText
+        ? Math.max(0, Date.now() - pendingForText.updatedAt)
+        : undefined;
+      if (pendingForText) suspendPendingImageReminder(pendingForText);
+
       let promptAttachments: CodexBridgePromptAttachment[];
+      const attachmentDownloadStartedAt = Date.now();
       try {
         promptAttachments = await promptAttachmentsForMessage(message, context);
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
-        return textAction(message, codexError("media failed", [detail]));
+        return withCodexTiming(
+          textAction(message, codexError("media failed", [detail])),
+          {
+            attachmentDownloadMs: Date.now() - attachmentDownloadStartedAt,
+            attachmentWaitMs,
+          },
+        );
       }
-      const imageKey = pendingImageKey(message);
-      const currentPending = freshPendingImageState(
+      const attachmentDownloadMs = message.attachments.length
+        ? Date.now() - attachmentDownloadStartedAt
+        : undefined;
+      const currentPending = pendingForText ?? freshPendingImageState(
         pendingImages,
         imageKey,
         imagePendingTtlMs,
@@ -999,30 +1278,49 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
           });
         }
         if (acceptedAttachments.length < promptAttachments.length) {
-          return textAction(message, imageLimitError(imageMaxCount));
+          return withCodexTiming(
+            textAction(message, attachmentLimitError(imageMaxCount)),
+            { attachmentDownloadMs },
+          );
         }
-        return [{ type: "noop", reason: "codex image cached; waiting for text request" }];
+        return withCodexTiming(
+          [{ type: "noop", reason: "codex attachment cached; waiting for text request" }],
+          { attachmentDownloadMs },
+        );
       }
 
-      const pendingForText = text
-        ? freshPendingImageState(pendingImages, imageKey, imagePendingTtlMs)
-        : undefined;
+      const pendingAttachments = pendingForText?.attachments
+        ? existingPromptAttachments(pendingForText.attachments)
+        : [];
+      if (pendingForText && pendingAttachments.length !== pendingForText.attachments.length) {
+        if (pendingAttachments.length) {
+          pendingForText.attachments = pendingAttachments;
+        } else {
+          clearPendingImageState(pendingImages, imageKey);
+        }
+      }
       const mergedAttachments = [
-        ...(pendingForText?.attachments ?? []),
+        ...pendingAttachments,
         ...promptAttachments,
       ];
       if (mergedAttachments.length > imageMaxCount) {
-        return textAction(message, imageLimitError(imageMaxCount));
+        return withCodexTiming(
+          textAction(message, attachmentLimitError(imageMaxCount)),
+          { attachmentDownloadMs, attachmentWaitMs },
+        );
       }
 
       const promptText = promptTextForMessage(text);
       if (!promptText && promptAttachments.length === 0) {
-        return textAction(
-          message,
-          codexError("unsupported message", [
-            "这条微信消息没有可转发给 Codex 的文本或图片。",
-            "语音消息需要 SDK 提供转写文本；图片消息需要 media cache。",
-          ]),
+        return withCodexTiming(
+          textAction(
+            message,
+            codexError("unsupported message", [
+              "这条微信消息没有可转发给 Codex 的文本或附件。",
+              "语音消息最好带转写文本；没有文本时会尝试作为本地附件转发。",
+            ]),
+          ),
+          { attachmentDownloadMs, attachmentWaitMs },
         );
       }
 
@@ -1040,68 +1338,105 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
         replyMode,
       };
       let result: CodexBridgeSendPromptResult;
+      const codexTurnStartedAt = Date.now();
+      const stopProcessingReminder = startProcessingReminder({
+        message,
+        context,
+        intervalMs: processingReminderMs,
+      });
       try {
         result = await opts.client.sendPrompt(prompt);
       } catch (error) {
+        retainPendingAttachmentsAfterFailure({
+          pendingImages,
+          key: imageKey,
+          attachments: mergedAttachments,
+          sourceMessageId: message.id,
+        });
         const detail = error instanceof Error ? error.message : String(error);
-        return textAction(
-          message,
-          codexError("codex gui failed", [detail]),
+        return withCodexTiming(
+          textAction(
+            message,
+            codexError("codex gui failed", [detail]),
+          ),
+          {
+            attachmentDownloadMs,
+            attachmentWaitMs,
+            codexTurnMs: Date.now() - codexTurnStartedAt,
+          },
         );
+      } finally {
+        stopProcessingReminder();
       }
+      const timing: CodexActionTiming = {
+        attachmentDownloadMs,
+        attachmentWaitMs,
+        codexTurnMs: Date.now() - codexTurnStartedAt,
+      };
       if (result.error) {
-        return textAction(
-          message,
-          codexError("codex gui failed", [
-            result.threadId ? `Thread ID: ${result.threadId}` : undefined,
-            result.turnId ? `Turn ID: ${result.turnId}` : undefined,
-            `Error: ${result.error}`,
-          ]),
+        retainPendingAttachmentsAfterFailure({
+          pendingImages,
+          key: imageKey,
+          attachments: mergedAttachments,
+          sourceMessageId: message.id,
+        });
+        return withCodexTiming(
+          textAction(
+            message,
+            codexError("codex gui failed", [
+              result.threadId ? `Thread ID: ${result.threadId}` : undefined,
+              result.turnId ? `Turn ID: ${result.turnId}` : undefined,
+              `Error: ${result.error}`,
+            ]),
+          ),
+          timing,
         );
       }
       if (pendingForText) clearPendingImageState(pendingImages, imageKey);
       if (replyMode === "silent" && result.threadId) {
-        return textAction(
-          message,
-          codexOk("codex / done", [
-            "Codex 已完成这次任务。",
-            `Thread ID: ${result.threadId}`,
-            result.turnId ? `Turn ID: ${result.turnId}` : undefined,
-          ]),
+        return withCodexTiming(
+          textAction(
+            message,
+            codexOk("codex / done", [
+              "Codex 已完成这次任务。",
+              `Thread ID: ${result.threadId}`,
+              result.turnId ? `Turn ID: ${result.turnId}` : undefined,
+            ]),
+          ),
+          timing,
         );
       }
       const replyParts = result.replyParts?.filter((part) => part.trim().length > 0) ?? [];
       if (replyMode === "stream" && replyParts.length) {
-        return [
-          ...replyParts.map((part) => ({
-            type: "send_text" as const,
-            conversationId: message.conversationId,
-            text: part,
-          })),
-          ...mediaActions(message, result.outputFiles),
-        ];
-      }
-      const finalActions = textAndMediaActions(message, result.finalText, result.outputFiles);
-      if (finalActions.length) return finalActions;
-      if (result.threadId) {
-        return textAction(
-          message,
-          codexPanel([
-            "codex / sent",
-            "",
-            result.status === "inProgress"
-              ? "Codex GUI chat 仍在处理，暂时只拿到部分/无最终回复。"
-              : "已发送到 Codex GUI chat，但没有拿到最终文本回复。",
-            `Thread ID: ${result.threadId}`,
-            result.turnId ? `Turn ID: ${result.turnId}` : undefined,
-          ]),
+        return withCodexTiming(
+          streamTextAndMediaActions(message, replyParts, result.outputFiles),
+          timing,
         );
       }
-      return textAction(
-        message,
-        codexOk("codex inbox", [
-          `Prompt ID: ${result.id}`,
-        ]),
+      const finalActions = textAndMediaActions(message, result.finalText, result.outputFiles);
+      if (finalActions.length) return withCodexTiming(finalActions, timing);
+      if (result.threadId) {
+        return withCodexTiming(
+          textAction(
+            message,
+            codexError("no final reply", [
+              "Codex 已结束这次任务，但没有返回可发送的文字、图片或文件。",
+              result.status ? `Status: ${result.status}` : undefined,
+              `Thread ID: ${result.threadId}`,
+              result.turnId ? `Turn ID: ${result.turnId}` : undefined,
+            ]),
+          ),
+          timing,
+        );
+      }
+      return withCodexTiming(
+        textAction(
+          message,
+          codexOk("codex inbox", [
+            `Prompt ID: ${result.id}`,
+          ]),
+        ),
+        timing,
       );
         },
       );

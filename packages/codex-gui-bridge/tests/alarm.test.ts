@@ -72,5 +72,6 @@ test("Codex GUI bridge persists alarm settings", async () => {
 
   assert.equal((await bridge.clearAlarm()).enabled, false);
   assert.equal((await bridge.getAlarm()).enabled, false);
+  assert.equal((await fs.stat(configPath)).mode & 0o077, 0);
   bridge.close();
 });

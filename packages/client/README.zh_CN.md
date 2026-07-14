@@ -266,8 +266,8 @@ API 失败会抛出 `WeChatApiError`，包含 `endpoint`、`status`、`ret`、
 `errcode`、`errmsg`、`responseBody`、`timedOut` 等结构化字段。长轮询超时是正常情况，
 会返回空更新结果，不会抛错。
 
-CDN 上传/下载默认每次请求 60 秒超时。上传会对临时服务端/网络失败默认重试最多 3 次；
-4xx 客户端错误不会重试。可以通过 media options 覆盖 `timeoutMs`、`maxRetries`、
+CDN 上传/下载默认每次请求 60 秒超时。两个方向都会对临时服务端/网络失败默认重试最多
+3 次；永久性 4xx 客户端错误不会重试。可以通过 media options 覆盖 `timeoutMs`、`maxRetries`、
 `retryDelayMs` 或 `signal`。
 
 ### 语音与表情包
