@@ -5096,7 +5096,7 @@ nav {
   min-height: calc(100vh - 172px);
   max-height: calc(100vh - 172px);
   align-items: stretch;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .config-qr-panel,
