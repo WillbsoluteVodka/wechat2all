@@ -447,6 +447,46 @@ export class CodexGuiAppServerBridge {
       };
     }
 
+    const readDesktopSnapshot = this.desktopIpcTransport.readThreadSnapshot?.bind(
+      this.desktopIpcTransport,
+    );
+    let desktopSnapshotError: string | undefined;
+    if (readDesktopSnapshot) {
+      try {
+        const snapshot = await readDesktopSnapshot(
+          binding.threadId,
+          Math.min(this.desktopIpcTimeoutMs, 5_000),
+        );
+        const runtimeType = snapshot.runtimeStatus?.type;
+        const latestTurnStatus = snapshot.latestTurnStatus;
+        const state = runtimeType === "active" || latestTurnStatus === "inProgress"
+          ? "working"
+          : runtimeType === "error" || runtimeType === "systemError" ||
+              latestTurnStatus === "failed"
+            ? "blocked"
+            : latestTurnStatus === "completed"
+              ? "completed"
+              : runtimeType === "idle"
+                ? "idle"
+                : "unknown";
+        return {
+          state,
+          summary: state === "working"
+            ? "Codex Desktop reports this chat is active."
+            : state === "completed"
+              ? "Codex Desktop reports the latest turn completed."
+              : runtimeType
+                ? `Codex Desktop live status: ${runtimeType}.`
+                : "Codex Desktop returned a snapshot without a runtime status.",
+          currentThreadId: snapshot.threadId,
+          currentProject: projectName(snapshot.projectPath) ?? binding.project,
+          updatedAt: snapshot.updatedAt ?? Date.now(),
+        };
+      } catch (error) {
+        desktopSnapshotError = error instanceof Error ? error.message : String(error);
+      }
+    }
+
     try {
       const thread = await this.readThreadWithTurns(binding.threadId);
       const status = threadStatusText(thread.status);
@@ -455,6 +495,17 @@ export class CodexGuiAppServerBridge {
         !hasFinalAnswerItem(latestTurn.items ?? []) &&
         !resultFromItems(latestTurn.items ?? [], "silent").outputFiles?.length;
       const isWorking = status === "active" || status?.startsWith("active:") || turnIsWorking;
+      if (readDesktopSnapshot && !isWorking) {
+        return {
+          state: "unknown",
+          summary: desktopSnapshotError
+            ? `Cannot read Codex Desktop live status: ${desktopSnapshotError}`
+            : "Codex Desktop live status is unavailable.",
+          currentThreadId: thread.id,
+          currentProject: chatFromThread(thread).project ?? thread.cwd,
+          updatedAt: Date.now(),
+        };
+      }
       return {
         state: isWorking ? "working" : "idle",
         summary: turnIsWorking

@@ -3,7 +3,10 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
-import type { CodexDesktopIpcTransport } from "./types.js";
+import type {
+  CodexDesktopIpcTransport,
+  CodexDesktopThreadSnapshot,
+} from "./types.js";
 
 const MAX_FRAME_BYTES = 256 * 1024 * 1024;
 const INITIAL_CLIENT_ID = "initializing-client";
@@ -32,8 +35,77 @@ interface IpcMessage {
   requestId?: string;
   resultType?: string;
   method?: string;
+  params?: unknown;
   result?: unknown;
   error?: string;
+}
+
+type MessageObserver = (message: IpcMessage) => void;
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value != null && typeof value === "object"
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function latestTurnStatus(conversationState: Record<string, unknown>): string | undefined {
+  const turnHistory = record(conversationState.turnHistory);
+  const history = record(turnHistory?.history);
+  const entities = record(history?.entitiesByKey);
+  if (!entities) return undefined;
+
+  let latest: { status: string; startedAt: number } | undefined;
+  for (const value of Object.values(entities)) {
+    const entity = record(value);
+    if (typeof entity?.status !== "string") continue;
+    const startedAt = typeof entity.turnStartedAtMs === "number"
+      ? entity.turnStartedAtMs
+      : typeof entity.completedAtMs === "number"
+        ? entity.completedAtMs
+        : 0;
+    if (!latest || startedAt >= latest.startedAt) {
+      latest = { status: entity.status, startedAt };
+    }
+  }
+  return latest?.status;
+}
+
+function threadSnapshotFromMessage(
+  message: IpcMessage,
+  threadId: string,
+): CodexDesktopThreadSnapshot | undefined {
+  if (message.type !== "broadcast" || message.method !== "thread-stream-state-changed") {
+    return undefined;
+  }
+  const params = record(message.params);
+  if (params?.conversationId !== threadId) return undefined;
+  const change = record(params.change);
+  if (change?.type !== "snapshot") return undefined;
+  const state = record(change.conversationState);
+  if (!state) return undefined;
+  const runtimeStatus = record(state.threadRuntimeStatus);
+  const statusType = typeof runtimeStatus?.type === "string"
+    ? runtimeStatus.type
+    : undefined;
+
+  const turnStatus = latestTurnStatus(state);
+  return {
+    threadId,
+    ...(typeof state.title === "string" ? { title: state.title } : {}),
+    ...(typeof state.cwd === "string" ? { projectPath: state.cwd } : {}),
+    ...(typeof state.updatedAt === "number" ? { updatedAt: state.updatedAt } : {}),
+    ...(statusType
+      ? {
+          runtimeStatus: {
+            type: statusType,
+            ...(Array.isArray(runtimeStatus?.activeFlags)
+              ? { activeFlags: runtimeStatus.activeFlags }
+              : {}),
+          },
+        }
+      : {}),
+    ...(turnStatus ? { latestTurnStatus: turnStatus } : {}),
+  };
 }
 
 export interface CodexDesktopIpcRpcOptions {
@@ -76,7 +148,12 @@ export class CodexDesktopIpcRpc implements CodexDesktopIpcTransport {
     this.socketFactory = opts.socketFactory ?? (() => net.connect(this.socketPath));
   }
 
-  request<T>(method: string, params?: unknown, timeoutMs = this.timeoutMs): Promise<T> {
+  request<T>(
+    method: string,
+    params?: unknown,
+    timeoutMs = this.timeoutMs,
+    observeMessage?: MessageObserver,
+  ): Promise<T> {
     if (this.disposed) {
       return Promise.reject(new Error("Codex Desktop IPC transport is already closed."));
     }
@@ -152,6 +229,7 @@ export class CodexDesktopIpcRpc implements CodexDesktopIpcTransport {
       };
 
       const handleMessage = (message: IpcMessage): void => {
+        observeMessage?.(message);
         if (message.type === "client-discovery-request" && message.requestId) {
           send({
             type: "client-discovery-response",
@@ -208,6 +286,27 @@ export class CodexDesktopIpcRpc implements CodexDesktopIpcTransport {
         }
       });
     });
+  }
+
+  async readThreadSnapshot(
+    threadId: string,
+    timeoutMs = this.timeoutMs,
+  ): Promise<CodexDesktopThreadSnapshot> {
+    let snapshot: CodexDesktopThreadSnapshot | undefined;
+    await this.request<{ revision?: number }>(
+      "thread-follower-load-complete-history",
+      { conversationId: threadId },
+      timeoutMs,
+      (message) => {
+        snapshot ??= threadSnapshotFromMessage(message, threadId);
+      },
+    );
+    if (!snapshot) {
+      throw new Error(
+        `Codex Desktop did not publish a live snapshot for thread ${threadId}.`,
+      );
+    }
+    return snapshot;
   }
 
   close(): void {

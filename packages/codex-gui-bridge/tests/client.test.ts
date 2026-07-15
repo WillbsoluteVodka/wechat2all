@@ -9,6 +9,7 @@ import {
   CodexGuiAppServerBridge,
   type CodexAppServerTransport,
   type CodexDesktopIpcTransport,
+  type CodexDesktopThreadSnapshot,
 } from "../src/index.js";
 
 const TINY_PNG_BASE64 =
@@ -215,6 +216,23 @@ class FakeDesktopIpcTransport implements CodexDesktopIpcTransport {
   }
 }
 
+class FakeLiveStatusDesktopIpcTransport implements CodexDesktopIpcTransport {
+  constructor(
+    private readonly snapshot?: CodexDesktopThreadSnapshot,
+    private readonly snapshotError?: Error,
+  ) {}
+
+  async request<T>(): Promise<T> {
+    throw new Error("unexpected desktop IPC request");
+  }
+
+  async readThreadSnapshot(): Promise<CodexDesktopThreadSnapshot> {
+    if (this.snapshotError) throw this.snapshotError;
+    if (!this.snapshot) throw new Error("missing fake snapshot");
+    return this.snapshot;
+  }
+}
+
 test("lists chats and binds a thread through app-server protocol", async () => {
   const transport = new FakeTransport();
   const bridge = new CodexGuiAppServerBridge({ transport });
@@ -261,7 +279,14 @@ test("reports working from the latest in-progress turn when thread status is idl
     status: "inProgress",
     items: [{ id: "user-1", type: "userMessage" }],
   }]);
-  const bridge = new CodexGuiAppServerBridge({ transport });
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    desktopIpcTransport: {
+      async request<T>(): Promise<T> {
+        throw new Error("unexpected desktop IPC request");
+      },
+    },
+  });
 
   await bridge.bindThread("thread-1");
   const working = await bridge.getStatus();
@@ -280,6 +305,45 @@ test("reports working from the latest in-progress turn when thread status is idl
     }],
   }]);
   assert.equal((await bridge.getStatus()).state, "idle");
+});
+
+test("reports the Codex Desktop pet status for the bound chat", async () => {
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    desktopIpcTransport: new FakeLiveStatusDesktopIpcTransport({
+      threadId: "thread-1",
+      projectPath: "/tmp/wechat2all",
+      updatedAt: 1_785_000_123_000,
+      runtimeStatus: { type: "active", activeFlags: [] },
+      latestTurnStatus: "inProgress",
+    }),
+  });
+
+  await bridge.bindThread("thread-1");
+  const status = await bridge.getStatus();
+
+  assert.equal(status.state, "working");
+  assert.equal(status.currentProject, "wechat2all");
+  assert.equal(status.updatedAt, 1_785_000_123_000);
+  assert.match(status.summary ?? "", /Desktop.*active/);
+});
+
+test("does not report idle when the Codex Desktop live status is unavailable", async () => {
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    desktopIpcTransport: new FakeLiveStatusDesktopIpcTransport(
+      undefined,
+      new Error("desktop snapshot unavailable"),
+    ),
+  });
+
+  await bridge.bindThread("thread-1");
+  const status = await bridge.getStatus();
+
+  assert.equal(status.state, "unknown");
+  assert.match(status.summary ?? "", /desktop snapshot unavailable/);
 });
 
 test("starts a turn with standardized text input on the bound thread", async () => {

@@ -113,3 +113,87 @@ test(
     server.destroy();
   },
 );
+
+test(
+  "reads the live runtime status from the Codex Desktop thread snapshot",
+  { skip: process.platform === "win32" },
+  async () => {
+    const { client, server } = duplexPair();
+    let buffered = Buffer.alloc(0);
+    server.on("data", (chunk) => {
+      buffered = Buffer.concat([buffered, chunk]);
+      while (buffered.length >= 4) {
+        const length = buffered.readUInt32LE(0);
+        if (buffered.length < length + 4) return;
+        const message = JSON.parse(
+          buffered.subarray(4, length + 4).toString("utf8"),
+        ) as Record<string, unknown>;
+        buffered = buffered.subarray(length + 4);
+
+        if (message.method === "initialize") {
+          server.write(encode({
+            type: "response",
+            requestId: message.requestId,
+            resultType: "success",
+            method: "initialize",
+            result: { clientId: "wechat2all-client" },
+          }));
+          continue;
+        }
+        if (message.method !== "thread-follower-load-complete-history") continue;
+        server.write(encode({
+          type: "broadcast",
+          method: "thread-stream-state-changed",
+          params: {
+            conversationId: "thread-live-1",
+            hostId: "local",
+            change: {
+              type: "snapshot",
+              revision: 12,
+              conversationState: {
+                title: "Live work",
+                cwd: "/tmp/wechat2all",
+                updatedAt: 1_785_000_123_000,
+                threadRuntimeStatus: { type: "active", activeFlags: [] },
+                turnHistory: {
+                  history: {
+                    entitiesByKey: {
+                      "turn:latest": {
+                        turnStartedAtMs: 1_785_000_122_000,
+                        status: "inProgress",
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        }));
+        server.write(encode({
+          type: "response",
+          requestId: message.requestId,
+          resultType: "success",
+          method: "thread-follower-load-complete-history",
+          result: { revision: 12 },
+        }));
+      }
+    });
+
+    const rpc = new CodexDesktopIpcRpc({
+      timeoutMs: 2_000,
+      socketFactory: () => client,
+    });
+    const snapshot = await rpc.readThreadSnapshot("thread-live-1");
+
+    assert.deepEqual(snapshot, {
+      threadId: "thread-live-1",
+      title: "Live work",
+      projectPath: "/tmp/wechat2all",
+      updatedAt: 1_785_000_123_000,
+      runtimeStatus: { type: "active", activeFlags: [] },
+      latestTurnStatus: "inProgress",
+    });
+    rpc.close();
+    server.destroy();
+  },
+);

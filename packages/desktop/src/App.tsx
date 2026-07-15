@@ -2428,12 +2428,55 @@ function ConfigPage(props: {
 }) {
   const [draft, setDraft] = useState(props.data.settings);
   const [saved, setSaved] = useState(false);
+  const [greenQrImage, setGreenQrImage] = useState<string | null>(null);
   const profile = props.data.profile;
-  const status = props.loginStatus?.status ?? props.qr?.status;
+  const visibleQrError = props.qrError?.includes("QR code expired 3 times")
+    ? null
+    : props.qrError;
 
   useEffect(() => {
     setDraft(props.data.settings);
   }, [props.data.settings]);
+
+  useEffect(() => {
+    if (!props.qrImage) {
+      setGreenQrImage(null);
+      return;
+    }
+
+    let cancelled = false;
+    const image = new Image();
+    image.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) return;
+
+      context.imageSmoothingEnabled = false;
+      context.drawImage(image, 0, 0);
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+      for (let index = 0; index < pixels.data.length; index += 4) {
+        const alpha = pixels.data[index + 3] ?? 0;
+        const luminance =
+          (pixels.data[index] ?? 0) * 0.2126 +
+          (pixels.data[index + 1] ?? 0) * 0.7152 +
+          (pixels.data[index + 2] ?? 0) * 0.0722;
+        const isQrPixel = alpha > 0 && luminance < 128;
+        pixels.data[index] = isQrPixel ? 28 : 0;
+        pixels.data[index + 1] = isQrPixel ? 212 : 0;
+        pixels.data[index + 2] = isQrPixel ? 86 : 0;
+        pixels.data[index + 3] = 255;
+      }
+      context.putImageData(pixels, 0, 0);
+      if (!cancelled) setGreenQrImage(canvas.toDataURL("image/png"));
+    };
+    image.src = props.qrImage;
+
+    return () => {
+      cancelled = true;
+    };
+  }, [props.qrImage]);
 
   async function submit() {
     await props.onSave(draft);
@@ -2451,50 +2494,72 @@ function ConfigPage(props: {
             label={profile.connected ? "Connected" : "Disconnected"}
           />
         </div>
+        <div className="config-qr-stage">
+          {props.qr ? (
+            <>
+              {props.qrImage ? (
+                <span className="config-qr-frame">
+                  <img
+                    className="config-qr-image config-qr-image-normal"
+                    src={props.qrImage}
+                    alt="WeChat login QR code"
+                  />
+                  <img
+                    className="config-qr-image config-qr-image-inverted"
+                    src={props.qrImage}
+                    alt=""
+                    aria-hidden="true"
+                  />
+                  <img
+                    className="config-qr-image config-qr-image-green"
+                    src={greenQrImage ?? props.qrImage}
+                    alt=""
+                    aria-hidden="true"
+                  />
+                  <img
+                    className="config-qr-image config-qr-image-glitch config-qr-glitch-normal"
+                    src={props.qrImage}
+                    alt=""
+                    aria-hidden="true"
+                  />
+                  <img
+                    className="config-qr-image config-qr-image-glitch config-qr-glitch-inverted"
+                    src={props.qrImage}
+                    alt=""
+                    aria-hidden="true"
+                  />
+                  <img
+                    className="config-qr-image config-qr-image-glitch config-qr-glitch-green"
+                    src={greenQrImage ?? props.qrImage}
+                    alt=""
+                    aria-hidden="true"
+                  />
+                </span>
+              ) : null}
+              {visibleQrError ? <p className="error-copy">{visibleQrError}</p> : null}
+            </>
+          ) : (
+            <>
+              {visibleQrError ? <p className="error-copy">{visibleQrError}</p> : null}
+              <EmptyState
+                title="No QR requested yet"
+                body="Click the login button to ask the local router for a QR session."
+              />
+            </>
+          )}
+        </div>
         <div className="button-row qr-action-row">
           <button className="primary-button" onClick={props.onRequestQr}>
-            Request QR Login
+            Request New QR
           </button>
           <button
             className="secondary-button unlink-button"
             disabled={!profile.connected && !props.loginStatus?.connected}
             onClick={props.onUnlink}
           >
-            Unlink
+            Disconnect
           </button>
         </div>
-        {props.qr ? (
-          <>
-            <div className="qr-box">
-              {props.qrImage ? (
-                <img src={props.qrImage} alt="WeChat login QR code" />
-              ) : (
-                <>
-                  <span>QR</span>
-                  <small>{props.qr.status}</small>
-                </>
-              )}
-            </div>
-            {props.qrError ? <p className="error-copy">{props.qrError}</p> : null}
-            <code className="code-block">{props.qr.qrPayload}</code>
-            <p className="muted">
-              Status: {status ?? "unknown"} · Expires in {props.qr.expiresInSeconds}s
-            </p>
-            {props.loginStatus?.connected ? (
-              <p className="success-copy">
-                Logged in as {props.loginStatus.accountId ?? "WeChat bot"}. Runtime monitor is starting.
-              </p>
-            ) : null}
-          </>
-        ) : (
-          <>
-            {props.qrError ? <p className="error-copy">{props.qrError}</p> : null}
-            <EmptyState
-              title="No QR requested yet"
-              body="Click the login button to ask the local router for a QR session."
-            />
-          </>
-        )}
       </section>
 
       <section className="panel settings-form config-settings-panel">

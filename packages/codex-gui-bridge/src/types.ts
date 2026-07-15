@@ -93,8 +93,24 @@ export interface CodexAppServerTransport {
   close?(): void;
 }
 
+export interface CodexDesktopThreadSnapshot {
+  threadId: string;
+  title?: string;
+  projectPath?: string;
+  updatedAt?: number;
+  runtimeStatus?: {
+    type: string;
+    activeFlags?: unknown[];
+  };
+  latestTurnStatus?: string;
+}
+
 export interface CodexDesktopIpcTransport {
   request<T>(method: string, params?: unknown, timeoutMs?: number): Promise<T>;
+  readThreadSnapshot?(
+    threadId: string,
+    timeoutMs?: number,
+  ): Promise<CodexDesktopThreadSnapshot>;
   close?(): void;
 }
 

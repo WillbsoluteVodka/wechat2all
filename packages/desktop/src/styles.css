@@ -4848,6 +4848,10 @@ nav {
   padding: 22px;
 }
 
+.home-terminal-column > .home-terminal-log {
+  padding: 0;
+}
+
 .panel h1,
 .panel h2,
 .panel h3,
@@ -4988,12 +4992,281 @@ nav {
   padding: 22px;
 }
 
-.config-panel-title {
+.config-page .section-title .config-panel-title {
   margin: 0;
+  padding: 0;
+  color: var(--pixel-green-2);
+  font-size: 12px;
+  font-weight: 900;
+  line-height: normal;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-shadow: none;
+}
+
+.config-page .section-title {
+  align-items: flex-start;
 }
 
 .config-qr-panel > .primary-button {
   width: fit-content;
+}
+
+.config-qr-panel {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.config-qr-stage {
+  display: grid;
+  min-height: 0;
+  place-items: center;
+}
+
+.config-qr-frame {
+  position: relative;
+  display: block;
+  box-sizing: border-box;
+  width: min(320px, 72%);
+  padding: 0;
+  border: 0;
+  background: #f2f7f4;
+  box-shadow: 7px 7px 0 var(--pixel-shadow);
+  isolation: isolate;
+  animation: config-qr-frame-glitch 13.2s steps(1, end) infinite;
+}
+
+.config-qr-image {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: auto;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: #f2f7f4;
+  image-rendering: pixelated;
+}
+
+.config-qr-image-normal {
+  position: relative;
+  z-index: 1;
+}
+
+.config-qr-image-inverted,
+.config-qr-image-green,
+.config-qr-image-glitch {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  width: 100%;
+}
+
+.config-qr-image-inverted,
+.config-qr-glitch-inverted {
+  filter: invert(1);
+}
+
+.config-qr-image-green,
+.config-qr-glitch-green {
+  background: #000;
+}
+
+.config-qr-image-inverted {
+  animation: config-qr-inverted-cycle 13.2s steps(1, end) infinite;
+}
+
+.config-qr-image-green {
+  animation: config-qr-green-cycle 13.2s steps(1, end) infinite;
+}
+
+.config-qr-image-glitch {
+  z-index: 3;
+  pointer-events: none;
+}
+
+.config-qr-glitch-normal {
+  animation: config-qr-glitch-normal 13.2s steps(1, end) infinite;
+}
+
+.config-qr-glitch-inverted {
+  animation: config-qr-glitch-inverted 13.2s steps(1, end) infinite;
+}
+
+.config-qr-glitch-green {
+  animation: config-qr-glitch-green 13.2s steps(1, end) infinite;
+}
+
+@keyframes config-qr-normal-cycle {
+  0%,
+  30%,
+  99%,
+  100% {
+    opacity: 1;
+  }
+
+  33%,
+  96% {
+    opacity: 0;
+  }
+}
+
+@keyframes config-qr-inverted-cycle {
+  0%,
+  30%,
+  66%,
+  100% {
+    opacity: 0;
+  }
+
+  33%,
+  63% {
+    opacity: 1;
+  }
+}
+
+@keyframes config-qr-green-cycle {
+  0%,
+  63%,
+  99%,
+  100% {
+    opacity: 0;
+  }
+
+  66%,
+  96% {
+    opacity: 1;
+  }
+}
+
+@keyframes config-qr-glitch-normal {
+  0%,
+  29%,
+  33%,
+  95%,
+  100% {
+    opacity: 0;
+    transform: translate(0, 0);
+    clip-path: inset(0 0 100% 0);
+  }
+
+  30%,
+  96% {
+    opacity: 0.9;
+    transform: translate(8px, 0);
+    clip-path: inset(18% 0 58% 0);
+  }
+
+  31%,
+  97% {
+    opacity: 0.72;
+    transform: translate(-6px, 0);
+    clip-path: inset(62% 0 18% 0);
+  }
+
+  32%,
+  98% {
+    opacity: 0.48;
+    transform: translate(4px, 0);
+    clip-path: inset(42% 0 43% 0);
+  }
+}
+
+@keyframes config-qr-glitch-inverted {
+  0%,
+  29%,
+  33%,
+  62%,
+  66%,
+  100% {
+    opacity: 0;
+    transform: translate(0, 0);
+    clip-path: inset(100% 0 0 0);
+  }
+
+  30%,
+  63% {
+    opacity: 0.62;
+    transform: translate(-8px, 0);
+    clip-path: inset(54% 0 22% 0);
+  }
+
+  31%,
+  64% {
+    opacity: 0.9;
+    transform: translate(7px, 0);
+    clip-path: inset(12% 0 68% 0);
+  }
+
+  32%,
+  65% {
+    opacity: 0.54;
+    transform: translate(-4px, 0);
+    clip-path: inset(74% 0 10% 0);
+  }
+}
+
+@keyframes config-qr-glitch-green {
+  0%,
+  62%,
+  66%,
+  95%,
+  100% {
+    opacity: 0;
+    transform: translate(0, 0);
+    clip-path: inset(100% 0 0 0);
+  }
+
+  63%,
+  96% {
+    opacity: 0.5;
+    transform: translate(-9px, 0);
+    clip-path: inset(51% 0 25% 0);
+  }
+
+  64%,
+  97% {
+    opacity: 0.88;
+    transform: translate(7px, 0);
+    clip-path: inset(8% 0 72% 0);
+  }
+
+  65%,
+  98% {
+    opacity: 0.64;
+    transform: translate(-4px, 0);
+    clip-path: inset(76% 0 8% 0);
+  }
+}
+
+@keyframes config-qr-frame-glitch {
+  0%,
+  29%,
+  33%,
+  62%,
+  66%,
+  95%,
+  100% {
+    transform: translate(0, 0);
+  }
+
+  30%,
+  63%,
+  96% {
+    transform: translate(2px, -1px);
+  }
+
+  31%,
+  64%,
+  97% {
+    transform: translate(-2px, 1px);
+  }
+
+  32%,
+  65%,
+  98% {
+    transform: translate(1px, 0);
+  }
 }
 
 .config-settings-panel .section-title {
