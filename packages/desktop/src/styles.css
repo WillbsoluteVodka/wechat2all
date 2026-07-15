@@ -4963,7 +4963,124 @@ nav {
 .route-card p {
   min-height: 0;
   margin: 0;
+  padding-top: 6px;
   align-self: start;
+}
+
+.route-detail-page {
+  width: 100%;
+  min-height: calc(100vh - 172px);
+}
+
+.route-detail-back {
+  width: fit-content;
+  margin: 0;
+  color: #000;
+  justify-self: start;
+}
+
+.route-detail-single {
+  display: grid;
+  min-height: calc(100vh - 236px);
+  align-content: start;
+  gap: 28px;
+  padding: 28px;
+}
+
+.route-detail-heading {
+  display: grid;
+  gap: 14px;
+  max-width: 920px;
+}
+
+.route-detail-heading h1,
+.route-detail-heading p {
+  margin: 0;
+}
+
+.route-detail-title-pixel {
+  --pixel-text-size: 5px;
+  color: var(--pixel-ink);
+  filter: drop-shadow(4px 4px 0 #12351b);
+}
+
+.route-detail-heading p {
+  max-width: 68ch;
+  color: #c5d8ca;
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.route-detail-section {
+  display: grid;
+  gap: 14px;
+  padding-top: 22px;
+  border-top: 2px solid #1a2b20;
+}
+
+.route-match-rule-list,
+.route-config-checklist {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.route-match-rule-list li {
+  display: grid;
+  min-height: 44px;
+  grid-template-columns: 44px minmax(120px, 0.42fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  border-bottom: 2px solid #1a2b20;
+}
+
+.route-match-rule-list li > span {
+  color: var(--pixel-muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.route-match-rule-list code {
+  color: var(--pixel-ink);
+  font: inherit;
+  font-weight: 800;
+}
+
+.route-match-rule-list small {
+  color: var(--pixel-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.route-config-checklist li {
+  display: grid;
+  min-height: 48px;
+  grid-template-columns: 54px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 2px solid #1a2b20;
+}
+
+.route-config-check {
+  color: var(--pixel-muted);
+  font-weight: 900;
+}
+
+.route-config-checklist .is-complete .route-config-check {
+  color: var(--pixel-green-2);
+}
+
+.route-config-checklist strong {
+  color: var(--pixel-ink);
+  font-size: 14px;
+}
+
+.route-config-checklist small {
+  color: var(--pixel-muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
 }
 
 .route-card::before,

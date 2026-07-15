@@ -103,6 +103,71 @@ function displayRouteName(route: Pick<RouteSummary, "id" | "name">) {
     : route.name;
 }
 
+function describeMatchRule(rule: string) {
+  const descriptions: Record<string, string> = {
+    fallback: "Handles messages that do not match another route.",
+    "/help": "Shows the available commands and route actions.",
+    "/ls": "Lists the routes available to the current assistant.",
+    "/rename": "Renames the current route.",
+    "/cd": "Switches the conversation to another route.",
+    "/sales": "Sends the message to the sales route.",
+  };
+
+  if (descriptions[rule]) return descriptions[rule];
+  if (rule.startsWith("/")) return `Runs the ${rule} route command.`;
+  return `Matches messages containing “${rule}”.`;
+}
+
+interface RouteRuleDetail {
+  rule: string;
+  description: string;
+}
+
+const WECONNECT_ROUTE_RULES: RouteRuleDetail[] = [
+  { rule: "/help", description: "展示所有命令和功能" },
+  { rule: "/ls", description: "展示当前所有可用 routes" },
+  { rule: "/rename <新名字>", description: "重命名当前 route" },
+  { rule: "/cd <route>", description: "进入某个 route" },
+  { rule: "/cd ..", description: "从二级 route 返回大助手" },
+];
+
+const CODEX_ROUTE_RULES: RouteRuleDetail[] = [
+  { rule: "/status", description: "查询 Codex 当前状态" },
+  { rule: "/token", description: "查询 Codex usage 剩余额度" },
+  { rule: "/ls", description: "查看可绑定的 Codex chats" },
+  {
+    rule: "/bind <序号>",
+    description: "绑定 /ls 里对应编号的 Codex chat，也支持完整 thread id",
+  },
+  { rule: "/current", description: "查看当前绑定" },
+  {
+    rule: "/mode final|silent|stream",
+    description: "设置微信返回模式，当前：final",
+  },
+  {
+    rule: "/autoopen 1|0",
+    description: "设置启动 wechat2all 时是否自动打开 Codex GUI",
+  },
+  {
+    rule: "/alarm <HH:mm>",
+    description: "设置 24 小时制时间，到点向绑定的 Codex chat 发送 dummy 你好",
+  },
+  { rule: "/cache", description: "查看本地附件 cache 的路径、文件数和大小" },
+  { rule: "/cache clear", description: "清理当前 profile 的附件 cache" },
+  { rule: "任意普通文本", description: "发送到已绑定的 Codex chat" },
+  { rule: "/cd ..", description: "回到主 Router" },
+];
+
+function routeRuleDetails(route: RouteSummary): RouteRuleDetail[] {
+  if (route.id === "main-assistant-default" || route.name === "大助手") {
+    return WECONNECT_ROUTE_RULES;
+  }
+  if (route.id === "codex" || route.connectorId.includes("codex")) {
+    return CODEX_ROUTE_RULES;
+  }
+  return route.matchText.map((rule) => ({ rule, description: describeMatchRule(rule) }));
+}
+
 function displayAgentName(agent: Pick<AgentSummary, "id" | "name">) {
   return agent.id === "main-assistant" || agent.name === "大助手"
     ? MAIN_ASSISTANT_DISPLAY_NAME
@@ -2241,13 +2306,10 @@ function HomeQrLoginPanel(props: {
 
 function RoutesPage(props: {
   routes: RouteSummary[];
-  traces: TraceEvent[];
   selectedRouteId: string | null;
   onSelect: (routeId: string | null) => void;
-  onOpenTrace: () => void;
 }) {
   const selected = props.routes.find((route) => route.id === props.selectedRouteId) ?? null;
-  const isMainAssistant = selected?.id === "main-assistant-default";
 
   if (!selected) {
     return (
@@ -2267,67 +2329,66 @@ function RoutesPage(props: {
     );
   }
 
+  const matchRules = routeRuleDetails(selected);
+  const configChecklist = [
+    { label: "Route enabled", value: selected.enabled, detail: selected.enabled ? "ON" : "OFF" },
+    {
+      label: "Connector assigned",
+      value: Boolean(selected.connectorId),
+      detail: selected.connectorId || "NOT SET",
+    },
+    {
+      label: "Priority configured",
+      value: Number.isFinite(selected.priority),
+      detail: String(selected.priority),
+    },
+    {
+      label: "Match rules configured",
+      value: matchRules.length > 0,
+      detail: `${matchRules.length} RULES`,
+    },
+  ];
+
   return (
-    <main className="route-detail-layout">
-      <aside className="route-list">
-        <button className="back-button" onClick={() => props.onSelect(null)}>
-          All routes
+    <main className="route-detail-page">
+      <section className="panel route-detail route-detail-single">
+        <button className="primary-button route-detail-back" onClick={() => props.onSelect(null)}>
+          Back to All Routes
         </button>
-        {props.routes.map((route) => (
-          <button
-            key={route.id}
-            className={route.id === selected.id ? "route-list-item active" : "route-list-item"}
-            onClick={() => props.onSelect(route.id)}
-          >
-            <strong>{displayRouteName(route)}</strong>
-            <span>{route.connectorId}</span>
-          </button>
-        ))}
-      </aside>
-      <section className="panel route-detail">
-        <div className="section-title">
-          <p>{selected.id}</p>
-          <StatusPill
-            active={selected.enabled}
-            label={selected.enabled ? "Enabled" : "Disabled"}
-          />
-        </div>
-        <h1>{displayRouteName(selected)}</h1>
-        <p className="large-copy">{selected.description}</p>
-        <dl className="detail-grid">
-          <div>
-            <dt>Connector</dt>
-            <dd>{selected.connectorId}</dd>
-          </div>
-          <div>
-            <dt>Priority</dt>
-            <dd>{selected.priority}</dd>
-          </div>
-          <div>
-            <dt>Messages today</dt>
-            <dd>{selected.stats.messagesToday}</dd>
-          </div>
-          <div>
-            <dt>Last hit</dt>
-            <dd>{selected.stats.lastHitAt ?? "Never"}</dd>
-          </div>
-        </dl>
-        <h3>Match Rules</h3>
-        <div className="tag-row">
-          {selected.matchText.map((tag) => (
-            <span className="tag tag-big" key={tag}>{tag}</span>
-          ))}
-        </div>
-        <div className="button-row">
-          <button className="primary-button">Edit Route</button>
-          <button className="secondary-button" onClick={props.onOpenTrace}>Open Trace</button>
-        </div>
-        {isMainAssistant ? (
-          <>
-            <h3>Terminal</h3>
-            <TerminalLog traces={props.traces} />
-          </>
-        ) : null}
+        <header className="route-detail-heading">
+          <h1>
+            <PixelText text={displayRouteName(selected)} className="route-detail-title-pixel" />
+          </h1>
+          <p>{selected.description}</p>
+        </header>
+
+        <section className="route-detail-section">
+          <h2 className="home-kicker">MATCH RULES</h2>
+          <ol className="route-match-rule-list">
+            {matchRules.map((item, index) => (
+              <li key={`${item.rule}-${index}`}>
+                <span>{String(index + 1).padStart(2, "0")}</span>
+                <code>{item.rule}</code>
+                <small>{item.description}</small>
+              </li>
+            ))}
+          </ol>
+        </section>
+
+        <section className="route-detail-section">
+          <h2 className="home-kicker">CONFIG CHECKLIST</h2>
+          <ul className="route-config-checklist">
+            {configChecklist.map((item) => (
+              <li key={item.label} className={item.value ? "is-complete" : "is-incomplete"}>
+                <span className="route-config-check" aria-hidden="true">
+                  {item.value ? "[x]" : "[ ]"}
+                </span>
+                <strong>{item.label}</strong>
+                <small>{item.detail}</small>
+              </li>
+            ))}
+          </ul>
+        </section>
       </section>
     </main>
   );
@@ -2984,10 +3045,8 @@ export function App() {
           {activePage === "routes" ? (
             <RoutesPage
               routes={snapshot.routes}
-              traces={snapshot.traces}
               selectedRouteId={selectedRouteId}
               onSelect={setSelectedRouteId}
-              onOpenTrace={() => setActivePage("trace")}
             />
           ) : null}
         </section>
