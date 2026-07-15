@@ -100,15 +100,6 @@ struct LoginStatus {
     error: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SaveSettingsPayload {
-    llm_provider: String,
-    memory_provider: String,
-    autostart_enabled: bool,
-    router_endpoint: String,
-}
-
 fn sample_snapshot() -> DashboardSnapshot {
     DashboardSnapshot {
         profile: ProfileStatus {
@@ -226,6 +217,22 @@ fn daemon_error(action: &str, status: reqwest::StatusCode, body: &str) -> String
     }
 }
 
+async fn daemon_json_response(
+    action: &str,
+    response: reqwest::Response,
+) -> Result<serde_json::Value, String> {
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|err| format!("Failed to read {action} response: {err}"))?;
+    if !status.is_success() {
+        return Err(daemon_error(action, status, &body));
+    }
+    serde_json::from_str(&body)
+        .map_err(|err| format!("Failed to parse {action} response: {err}: {body}"))
+}
+
 #[tauri::command]
 async fn get_dashboard_snapshot() -> DashboardSnapshot {
     let daemon_url = trim_trailing_slash(&env_or_default(
@@ -243,6 +250,37 @@ async fn get_dashboard_snapshot() -> DashboardSnapshot {
         }
         _ => sample_snapshot(),
     }
+}
+
+#[tauri::command]
+async fn get_local_config() -> Result<serde_json::Value, String> {
+    let daemon_url = trim_trailing_slash(&env_or_default(
+        "WECHAT2ALL_ROUTER_DAEMON_URL",
+        DEFAULT_DAEMON_URL,
+    ));
+    let url = format!("{daemon_url}/config");
+    let response = daemon_http_client()?
+        .get(&url)
+        .send()
+        .await
+        .map_err(|err| format!("Router daemon is not reachable at {daemon_url}: {err}"))?;
+    daemon_json_response("Router daemon config request", response).await
+}
+
+#[tauri::command]
+async fn patch_local_config(payload: serde_json::Value) -> Result<serde_json::Value, String> {
+    let daemon_url = trim_trailing_slash(&env_or_default(
+        "WECHAT2ALL_ROUTER_DAEMON_URL",
+        DEFAULT_DAEMON_URL,
+    ));
+    let url = format!("{daemon_url}/config");
+    let response = daemon_http_client()?
+        .patch(&url)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|err| format!("Router daemon is not reachable at {daemon_url}: {err}"))?;
+    daemon_json_response("Router daemon config update", response).await
 }
 
 #[tauri::command]
@@ -322,25 +360,16 @@ async fn unlink_wechat_session(profile_id: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-fn save_settings(payload: SaveSettingsPayload) -> SettingsSnapshot {
-    SettingsSnapshot {
-        llm_provider: payload.llm_provider,
-        memory_provider: payload.memory_provider,
-        autostart_enabled: payload.autostart_enabled,
-        router_endpoint: payload.router_endpoint,
-    }
-}
-
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_dashboard_snapshot,
+            get_local_config,
+            patch_local_config,
             request_qr_login,
             get_login_status,
-            unlink_wechat_session,
-            save_settings
+            unlink_wechat_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running wechat2all desktop app");

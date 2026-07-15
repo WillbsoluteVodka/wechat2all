@@ -256,6 +256,19 @@ export class WeChatRuntime extends EventEmitter implements RuntimeRouteManager {
     this.profiles.requireProfile(profileId).client.stop();
   }
 
+  /** Dispatch proactive actions through the same serialized queue as replies. */
+  async dispatchActions(
+    profileId: string,
+    actions: RuntimeAction[],
+  ): Promise<RuntimeActionResult[]> {
+    const profile = this.profiles.requireProfile(profileId);
+    return this.actionQueue.executeBatch({
+      client: profile.client,
+      actions,
+      options: this.actionExecutorOptions,
+    });
+  }
+
   normalize(profileId: string, msg: WeixinMessage): RuntimeMessage {
     return normalizeWeixinMessage({ profileId, msg });
   }

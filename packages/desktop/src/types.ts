@@ -49,6 +49,67 @@ export interface SettingsSnapshot {
   routerEndpoint: string;
 }
 
+export interface SecretConfigStatus {
+  configured: boolean;
+  masked: string | null;
+}
+
+export interface LlmLocalConfig {
+  provider: "openai-compatible" | "mock" | string;
+  apiKey: SecretConfigStatus;
+  model: string | null;
+  baseUrl: string;
+  temperature: number | null;
+  maxTokens: number | null;
+  timeoutMs: number | null;
+}
+
+export interface MemoryLocalConfig {
+  provider: "local" | "mem0" | "none" | string;
+  apiKey: SecretConfigStatus;
+  baseUrl: string;
+  timeoutMs: number;
+  localMaxSearchRows: number | null;
+}
+
+export interface LocalConfigSnapshot {
+  configPath: string;
+  runtimeApplied: boolean;
+  restartRequired: boolean;
+  llm: LlmLocalConfig;
+  memory: MemoryLocalConfig;
+}
+
+export interface LocalConfigPatch {
+  llm?: {
+    provider?: string | null;
+    apiKey?: string | null;
+    model?: string | null;
+    baseUrl?: string | null;
+    temperature?: number | null;
+    maxTokens?: number | null;
+    timeoutMs?: number | null;
+  };
+  memory?: {
+    provider?: string | null;
+    apiKey?: string | null;
+    baseUrl?: string | null;
+    timeoutMs?: number | null;
+    localMaxSearchRows?: number | null;
+  };
+}
+
+export interface LocalConfigResponse {
+  ok: boolean;
+  schemaVersion: number;
+  config: LocalConfigSnapshot;
+}
+
+export interface LocalConfigUpdateResponse extends LocalConfigResponse {
+  changed: boolean;
+  changedFields: string[];
+}
+
 export interface DashboardSnapshot {
   profile: ProfileStatus;
   routes: RouteSummary[];

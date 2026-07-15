@@ -2,9 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type {
   DashboardSnapshot,
+  LocalConfigPatch,
+  LocalConfigResponse,
+  LocalConfigSnapshot,
+  LocalConfigUpdateResponse,
   LoginStatus,
   QrLoginResponse,
-  SettingsSnapshot,
 } from "./types";
 
 declare global {
@@ -113,6 +116,44 @@ const fallbackSnapshot: DashboardSnapshot = {
   },
 };
 
+let fallbackLocalConfig: LocalConfigSnapshot = {
+  configPath: ".env.local",
+  runtimeApplied: true,
+  restartRequired: false,
+  llm: {
+    provider: "openai-compatible",
+    apiKey: { configured: false, masked: null },
+    model: "gpt-4.1-mini",
+    baseUrl: "https://api.openai.com/v1",
+    temperature: null,
+    maxTokens: 800,
+    timeoutMs: 15_000,
+  },
+  memory: {
+    provider: "local",
+    apiKey: { configured: false, masked: null },
+    baseUrl: "https://api.mem0.ai",
+    timeoutMs: 15_000,
+    localMaxSearchRows: 2_000,
+  },
+};
+
+function previewSecretStatus(
+  value: string | null | undefined,
+  current: LocalConfigSnapshot["llm"]["apiKey"],
+) {
+  if (value === undefined) return current;
+  if (value === null) return { configured: false, masked: null };
+  return {
+    configured: true,
+    masked: value.length < 8 ? "********" : `${value.slice(0, 3)}...${value.slice(-4)}`,
+  };
+}
+
+function nextValue<T>(value: T | undefined, current: T): T {
+  return value === undefined ? current : value;
+}
+
 export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
   if (!isTauri()) return fallbackSnapshot;
   return invoke<DashboardSnapshot>("get_dashboard_snapshot");
@@ -151,9 +192,51 @@ export async function unlinkWechatSession(profileId: string): Promise<void> {
   await invoke("unlink_wechat_session", { profileId });
 }
 
-export async function saveSettings(
-  payload: SettingsSnapshot,
-): Promise<SettingsSnapshot> {
-  if (!isTauri()) return payload;
-  return invoke<SettingsSnapshot>("save_settings", { payload });
+export async function getLocalConfig(): Promise<LocalConfigSnapshot> {
+  if (!isTauri()) return fallbackLocalConfig;
+  const response = await invoke<LocalConfigResponse>("get_local_config");
+  return response.config;
+}
+
+export async function patchLocalConfig(
+  payload: LocalConfigPatch,
+): Promise<LocalConfigUpdateResponse> {
+  if (!isTauri()) {
+    const llmPatch = payload.llm;
+    const memoryPatch = payload.memory;
+    fallbackLocalConfig = {
+      ...fallbackLocalConfig,
+      runtimeApplied: false,
+      restartRequired: true,
+      llm: {
+        ...fallbackLocalConfig.llm,
+        provider: nextValue(llmPatch?.provider, fallbackLocalConfig.llm.provider) ?? "mock",
+        apiKey: previewSecretStatus(llmPatch?.apiKey, fallbackLocalConfig.llm.apiKey),
+        model: nextValue(llmPatch?.model, fallbackLocalConfig.llm.model),
+        baseUrl: nextValue(llmPatch?.baseUrl, fallbackLocalConfig.llm.baseUrl) ?? "",
+        temperature: nextValue(llmPatch?.temperature, fallbackLocalConfig.llm.temperature),
+        maxTokens: nextValue(llmPatch?.maxTokens, fallbackLocalConfig.llm.maxTokens),
+        timeoutMs: nextValue(llmPatch?.timeoutMs, fallbackLocalConfig.llm.timeoutMs),
+      },
+      memory: {
+        ...fallbackLocalConfig.memory,
+        provider: nextValue(memoryPatch?.provider, fallbackLocalConfig.memory.provider) ?? "local",
+        apiKey: previewSecretStatus(memoryPatch?.apiKey, fallbackLocalConfig.memory.apiKey),
+        baseUrl: nextValue(memoryPatch?.baseUrl, fallbackLocalConfig.memory.baseUrl) ?? "",
+        timeoutMs: nextValue(memoryPatch?.timeoutMs, fallbackLocalConfig.memory.timeoutMs) ?? 15_000,
+        localMaxSearchRows: nextValue(
+          memoryPatch?.localMaxSearchRows,
+          fallbackLocalConfig.memory.localMaxSearchRows,
+        ),
+      },
+    };
+    return {
+      ok: true,
+      schemaVersion: 1,
+      changed: true,
+      changedFields: ["browser-preview"],
+      config: fallbackLocalConfig,
+    };
+  }
+  return invoke<LocalConfigUpdateResponse>("patch_local_config", { payload });
 }

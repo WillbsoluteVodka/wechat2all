@@ -39,13 +39,28 @@ export function loadEnvFile(filePath: string, trace?: TraceFn): boolean {
   return true;
 }
 
-export function loadLocalEnv(trace?: TraceFn): void {
-  const candidates = [
+export function localEnvCandidates(env: NodeJS.ProcessEnv = process.env): string[] {
+  const explicit = env.WECHAT2ALL_ENV_FILE?.trim();
+  if (explicit) return [path.resolve(explicit)];
+  return [...new Set([
     path.resolve(process.cwd(), ".env.local"),
     path.resolve(process.cwd(), "../..", ".env.local"),
     path.resolve(import.meta.dirname, "../../../.env.local"),
-  ];
-  for (const candidate of [...new Set(candidates)]) {
+  ])];
+}
+
+export function resolveLocalEnvPath(env: NodeJS.ProcessEnv = process.env): string {
+  const candidates = localEnvCandidates(env);
+  const existing = candidates.find((candidate) => fs.existsSync(candidate));
+  if (existing) return existing;
+  const projectRoot = candidates.find((candidate) =>
+    fs.existsSync(path.join(path.dirname(candidate), ".env.example"))
+  );
+  return projectRoot ?? candidates[0];
+}
+
+export function loadLocalEnv(trace?: TraceFn): void {
+  for (const candidate of localEnvCandidates()) {
     loadEnvFile(candidate, trace);
   }
 }

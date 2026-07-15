@@ -5391,6 +5391,8 @@ nav {
 }
 
 .config-settings-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   align-content: start;
   gap: 12px;
 }
@@ -5403,13 +5405,261 @@ nav {
   padding: 10px 12px;
 }
 
-.config-settings-panel .toggle-row {
-  padding: 10px 12px;
+.home-qr-glitch-panel {
+  position: relative;
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  place-items: center;
+  overflow: hidden;
 }
 
-.config-settings-panel > .primary-button {
+.home-qr-glitch-panel .home-qr-glitch {
+  width: min(320px, 72%);
+}
+
+.home-qr-glitch-panel .terminal-empty {
+  color: var(--pixel-muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.home-qr-glitch-panel > .error-copy {
+  position: absolute;
+  right: 18px;
+  bottom: 14px;
+  left: 18px;
+  margin: 0;
+  color: var(--pixel-red);
+  font-size: 11px;
+  text-align: center;
+}
+
+.config-settings-panel .config-field {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.config-settings-panel .config-field-label {
+  color: var(--pixel-green-2);
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.config-settings-panel .config-field input,
+.config-settings-panel .config-field select {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 2px solid #27382c;
+  border-radius: 0;
+  color: var(--pixel-ink);
+  background: #020805;
+  box-shadow: 4px 4px 0 #0b1c10;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  caret-color: var(--pixel-green-2);
+  transition: none;
+}
+
+.config-settings-panel .config-field input:hover,
+.config-settings-panel .config-field select:hover {
+  border-color: #47634f;
+}
+
+.config-settings-panel .config-field input:focus,
+.config-settings-panel .config-field select:focus {
+  border-color: var(--pixel-green-2);
+  outline: 0;
+  box-shadow:
+    4px 4px 0 #0b1c10,
+    inset 4px 0 0 var(--pixel-green);
+}
+
+.config-title-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.config-restart-pill {
+  border-color: var(--pixel-yellow);
+  color: var(--pixel-yellow);
+  background: #181505;
+}
+
+.local-config-form {
+  display: grid;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 12px;
+}
+
+.config-settings-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.config-settings-tab {
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 2px solid #27382c;
+  border-radius: 0;
+  color: var(--pixel-muted);
+  background: #020805;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  box-shadow: 3px 3px 0 #0b1c10;
+}
+
+.config-settings-tab:hover {
+  border-color: #47634f;
+  color: var(--pixel-ink);
+}
+
+.config-settings-tab.active {
+  border-color: var(--pixel-green-2);
+  color: #001905;
+  background: var(--pixel-green);
+  box-shadow: 3px 3px 0 #0d431e;
+}
+
+.config-settings-fields {
+  display: grid;
+  min-height: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.config-field-wide {
+  grid-column: 1 / -1;
+}
+
+.config-field-heading {
+  display: flex;
+  min-height: 11px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.config-field-heading small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--pixel-muted);
+  font-size: 9px;
+  font-weight: 900;
+  line-height: 1;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.config-secret-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.config-secret-button {
+  min-width: 68px;
+  padding: 0 10px;
+  border: 2px solid #27382c;
+  border-radius: 0;
+  color: var(--pixel-green-2);
+  background: #020805;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+  box-shadow: 3px 3px 0 #0b1c10;
+}
+
+.config-secret-button:hover:not(:disabled) {
+  border-color: var(--pixel-green-2);
+}
+
+.config-secret-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.34;
+}
+
+.config-settings-footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.config-settings-footer > .primary-button {
+  min-width: 150px;
   min-height: 40px;
-  padding-block: 8px;
+  padding: 8px 14px;
+}
+
+.config-file-state {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.config-file-state strong {
+  overflow: hidden;
+  color: var(--pixel-green-2);
+  font-size: 10px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.config-file-state strong.is-error {
+  color: var(--pixel-red);
+}
+
+.config-file-state small {
+  overflow: hidden;
+  color: var(--pixel-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.config-settings-empty {
+  display: grid;
+  min-height: 0;
+  place-items: center;
+  align-content: center;
+  gap: 14px;
+  color: var(--pixel-muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.config-settings-empty p {
+  max-width: 38ch;
+  margin: 0;
+  color: var(--pixel-red);
+}
+
+.config-retry-button {
+  min-height: 34px;
+  padding: 6px 16px;
 }
 
 .tag,

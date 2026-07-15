@@ -1,0 +1,121 @@
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { test } from "node:test";
+
+import {
+  LocalConfigStore,
+  LocalConfigValidationError,
+} from "../src/local-config.js";
+
+async function tempEnvPath(): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-config-"));
+  return path.join(dir, ".env.local");
+}
+
+test("config snapshot masks secrets instead of returning API keys", async () => {
+  const filePath = await tempEnvPath();
+  await fs.writeFile(filePath, [
+    "WECHAT2ALL_LLM_PROVIDER=openai-compatible",
+    "WECHAT2ALL_LLM_API_KEY=sk-example-secret-1234",
+    "WECHAT2ALL_LLM_MODEL=deepseek-chat",
+    "WECHAT2ALL_MEM0_API_KEY=m0-example-secret-5678",
+    "",
+  ].join("\n"));
+  const store = new LocalConfigStore({ filePath, env: {} });
+
+  const snapshot = await store.snapshot();
+
+  assert.deepEqual(snapshot.llm.apiKey, {
+    configured: true,
+    masked: "sk-...1234",
+  });
+  assert.deepEqual(snapshot.memory.apiKey, {
+    configured: true,
+    masked: "m0-...5678",
+  });
+  assert.equal(JSON.stringify(snapshot).includes("example-secret"), false);
+  assert.equal(snapshot.runtimeApplied, true);
+  assert.equal(snapshot.restartRequired, false);
+});
+
+test("config update preserves unrelated env content and writes a private file", async () => {
+  const filePath = await tempEnvPath();
+  await fs.writeFile(filePath, [
+    "# user-owned setting",
+    "UNRELATED_SETTING=keep-me",
+    "WECHAT2ALL_LLM_API_KEY=old-key",
+    "WECHAT2ALL_MEM0_API_KEY=remove-me",
+    "",
+  ].join("\n"));
+  const store = new LocalConfigStore({ filePath, env: {} });
+
+  const result = await store.update({
+    llm: {
+      provider: "openai-compatible",
+      apiKey: "sk-new-secret-9999",
+      model: "deepseek-chat",
+      baseUrl: "https://api.deepseek.com/v1/",
+      maxTokens: "1200",
+    },
+    memory: {
+      provider: "local",
+      apiKey: null,
+    },
+  });
+
+  const raw = await fs.readFile(filePath, "utf-8");
+  assert.match(raw, /# user-owned setting/);
+  assert.match(raw, /UNRELATED_SETTING=keep-me/);
+  assert.match(raw, /WECHAT2ALL_LLM_API_KEY=sk-new-secret-9999/);
+  assert.match(raw, /WECHAT2ALL_LLM_BASE_URL=https:\/\/api\.deepseek\.com\/v1/);
+  assert.doesNotMatch(raw, /remove-me|WECHAT2ALL_MEM0_API_KEY/);
+  assert.equal((await fs.stat(filePath)).mode & 0o077, 0);
+  assert.equal(result.changed, true);
+  assert.equal(result.config.restartRequired, true);
+  assert.equal(result.config.runtimeApplied, false);
+  assert.deepEqual(result.config.llm.apiKey, {
+    configured: true,
+    masked: "sk-...9999",
+  });
+});
+
+test("omitted config fields remain unchanged and a no-op update needs no restart", async () => {
+  const filePath = await tempEnvPath();
+  await fs.writeFile(filePath, [
+    "WECHAT2ALL_LLM_API_KEY=keep-this-secret",
+    "WECHAT2ALL_LLM_MODEL=deepseek-chat",
+    "",
+  ].join("\n"));
+  const store = new LocalConfigStore({ filePath, env: {} });
+
+  const result = await store.update({
+    llm: {
+      apiKey: "",
+      model: "deepseek-chat",
+    },
+  });
+
+  assert.equal(result.changed, false);
+  assert.deepEqual(result.changedFields, []);
+  assert.equal(result.config.restartRequired, false);
+  assert.match(await fs.readFile(filePath, "utf-8"), /keep-this-secret/);
+});
+
+test("config validation rejects arbitrary env fields and unsafe values", async () => {
+  const store = new LocalConfigStore({ filePath: await tempEnvPath(), env: {} });
+
+  await assert.rejects(
+    store.update({ llm: { apiKey: "secret\nINJECTED=value" } }),
+    LocalConfigValidationError,
+  );
+  await assert.rejects(
+    store.update({ llm: { arbitraryEnvName: "value" } }),
+    /unsupported field/,
+  );
+  await assert.rejects(
+    store.update({ memory: { baseUrl: "file:///tmp/mem0" } }),
+    /http or https/,
+  );
+});

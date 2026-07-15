@@ -162,6 +162,54 @@ function mainPanel(title: string, lines: Array<string | undefined>): string {
   ].join("\n");
 }
 
+function sessionDurationText(remainingMs: number): string {
+  const totalMinutes = Math.max(1, Math.ceil(remainingMs / 60_000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours > 0 && minutes > 0) return `${hours} 小时 ${minutes} 分钟`;
+  if (hours > 0) return `${hours} 小时`;
+  return `${minutes} 分钟`;
+}
+
+function localDateTime(timestamp: number): string {
+  const date = new Date(timestamp);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return [
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+    `${pad(date.getHours())}:${pad(date.getMinutes())}`,
+  ].join(" ");
+}
+
+export function createMainAssistantSessionReminderAction(params: {
+  conversationId: string;
+  contextToken: string;
+  remainingMs: number;
+  expiresAt: number;
+  scheduledAt: number;
+}): RuntimeAction {
+  return {
+    type: "send_text",
+    conversationId: params.conversationId,
+    contextToken: params.contextToken,
+    text: [
+      "◆ WeConnect - Session",
+      "",
+      "微信连接状态：在线",
+      `Session 剩余时间：约 ${sessionDurationText(params.remainingMs)}`,
+      `到期时间：${localDateTime(params.expiresAt)}`,
+      "到期后需要重新扫描二维码连接。",
+    ].join("\n"),
+    dedupeKey: `main-assistant:session-reminder:${params.scheduledAt}`,
+    metadata: {
+      source: "main-assistant",
+      routeId: "main-assistant-default",
+      kind: "session-reminder",
+      expiresAt: params.expiresAt,
+      remainingMs: params.remainingMs,
+    },
+  };
+}
+
 function mainUsage(command: string, description?: string): string {
   return mainPanel("usage", [
     `- ${command}`,

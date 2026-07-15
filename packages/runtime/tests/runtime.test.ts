@@ -22,6 +22,7 @@ import {
   createLocalJsonlAgentMemoryProvider,
   createLocalConnector,
   createMainAssistantConnector,
+  createMainAssistantSessionReminderAction,
   createMem0AgentMemoryProvider,
   createMockLLMProvider,
   createRouteAssistantConnector,
@@ -598,6 +599,37 @@ test("runtime exposes async action dispatch to connectors", async () => {
   });
 
   assert.deepEqual(sent, ["async reminder"]);
+});
+
+test("runtime dispatches proactive main-assistant actions through its action queue", async () => {
+  const sent: Array<{ to: string; text: string; contextToken?: string }> = [];
+  const runtime = new WeChatRuntime({
+    profiles: [{
+      id: "main",
+      credentials: { accountId: "abc@im.bot", token: "token" },
+    }],
+  });
+  runtime.getClient("main").sendText = async (to, text, contextToken) => {
+    sent.push({ to, text, contextToken });
+    return "client-id";
+  };
+  const action = createMainAssistantSessionReminderAction({
+    conversationId: "owner-1",
+    contextToken: "ctx-owner",
+    remainingMs: 23 * 60 * 60_000,
+    expiresAt: new Date(2026, 6, 16, 12, 30).getTime(),
+    scheduledAt: 1_000,
+  });
+
+  const results = await runtime.dispatchActions("main", [action]);
+
+  assert.equal(results[0].ok, true);
+  assert.equal(sent[0].to, "owner-1");
+  assert.equal(sent[0].contextToken, "ctx-owner");
+  assert.match(sent[0].text, /^◆ WeConnect - Session/);
+  assert.match(sent[0].text, /Session 剩余时间：约 23 小时/);
+  assert.equal(action.metadata?.source, "main-assistant");
+  assert.equal(action.metadata?.routeId, "main-assistant-default");
 });
 
 test("runtime action queue retries failures and can dedupe successful actions", async () => {

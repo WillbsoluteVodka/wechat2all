@@ -13,6 +13,7 @@ import {
   createDummyTTSProvider,
   createLLMProviderFromEnv,
   createMainAssistantConnector,
+  createMainAssistantSessionReminderAction,
   createRouteAssistantConnector,
   createStateStoreMessageDeduper,
   parseCodexReplyMode,
@@ -20,6 +21,7 @@ import {
   type RuntimeActionResult,
   type RuntimeMessage,
   type RuntimeProfileConfig,
+  type RuntimeSavedCredentials,
 } from "@wechat2all/runtime";
 
 import { codexBackend, createCodexBridgeFromEnv } from "./codex.js";
@@ -27,13 +29,26 @@ import {
   createDashboardSnapshot,
   type DashboardRouteStats,
 } from "./dashboard.js";
-import { envNumber, loadLocalEnv, readRouterAddress } from "./env.js";
+import {
+  envNumber,
+  loadLocalEnv,
+  readRouterAddress,
+  resolveLocalEnvPath,
+} from "./env.js";
+import {
+  LocalConfigStore,
+  LocalConfigValidationError,
+} from "./local-config.js";
 import {
   applySavedRouteOverrides,
   defaultRoutes,
   isPersistableRoute,
   isUserManagedRoute,
 } from "./routes.js";
+import {
+  SessionReminderService,
+  type SessionReminderEvent,
+} from "./session-reminders.js";
 import { createTraceLogger } from "./trace.js";
 
 let routerAddress = readRouterAddress();
@@ -44,6 +59,8 @@ const BASE_STATE_DIR = path.join(os.homedir(), ".wechat2all-runtime-bot");
 const stateStore = new FileRuntimeStateStore({ baseDir: BASE_STATE_DIR });
 let codexBridge: CodexBridgeClient | undefined;
 let server: http.Server | undefined;
+let localConfig: LocalConfigStore | undefined;
+let sessionReminders: SessionReminderService | undefined;
 
 function finiteMetadataNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value)
@@ -82,6 +99,10 @@ function refreshRuntimeSettings(): void {
 function getCodexBridge(): CodexBridgeClient {
   codexBridge ??= createCodexBridgeFromEnv();
   return codexBridge;
+}
+
+function envMinutesMs(name: string, fallbackMinutes: number): number {
+  return (envNumber(name) ?? fallbackMinutes) * 60_000;
 }
 
 interface LoginState {
@@ -201,6 +222,13 @@ async function buildRuntime(profile: RuntimeProfileConfig): Promise<WeChatRuntim
 
   next.on("message", (message: RuntimeMessage) => {
     trace("info", "message", `${message.kind}: ${message.text ?? "(media)"}`);
+    void sessionReminders?.captureMessage(message).catch((error: unknown) => {
+      trace(
+        "warn",
+        "session",
+        `Could not persist reminder target: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
   });
   next.on("messageSkipped", (_message, reason) => {
     trace("debug", "message", `Skipped inbound message: ${reason}`);
@@ -227,8 +255,85 @@ async function buildRuntime(profile: RuntimeProfileConfig): Promise<WeChatRuntim
   next.on("profileStopped", (profileState) => {
     trace("warn", "profile", `Stopped ${profileState.id}`);
   });
+  next.getClient(profile.id).on("sessionExpired", () => {
+    sessionReminders?.stopSession();
+    trace("warn", "session", "Session expired; hourly reminders stopped.");
+  });
 
   return next;
+}
+
+async function deliverSessionReminder(event: SessionReminderEvent): Promise<void> {
+  const current = await ensureRuntime();
+  const [result] = await current.dispatchActions(PROFILE_ID, [
+    createMainAssistantSessionReminderAction({
+      conversationId: event.target.userId,
+      contextToken: event.target.contextToken,
+      remainingMs: event.remainingMs,
+      expiresAt: event.expiresAt,
+      scheduledAt: event.scheduledAt,
+    }),
+  ]);
+  if (!result?.ok) {
+    throw result?.error ?? new Error("WeConnect session reminder was not sent.");
+  }
+  trace(
+    "info",
+    "session",
+    `WeConnect sent hourly session reminder (${Math.ceil(event.remainingMs / 60_000)}m remaining).`,
+  );
+}
+
+async function initializeSessionReminders(
+  savedCredentials: RuntimeSavedCredentials | null,
+): Promise<void> {
+  sessionReminders?.close();
+  const service = new SessionReminderService({
+    statePath: path.join(
+      stateStore.profileDir(PROFILE_ID),
+      "session-reminder.json",
+    ),
+    sessionDurationMs: envMinutesMs(
+      "WECHAT2ALL_SESSION_DURATION_MINUTES",
+      24 * 60,
+    ),
+    reminderIntervalMs: envMinutesMs(
+      "WECHAT2ALL_SESSION_REMINDER_INTERVAL_MINUTES",
+      60,
+    ),
+    onReminder: deliverSessionReminder,
+    onError(error) {
+      trace("error", "session", `Could not send hourly reminder: ${error.message}`);
+    },
+    onSkipped(reason) {
+      trace("debug", "session", `Hourly reminder skipped: ${reason}`);
+    },
+  });
+  try {
+    await service.initialize();
+    sessionReminders = service;
+
+    if (savedCredentials?.loginAt) {
+      await service.startSession({
+        loginAt: savedCredentials.loginAt,
+        ownerUserId: savedCredentials.userId,
+      });
+    } else if (savedCredentials) {
+      trace(
+        "warn",
+        "session",
+        "Saved session has no loginAt; hourly reminders will start after the next QR login.",
+      );
+    }
+  } catch (error) {
+    service.close();
+    sessionReminders = undefined;
+    trace(
+      "warn",
+      "session",
+      `Hourly reminders are unavailable: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 async function ensureRuntime(): Promise<WeChatRuntime> {
@@ -328,12 +433,24 @@ async function startQrLogin(): Promise<LoginState> {
     if (!creds.accountId || !creds.token) {
       throw new Error("Login succeeded but credentials were incomplete.");
     }
+    const loginAt = Date.now();
     await stateStore.saveCredentials(PROFILE_ID, {
       accountId: normalizeAccountId(creds.accountId),
       token: creds.token,
       baseUrl: creds.baseUrl,
       userId: result.userId,
-      loginAt: Date.now(),
+      loginAt,
+    });
+    await sessionReminders?.startSession({
+      loginAt,
+      ownerUserId: result.userId,
+      resetTarget: true,
+    }).catch((error: unknown) => {
+      trace(
+        "warn",
+        "session",
+        `Could not start hourly reminders: ${error instanceof Error ? error.message : String(error)}`,
+      );
     });
     loginState = {
       ...loginState,
@@ -375,6 +492,14 @@ async function unlinkWechatSession(): Promise<void> {
     // The profile may already be stopped.
   }
   await stateStore.clearCredentials(PROFILE_ID);
+  sessionReminders?.stopSession();
+  await sessionReminders?.clearTarget().catch((error: unknown) => {
+    trace(
+      "warn",
+      "session",
+      `Could not clear reminder target: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
   loginState = { active: false, status: "idle" };
   runtime = undefined;
   runtimeStarting = false;
@@ -394,13 +519,34 @@ async function dashboardSnapshot(): Promise<unknown> {
   });
 }
 
-async function readJson(req: http.IncomingMessage): Promise<unknown> {
+class HttpRequestError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "HttpRequestError";
+  }
+}
+
+async function readJson(req: http.IncomingMessage, maxBytes = 64 * 1024): Promise<unknown> {
   const chunks: Buffer[] = [];
+  let size = 0;
   for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.byteLength;
+    if (size > maxBytes) {
+      throw new HttpRequestError(413, `JSON request body exceeds ${maxBytes} bytes.`);
+    }
+    chunks.push(buffer);
   }
   const raw = Buffer.concat(chunks).toString("utf-8");
-  return raw ? JSON.parse(raw) as unknown : {};
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    throw new HttpRequestError(400, "Request body must contain valid JSON.");
+  }
 }
 
 function sendJson(res: http.ServerResponse, status: number, data: unknown): void {
@@ -408,7 +554,9 @@ function sendJson(res: http.ServerResponse, status: number, data: unknown): void
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "http://localhost:5173",
     "Access-Control-Allow-Headers": "content-type",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,PATCH,OPTIONS",
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
   });
   res.end(JSON.stringify(data));
 }
@@ -435,6 +583,24 @@ async function handleRequest(
     }
     if (req.method === "GET" && url.pathname === "/snapshot") {
       sendJson(res, 200, await dashboardSnapshot());
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/config") {
+      if (!localConfig) throw new Error("Local config store is not initialized.");
+      sendJson(res, 200, {
+        ok: true,
+        schemaVersion: 1,
+        config: await localConfig.snapshot(),
+      });
+      return;
+    }
+    if (req.method === "PATCH" && url.pathname === "/config") {
+      if (!localConfig) throw new Error("Local config store is not initialized.");
+      const result = await localConfig.update(await readJson(req));
+      if (result.changed) {
+        trace("info", "config", `Updated ${result.changedFields.join(", ")}`);
+      }
+      sendJson(res, 200, { ok: true, schemaVersion: 1, ...result });
       return;
     }
     if (req.method === "POST" && url.pathname === "/login/qr/start") {
@@ -485,6 +651,7 @@ async function handleRequest(
         } catch {
           // The profile may already be stopped.
         }
+        sessionReminders?.close();
         const forceExit = setTimeout(() => process.exit(0), 2_000);
         forceExit.unref();
         server?.close(() => process.exit(0));
@@ -495,18 +662,26 @@ async function handleRequest(
     sendJson(res, 404, { error: `Unknown route: ${req.method} ${url.pathname}` });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    trace("error", "http", message);
-    sendJson(res, 500, { error: message });
+    const status = error instanceof HttpRequestError
+      ? error.status
+      : error instanceof LocalConfigValidationError
+        ? 400
+        : 500;
+    trace(status >= 500 ? "error" : "warn", "http", message);
+    sendJson(res, status, { error: message });
   }
 }
 
 async function main(): Promise<void> {
   loadLocalEnv(trace);
   refreshRuntimeSettings();
+  localConfig = new LocalConfigStore({ filePath: resolveLocalEnvPath() });
   await stateStore.securePermissions();
+  const savedCredentials = await stateStore.loadCredentials(PROFILE_ID);
+  await initializeSessionReminders(savedCredentials);
   await ensureRuntime();
   logCodexBackend();
-  if (await stateStore.loadCredentials(PROFILE_ID)) {
+  if (savedCredentials) {
     void startRuntimeMonitor();
   }
 

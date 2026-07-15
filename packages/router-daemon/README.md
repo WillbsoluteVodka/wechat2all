@@ -12,6 +12,7 @@ current state visible to the UI.
 - QR login endpoints for the dashboard.
 - Dashboard snapshots: profile status, route list, agents, settings, traces.
 - Trace logging.
+- Hourly WeChat session-expiry reminders sent by the main WeConnect route.
 - Built-in route wiring, including the main assistant and `codex`.
 - Wiring the Codex route to the GUI app-server bridge.
 
@@ -22,6 +23,7 @@ message normalization. Those belong to `packages/runtime`.
 
 - `src/index.ts` - process lifecycle, runtime startup, QR login, and HTTP server wiring.
 - `src/env.ts` - `.env.local` loading and typed environment helpers.
+- `src/session-reminders.ts` - 24-hour session scheduling and local reminder target state.
 - `src/routes.ts` - built-in route definitions and dashboard route labels.
 - `src/codex.ts` - Codex backend selection and bridge construction.
 - `src/dashboard.ts` - dashboard snapshot projection for the Tauri UI.
@@ -48,9 +50,69 @@ Common endpoints:
 
 - `GET /health`
 - `GET /snapshot`
+- `GET /config`
+- `PATCH /config`
 - `POST /profiles/:profileId/qr-login`
 - `GET /profiles/:profileId/login-status`
 - settings/dashboard endpoints used by Tauri commands
+
+## Local Provider Configuration API
+
+The desktop UI can read and save WeConnect assistant provider settings without
+handling the `.env.local` file itself:
+
+```bash
+curl http://127.0.0.1:39787/config
+
+curl -X PATCH http://127.0.0.1:39787/config \
+  -H 'content-type: application/json' \
+  -d '{
+    "llm": {
+      "provider": "openai-compatible",
+      "apiKey": "replace-me",
+      "model": "deepseek-chat",
+      "baseUrl": "https://api.deepseek.com/v1"
+    },
+    "memory": {
+      "provider": "mem0",
+      "apiKey": "replace-me",
+      "baseUrl": "https://api.mem0.ai"
+    }
+  }'
+```
+
+`GET /config` never returns a complete secret. It only returns `configured` and
+a masked value. In `PATCH /config`, an omitted secret or an empty secret input
+is preserved, which makes an unedited password field safe to submit; send
+`null` to explicitly clear it. Only documented LLM and memory fields are
+accepted, and updates are written atomically to `.env.local` with mode `0600`.
+Responses include `schemaVersion: 1` so the future desktop form can version its
+integration.
+
+LLM and memory providers are constructed when the daemon starts. A successful
+change therefore returns `restartRequired: true`; the UI should show that state
+and restart the local app stack before treating the new provider as active.
+
+## Session Expiry Reminders
+
+The router reads `loginAt` from the local profile credentials and schedules a
+WeConnect reminder at each session-hour boundary until the 24-hour expiry. The
+reminder contains both the remaining duration and the local expiry time. It is
+created by the main-assistant module and sent through the runtime action queue;
+the Codex route is not involved.
+
+WeChat requires a recent `context_token` for proactive sends. After a fresh QR
+login, the owner must send the assistant at least one message. The target and
+latest token are then stored locally in the profile's private
+`session-reminder.json`, allowing reminders to survive daemon restarts. A new
+QR login or unlink clears the old target.
+
+Defaults and optional test overrides:
+
+```text
+WECHAT2ALL_SESSION_DURATION_MINUTES=1440
+WECHAT2ALL_SESSION_REMINDER_INTERVAL_MINUTES=60
+```
 
 ## Run
 

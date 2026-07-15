@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "start": "node dist/index.mjs",
+    "test": "node --import tsx --test tests/*.test.ts",
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
     "check": "pnpm typecheck && pnpm build"
