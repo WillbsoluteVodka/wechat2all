@@ -1,4 +1,5 @@
 import type { RuntimeRoute } from "@wechat2all/runtime";
+import { createClaudeRouteDefinition } from "@wechat2all/claude-route";
 
 export function isUserManagedRoute(route: RuntimeRoute): boolean {
   return route.metadata?.createdBy === "main-assistant";
@@ -48,6 +49,7 @@ export function defaultRoutes(profileId: string): RuntimeRoute[] {
         builtIn: true,
       },
     },
+    createClaudeRouteDefinition(profileId),
     {
       id: "main-assistant-default",
       profileId,

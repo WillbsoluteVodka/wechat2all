@@ -16,6 +16,8 @@ flowchart TD
   R --> D["packages/router-daemon<br/>本地进程 + HTTP API"]
   D --> UI["packages/desktop<br/>Tauri dashboard"]
   R --> CG["packages/codex-gui-bridge<br/>Codex GUI/app-server bridge"]
+  R --> CL["packages/claude-route<br/>Claude Agent SDK route"]
+  CL --> V["Obsidian vault / 本地工作区"]
   R --> A["未来的 route agents / MCP skills"]
 ```
 
@@ -31,6 +33,7 @@ flowchart TD
 | 本地 daemon | `packages/router-daemon` | 进程生命周期、profile 状态、QR 登录 API、dashboard HTTP API、内置 routes | UI 渲染、底层 iLink 协议 |
 | Desktop UI | `packages/desktop` | macOS Tauri dashboard、QR/login/status/routes/logs/settings 页面 | runtime 业务逻辑 |
 | Codex GUI bridge | `packages/codex-gui-bridge` | Codex app-server chat 列表、绑定、token usage、向绑定 GUI chat 发送 prompt | 微信路由或通用 MCP tools |
+| Claude route | `packages/claude-route` | Claude Agent SDK、session resume、vault/workspace tools、附件暂存 | QR 登录、iLink 协议、daemon 生命周期、desktop UI |
 
 一个消息的例子：
 
@@ -48,6 +51,7 @@ flowchart TD
 /ls          # 查看可用 routes
 /rename      # 重命名当前 route
 /cd codex    # 进入 codex route
+/cd claude   # 进入 Claude Agent SDK route
 /cd ..       # 回到大助手
 ```
 
@@ -64,6 +68,9 @@ flowchart TD
   的下一条文字要求，再作为一次 Codex 请求发送。多附件按原顺序并发下载。
 - Codex 生成的本地文字、图片、文件和支持格式的语音条可以发回微信。
 - `/bind` 选择的 Codex chat 会保存在本机，重启 desktop/daemon 后自动恢复。
+- 独立 Claude Agent SDK route：可连接 Obsidian vault 或本地 workspace，支持
+  `/status`、`/new`、per-sender session resume、图片/文件输入，以及把 workspace
+  文件或图片发回微信。
 - 标准 runtime action：`send_text`、`send_media`、`send_voice`、`typing`、
   `noop`。
 - 对文本、媒体、语音、表情/贴纸类附件、普通文件做消息标准化。具体能力取决于
@@ -85,6 +92,8 @@ flowchart TD
 - Local JSONL memory 和可选 Mem0 REST memory。
 - Codex app-server JSON-RPC，加 opt-in macOS GUI automation，用来把消息打进可见的
   Codex chat。
+- 官方 Claude Agent SDK，用于 headless `claude` route；不使用 GUI automation，
+  也不会再启动一套微信协议 client。
 
 ## 安装
 
@@ -112,6 +121,17 @@ WECHAT2ALL_LLM_MAX_TOKENS=800
 WECHAT2ALL_MEM0_API_KEY=...
 ```
 
+可选 Claude route：
+
+```bash
+ANTHROPIC_API_KEY=...
+WECHAT2ALL_CLAUDE_WORKDIR=/绝对路径/到/obsidian-vault
+```
+
+配置后在微信主 Router 发送 `/cd claude`。完整配置见
+[`packages/claude-route/README.md`](./packages/claude-route/README.md)，目标 repo 与
+协议审计见 [`docs/claude-route-protocol-review.md`](./docs/claude-route-protocol-review.md)。
+
 媒体下载与本地 cache：
 
 ```bash
@@ -134,14 +154,16 @@ WECHAT2ALL_MEDIA_CACHE_PRUNE_INTERVAL_MS=60000
 - `memory/<profile>/turns.jsonl`：本地 assistant memory。
 - `media/<profile>/`：微信附件 cache，默认最多保留 7 天、总计 1 GB。
 - `codex-gui-bridge/`：Codex 绑定、auto-open、alarm 等本地设置。
+- 默认 profile 使用 `claude-route/`，命名 profile 使用
+  `profiles/<profile>/claude-route/`：保存 Claude session ID 和可编辑 route prompt。
 
 runtime 创建的私有目录使用 `0700`，状态、memory 和媒体文件使用 `0600`；这些路径
 都不会被 Git 跟踪。Codex 生成的文件保留在 Codex 自己的本地输出目录，直到 Codex
 或用户清理。
 
-有两类数据会按配置离开本机：发给 LLM provider 的消息；以及存在
-`WECHAT2ALL_MEM0_API_KEY` 时发给 Mem0 的 agent memory。删除 Mem0 key 后，agent
-memory 只使用本地 JSONL。
+会按配置离开本机的数据包括：发给大助手 LLM provider 的消息、Claude route 发给
+Anthropic 的请求，以及存在 `WECHAT2ALL_MEM0_API_KEY` 时发给 Mem0 的 agent memory。
+删除 Mem0 key 后，agent memory 只使用本地 JSONL。
 
 ## 启动
 

@@ -13,8 +13,9 @@ current state visible to the UI.
 - Dashboard snapshots: profile status, route list, agents, settings, traces.
 - Trace logging.
 - Hourly WeChat session-expiry reminders sent by the main WeConnect route.
-- Built-in route wiring, including the main assistant and `codex`.
+- Built-in route wiring, including the main assistant, `codex`, and `claude`.
 - Wiring the Codex route to the GUI app-server bridge.
+- Wiring the Claude route to the independent Claude Agent SDK package.
 
 It should not own generic route behavior, memory policy, action semantics, or
 message normalization. Those belong to `packages/runtime`.
@@ -36,6 +37,7 @@ message normalization. Those belong to `packages/runtime`.
 - `wechat2all` client SDK.
 - `@wechat2all/runtime`.
 - `@wechat2all/codex-gui-bridge` for the GUI app-server backend.
+- `@wechat2all/claude-route` for the headless Claude Agent SDK route.
 - Local filesystem state through runtime state stores.
 
 ## HTTP API
@@ -77,6 +79,11 @@ curl -X PATCH http://127.0.0.1:39787/config \
       "provider": "mem0",
       "apiKey": "replace-me",
       "baseUrl": "https://api.mem0.ai"
+    },
+    "claude": {
+      "apiKey": "replace-me",
+      "workdir": "/absolute/path/to/obsidian-vault",
+      "model": "claude-sonnet-4-5"
     }
   }'
 ```
@@ -84,12 +91,12 @@ curl -X PATCH http://127.0.0.1:39787/config \
 `GET /config` never returns a complete secret. It only returns `configured` and
 a masked value. In `PATCH /config`, an omitted secret or an empty secret input
 is preserved, which makes an unedited password field safe to submit; send
-`null` to explicitly clear it. Only documented LLM and memory fields are
+`null` to explicitly clear it. Only documented LLM, memory, and Claude fields are
 accepted, and updates are written atomically to `.env.local` with mode `0600`.
 Responses include `schemaVersion: 1` so the future desktop form can version its
 integration.
 
-LLM and memory providers are constructed when the daemon starts. A successful
+LLM, memory, and Claude providers are constructed when the daemon starts. A successful
 change therefore returns `restartRequired: true`; the UI should show that state
 and restart the local app stack before treating the new provider as active.
 

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { normalizeAccountId } from "wechat2all";
+import { createClaudeRouteConnectorFromEnv } from "@wechat2all/claude-route";
 
 import {
   FileRuntimeStateStore,
@@ -148,6 +149,9 @@ async function buildRuntime(profile: RuntimeProfileConfig): Promise<WeChatRuntim
   const savedUserRoutes = savedRoutes.filter(isUserManagedRoute);
   const builtInRoutes = defaultRoutes(profile.id)
     .map((route) => applySavedRouteOverrides(route, savedRoutes));
+  const mainRoute = builtInRoutes.find((route) => route.id === "main-assistant-default");
+  if (!mainRoute) throw new Error("Built-in main assistant route is missing.");
+  const secondaryBuiltInRoutes = builtInRoutes.filter((route) => route !== mainRoute);
   const llm = createLLMProviderFromEnv();
   const agentMemory = createAgentMemoryProviderFromEnv({
     baseDir: stateStore.memoryDir(PROFILE_ID),
@@ -188,6 +192,16 @@ async function buildRuntime(profile: RuntimeProfileConfig): Promise<WeChatRuntim
         replyMode: parseCodexReplyMode(process.env.WECHAT2ALL_CODEX_REPLY_MODE),
         processingReminderMs: envNumber("WECHAT2ALL_CODEX_PROCESSING_REMINDER_MS"),
       }),
+      createClaudeRouteConnectorFromEnv({
+        stateDir: path.join(stateStore.profileDir(PROFILE_ID), "claude-route"),
+        onError(error, context) {
+          trace(
+            "error",
+            "claude",
+            `${context.operation}/${context.message.conversationId}: ${error.message}`,
+          );
+        },
+      }),
       createMainAssistantConnector({
         id: "main-assistant",
         llm,
@@ -211,9 +225,9 @@ async function buildRuntime(profile: RuntimeProfileConfig): Promise<WeChatRuntim
       }),
     ],
     routes: [
-      builtInRoutes[0],
+      ...secondaryBuiltInRoutes,
       ...savedUserRoutes,
-      builtInRoutes[1],
+      mainRoute,
     ],
     monitor: {
       sessionExpiredBehavior: "stop",

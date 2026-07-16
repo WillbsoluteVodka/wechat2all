@@ -72,12 +72,28 @@ export interface MemoryLocalConfig {
   localMaxSearchRows: number | null;
 }
 
+export interface ClaudeLocalConfig {
+  apiKey: SecretConfigStatus;
+  workdir: string | null;
+  promptFile: string | null;
+  model: string | null;
+  language: "zh" | "en";
+  sessionWindowMinutes: number;
+  maxMediaMb: number;
+  maxTurns: number;
+  maxBudgetUsd: number;
+  timeoutMs: number;
+  allowCliAuth: boolean;
+  executable: string | null;
+}
+
 export interface LocalConfigSnapshot {
   configPath: string;
   runtimeApplied: boolean;
   restartRequired: boolean;
   llm: LlmLocalConfig;
   memory: MemoryLocalConfig;
+  claude: ClaudeLocalConfig;
 }
 
 export interface LocalConfigPatch {
@@ -96,6 +112,20 @@ export interface LocalConfigPatch {
     baseUrl?: string | null;
     timeoutMs?: number | null;
     localMaxSearchRows?: number | null;
+  };
+  claude?: {
+    apiKey?: string | null;
+    workdir?: string | null;
+    promptFile?: string | null;
+    model?: string | null;
+    language?: "zh" | "en" | null;
+    sessionWindowMinutes?: number | null;
+    maxMediaMb?: number | null;
+    maxTurns?: number | null;
+    maxBudgetUsd?: number | null;
+    timeoutMs?: number | null;
+    allowCliAuth?: boolean | null;
+    executable?: string | null;
   };
 }
 

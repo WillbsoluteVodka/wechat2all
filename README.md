@@ -17,6 +17,8 @@ flowchart TD
   R --> D["packages/router-daemon<br/>local process + HTTP API"]
   D --> UI["packages/desktop<br/>Tauri dashboard"]
   R --> CG["packages/codex-gui-bridge<br/>Codex GUI/app-server bridge"]
+  R --> CL["packages/claude-route<br/>Claude Agent SDK route"]
+  CL --> V["Obsidian vault / local workspace"]
   R --> A["future route agents / MCP skills"]
 ```
 
@@ -31,6 +33,7 @@ Each package owns one layer and should stay independently understandable.
 | Local daemon | `packages/router-daemon` | Process lifecycle, profile state, QR login API, dashboard HTTP API, built-in routes | UI rendering, low-level iLink protocol |
 | Desktop UI | `packages/desktop` | macOS Tauri dashboard, QR/login/status/routes/logs/settings screens | Runtime business logic |
 | Codex GUI bridge | `packages/codex-gui-bridge` | Codex app-server chat listing, binding, token usage, prompt delivery | WeChat routing or generic MCP tools |
+| Claude route | `packages/claude-route` | Claude Agent SDK runs, session resume, vault/workspace tools, attachment staging | QR login, iLink protocol, daemon lifecycle, desktop UI |
 
 Example flow:
 
@@ -48,6 +51,7 @@ Route navigation currently behaves like a tiny local OS:
 /ls          # visible routes
 /rename      # rename the current route
 /cd codex    # enter the codex route
+/cd claude   # enter the Claude Agent SDK route
 /cd ..       # return to the main assistant
 ```
 
@@ -63,6 +67,9 @@ returns with `/cd ..`.
   `/alarm <HH:mm>`, `/cache`, `/cache clear`, and prompt delivery into a bound
   Codex GUI chat.
 - The selected Codex chat binding persists across daemon/desktop restarts.
+- Independent Claude Agent SDK route for an Obsidian vault or local workspace,
+  with `/status`, `/new`, per-sender session resume, image/file inputs, and
+  workspace file/image delivery back to WeChat.
 - Codex route can cache inbound WeChat images/files locally, wait for the next
   text request, then send the request plus attachment paths to Codex. Images are
   also passed as `localImage` items when the Codex app-server supports it.
@@ -90,6 +97,8 @@ returns with `/cd ..`.
 - Local JSONL memory and optional Mem0 REST memory.
 - Codex app-server JSON-RPC plus opt-in macOS GUI automation for visible Codex
   chat injection.
+- Official Claude Agent SDK for the headless `claude` route; it does not use
+  GUI automation or start a second WeChat protocol client.
 
 ## Setup
 
@@ -117,6 +126,18 @@ Optional memory:
 ```bash
 WECHAT2ALL_MEM0_API_KEY=...
 ```
+
+Optional Claude route:
+
+```bash
+ANTHROPIC_API_KEY=...
+WECHAT2ALL_CLAUDE_WORKDIR=/absolute/path/to/obsidian-vault
+```
+
+Then enter it from WeChat with `/cd claude`. See
+[`packages/claude-route/README.md`](./packages/claude-route/README.md) for its
+full configuration and [`docs/claude-route-protocol-review.md`](./docs/claude-route-protocol-review.md)
+for the source-repo and protocol audit.
 
 Optional local media cache limits:
 
@@ -151,15 +172,19 @@ state under `~/.wechat2all-runtime-bot` by default:
 - `memory/<profile>/turns.jsonl`: local assistant memory.
 - `media/<profile>/`: inbound attachment cache, default 7-day / 1-GB cap.
 - `codex-gui-bridge/`: local Codex binding, auto-open, and alarm preferences.
+- `claude-route/` for the default profile, or
+  `profiles/<profile>/claude-route/` for a named profile: Claude session IDs and
+  the editable route prompt.
 
 Runtime-created private directories use `0700`; state, memory, and cached media
 files use `0600`. None of these paths are tracked by Git. Codex-generated files
 remain in Codex's own local output directory until its own cleanup policy or the
 user removes them.
 
-There are two intentional non-local data paths: messages sent to the configured
-LLM provider, and agent memory sent to Mem0 when `WECHAT2ALL_MEM0_API_KEY` is
-present. Remove that key to keep agent memory on local JSONL only.
+Intentional non-local data paths are messages sent to the configured main LLM,
+Claude route requests sent to Anthropic, and agent memory sent to Mem0 when
+`WECHAT2ALL_MEM0_API_KEY` is present. Remove that key to keep agent memory on
+local JSONL only.
 
 ## Run
 

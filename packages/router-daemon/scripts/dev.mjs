@@ -140,6 +140,8 @@ async function buildRuntimeDependencies() {
     "--filter",
     "@wechat2all/codex-gui-bridge",
     "--filter",
+    "@wechat2all/claude-route",
+    "--filter",
     "@wechat2all/runtime",
     "build",
   ]);

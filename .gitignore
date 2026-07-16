@@ -46,6 +46,11 @@ target
 /codex-gui-bridge/
 /profiles/*/codex-gui-bridge/
 
+# Claude route sessions/prompt and optional repo-root attachment workspace
+/claude-route/
+/profiles/*/claude-route/
+/Wechat_Saved/
+
 /status.json
 /threads.json
 /target.json

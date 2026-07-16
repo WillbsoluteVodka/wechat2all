@@ -18,6 +18,18 @@ const FIELD_ENV_NAMES = {
   "memory.baseUrl": "WECHAT2ALL_MEM0_BASE_URL",
   "memory.timeoutMs": "WECHAT2ALL_MEM0_TIMEOUT_MS",
   "memory.localMaxSearchRows": "WECHAT2ALL_MEMORY_LOCAL_MAX_SEARCH_ROWS",
+  "claude.apiKey": "ANTHROPIC_API_KEY",
+  "claude.workdir": "WECHAT2ALL_CLAUDE_WORKDIR",
+  "claude.promptFile": "WECHAT2ALL_CLAUDE_PROMPT_FILE",
+  "claude.model": "WECHAT2ALL_CLAUDE_MODEL",
+  "claude.language": "WECHAT2ALL_CLAUDE_LANGUAGE",
+  "claude.sessionWindowMinutes": "WECHAT2ALL_CLAUDE_SESSION_WINDOW_MINUTES",
+  "claude.maxMediaMb": "WECHAT2ALL_CLAUDE_MAX_MEDIA_MB",
+  "claude.maxTurns": "WECHAT2ALL_CLAUDE_MAX_TURNS",
+  "claude.maxBudgetUsd": "WECHAT2ALL_CLAUDE_MAX_BUDGET_USD",
+  "claude.timeoutMs": "WECHAT2ALL_CLAUDE_TIMEOUT_MS",
+  "claude.allowCliAuth": "WECHAT2ALL_CLAUDE_ALLOW_CLI_AUTH",
+  "claude.executable": "WECHAT2ALL_CLAUDE_EXECUTABLE",
 } as const;
 
 export type ConfigField = keyof typeof FIELD_ENV_NAMES;
@@ -46,12 +58,28 @@ export interface MemoryConfigSnapshot {
   localMaxSearchRows: number | null;
 }
 
+export interface ClaudeConfigSnapshot {
+  apiKey: SecretStatus;
+  workdir: string | null;
+  promptFile: string | null;
+  model: string | null;
+  language: "zh" | "en";
+  sessionWindowMinutes: number;
+  maxMediaMb: number;
+  maxTurns: number;
+  maxBudgetUsd: number;
+  timeoutMs: number;
+  allowCliAuth: boolean;
+  executable: string | null;
+}
+
 export interface LocalConfigSnapshot {
   configPath: string;
   runtimeApplied: boolean;
   restartRequired: boolean;
   llm: LlmConfigSnapshot;
   memory: MemoryConfigSnapshot;
+  claude: ClaudeConfigSnapshot;
 }
 
 export interface LocalConfigUpdateResult {
@@ -173,6 +201,18 @@ function optionalNumber(
   return String(parsed);
 }
 
+function optionalBoolean(value: unknown, label: string): EnvUpdate | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+  if (typeof value === "boolean") return value ? "1" : "0";
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) return "1";
+    if (["0", "false", "no", "off"].includes(normalized)) return "0";
+  }
+  throw new LocalConfigValidationError(`${label} must be a boolean or null.`);
+}
+
 function setUpdate(
   updates: Map<string, EnvUpdate>,
   field: ConfigField,
@@ -183,7 +223,7 @@ function setUpdate(
 
 function parsePatch(value: unknown): Map<string, EnvUpdate> {
   const root = asObject(value, "config");
-  assertAllowedKeys(root, ["llm", "memory"], "config");
+  assertAllowedKeys(root, ["llm", "memory", "claude"], "config");
   const updates = new Map<string, EnvUpdate>();
 
   if (root.llm !== undefined) {
@@ -252,6 +292,77 @@ function parsePatch(value: unknown): Map<string, EnvUpdate> {
     ));
   }
 
+  if (root.claude !== undefined) {
+    const claude = asObject(root.claude, "claude");
+    assertAllowedKeys(
+      claude,
+      [
+        "apiKey",
+        "workdir",
+        "promptFile",
+        "model",
+        "language",
+        "sessionWindowMinutes",
+        "maxMediaMb",
+        "maxTurns",
+        "maxBudgetUsd",
+        "timeoutMs",
+        "allowCliAuth",
+        "executable",
+      ],
+      "claude",
+    );
+    setUpdate(updates, "claude.apiKey", optionalString(
+      claude.apiKey,
+      "claude.apiKey",
+      { secret: true },
+    ));
+    setUpdate(updates, "claude.workdir", optionalString(claude.workdir, "claude.workdir"));
+    setUpdate(updates, "claude.promptFile", optionalString(
+      claude.promptFile,
+      "claude.promptFile",
+    ));
+    setUpdate(updates, "claude.model", optionalString(claude.model, "claude.model"));
+    setUpdate(updates, "claude.language", optionalEnum(
+      claude.language,
+      "claude.language",
+      ["zh", "en"],
+    ));
+    setUpdate(updates, "claude.sessionWindowMinutes", optionalNumber(
+      claude.sessionWindowMinutes,
+      "claude.sessionWindowMinutes",
+      { min: 0, max: 24 * 60 },
+    ));
+    setUpdate(updates, "claude.maxMediaMb", optionalNumber(
+      claude.maxMediaMb,
+      "claude.maxMediaMb",
+      { min: 1, max: 1_024 },
+    ));
+    setUpdate(updates, "claude.maxTurns", optionalNumber(
+      claude.maxTurns,
+      "claude.maxTurns",
+      { min: 1, max: 1_000, integer: true },
+    ));
+    setUpdate(updates, "claude.maxBudgetUsd", optionalNumber(
+      claude.maxBudgetUsd,
+      "claude.maxBudgetUsd",
+      { min: 0.01, max: 10_000 },
+    ));
+    setUpdate(updates, "claude.timeoutMs", optionalNumber(
+      claude.timeoutMs,
+      "claude.timeoutMs",
+      { min: 1_000, max: 24 * 60 * 60_000, integer: true },
+    ));
+    setUpdate(updates, "claude.allowCliAuth", optionalBoolean(
+      claude.allowCliAuth,
+      "claude.allowCliAuth",
+    ));
+    setUpdate(updates, "claude.executable", optionalString(
+      claude.executable,
+      "claude.executable",
+    ));
+  }
+
   return updates;
 }
 
@@ -312,6 +423,11 @@ function nullableNumber(value: string | undefined): number | null {
 
 function numberOr(value: string | undefined, fallback: number): number {
   return nullableNumber(value) ?? fallback;
+}
+
+function booleanOr(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined) return fallback;
+  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 }
 
 function maskSecret(value: string | undefined): SecretStatus {
@@ -406,6 +522,20 @@ export class LocalConfigStore {
         baseUrl: env.WECHAT2ALL_MEM0_BASE_URL ?? "https://api.mem0.ai",
         timeoutMs: numberOr(env.WECHAT2ALL_MEM0_TIMEOUT_MS, 15_000),
         localMaxSearchRows: nullableNumber(env.WECHAT2ALL_MEMORY_LOCAL_MAX_SEARCH_ROWS),
+      },
+      claude: {
+        apiKey: maskSecret(env.ANTHROPIC_API_KEY),
+        workdir: env.WECHAT2ALL_CLAUDE_WORKDIR ?? env.WECHAT2ALL_CLAUDE_VAULT ?? null,
+        promptFile: env.WECHAT2ALL_CLAUDE_PROMPT_FILE ?? null,
+        model: env.WECHAT2ALL_CLAUDE_MODEL ?? null,
+        language: env.WECHAT2ALL_CLAUDE_LANGUAGE === "en" ? "en" : "zh",
+        sessionWindowMinutes: numberOr(env.WECHAT2ALL_CLAUDE_SESSION_WINDOW_MINUTES, 15),
+        maxMediaMb: numberOr(env.WECHAT2ALL_CLAUDE_MAX_MEDIA_MB, 50),
+        maxTurns: numberOr(env.WECHAT2ALL_CLAUDE_MAX_TURNS, 40),
+        maxBudgetUsd: numberOr(env.WECHAT2ALL_CLAUDE_MAX_BUDGET_USD, 1),
+        timeoutMs: numberOr(env.WECHAT2ALL_CLAUDE_TIMEOUT_MS, 10 * 60_000),
+        allowCliAuth: booleanOr(env.WECHAT2ALL_CLAUDE_ALLOW_CLI_AUTH, false),
+        executable: env.WECHAT2ALL_CLAUDE_EXECUTABLE ?? null,
       },
     };
   }

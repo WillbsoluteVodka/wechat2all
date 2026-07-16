@@ -1671,7 +1671,7 @@ test("codex connector resets image reminder timer and sends multiple images with
   let downloadCount = 0;
   const connector = createCodexConnector({
     id: "codex-bridge",
-    imagePromptReminderMs: 50,
+    imagePromptReminderMs: 300,
     client: {
       async getStatus() {
         return { state: "idle" };
@@ -1714,9 +1714,9 @@ test("codex connector resets image reminder timer and sends multiple images with
   });
 
   await connector.handleMessage(codexImageMessage({ id: "m-image-1" }), context);
-  await sleepMs(20);
+  await sleepMs(180);
   await connector.handleMessage(codexImageMessage({ id: "m-image-2", imageId: "image-2" }), context);
-  await sleepMs(40);
+  await sleepMs(180);
   assert.deepEqual(reminderActions, []);
 
   const actions = await connector.handleMessage(

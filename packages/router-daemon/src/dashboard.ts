@@ -94,6 +94,14 @@ export async function createDashboardSnapshot(
         description: "本地 Codex bridge 能力，后续由 router 管理入口。",
       },
       {
+        id: "claude-route",
+        name: "Claude Route",
+        kind: "Claude Agent SDK",
+        status: env.WECHAT2ALL_CLAUDE_WORKDIR ? "configured" : "needs-config",
+        routeCount: dashboardRoutes.filter((route) => route.connectorId === "claude-route").length,
+        description: "独立 Claude Agent SDK route，可连接 Obsidian vault 或本地工作区。",
+      },
+      {
         id: "wechat2all-mcp",
         name: "wechat2all MCP Server",
         kind: "MCP",

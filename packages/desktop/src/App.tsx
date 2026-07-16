@@ -204,11 +204,12 @@ export function App() {
       </>
     );
   }
+  const profileId = snapshot.profile.id;
 
   async function onUnlinkWechat() {
     setQrError(null);
     try {
-      await unlinkWechatSession(snapshot.profile.id);
+      await unlinkWechatSession(profileId);
       setQr(null);
       setQrImage(null);
       setLoginStatus(null);
