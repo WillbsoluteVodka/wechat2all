@@ -70,6 +70,9 @@ test("config update preserves unrelated env content and writes a private file", 
       provider: "local",
       apiKey: null,
     },
+    codex: {
+      delivery: "gui-automation",
+    },
     claude: {
       apiKey: "sk-ant-new-secret-2468",
       workdir: "/Users/example/Claude Vault",
@@ -91,6 +94,7 @@ test("config update preserves unrelated env content and writes a private file", 
   assert.match(raw, /ANTHROPIC_API_KEY=sk-ant-new-secret-2468/);
   assert.match(raw, /WECHAT2ALL_CLAUDE_WORKDIR=\/Users\/example\/Claude Vault/);
   assert.match(raw, /WECHAT2ALL_CLAUDE_SESSION_WINDOW_MINUTES=20/);
+  assert.match(raw, /WECHAT2ALL_CODEX_DELIVERY=gui-automation/);
   assert.equal((await fs.stat(filePath)).mode & 0o077, 0);
   assert.equal(result.changed, true);
   assert.equal(result.config.restartRequired, true);
@@ -104,6 +108,7 @@ test("config update preserves unrelated env content and writes a private file", 
     masked: "sk-...2468",
   });
   assert.equal(result.config.claude.allowCliAuth, false);
+  assert.equal(result.config.codex.delivery, "gui-automation");
 });
 
 test("omitted config fields remain unchanged and a no-op update needs no restart", async () => {

@@ -60,10 +60,6 @@ const CODEX_ROUTE_RULES: RouteRuleDetail[] = [
     description: "设置微信返回模式，当前：final",
   },
   {
-    rule: "/autoopen 1|0",
-    description: "设置启动 wechat2all 时是否自动打开 Codex GUI",
-  },
-  {
     rule: "/alarm <HH:mm>",
     description: "设置 24 小时制时间，到点向绑定的 Codex chat 发送 dummy 你好",
   },

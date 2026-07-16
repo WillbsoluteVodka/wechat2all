@@ -18,6 +18,7 @@ const FIELD_ENV_NAMES = {
   "memory.baseUrl": "WECHAT2ALL_MEM0_BASE_URL",
   "memory.timeoutMs": "WECHAT2ALL_MEM0_TIMEOUT_MS",
   "memory.localMaxSearchRows": "WECHAT2ALL_MEMORY_LOCAL_MAX_SEARCH_ROWS",
+  "codex.delivery": "WECHAT2ALL_CODEX_DELIVERY",
   "claude.apiKey": "ANTHROPIC_API_KEY",
   "claude.workdir": "WECHAT2ALL_CLAUDE_WORKDIR",
   "claude.promptFile": "WECHAT2ALL_CLAUDE_PROMPT_FILE",
@@ -73,12 +74,17 @@ export interface ClaudeConfigSnapshot {
   executable: string | null;
 }
 
+export interface CodexConfigSnapshot {
+  delivery: "app-server" | "gui-automation";
+}
+
 export interface LocalConfigSnapshot {
   configPath: string;
   runtimeApplied: boolean;
   restartRequired: boolean;
   llm: LlmConfigSnapshot;
   memory: MemoryConfigSnapshot;
+  codex: CodexConfigSnapshot;
   claude: ClaudeConfigSnapshot;
 }
 
@@ -223,7 +229,7 @@ function setUpdate(
 
 function parsePatch(value: unknown): Map<string, EnvUpdate> {
   const root = asObject(value, "config");
-  assertAllowedKeys(root, ["llm", "memory", "claude"], "config");
+  assertAllowedKeys(root, ["llm", "memory", "codex", "claude"], "config");
   const updates = new Map<string, EnvUpdate>();
 
   if (root.llm !== undefined) {
@@ -289,6 +295,16 @@ function parsePatch(value: unknown): Map<string, EnvUpdate> {
       memory.localMaxSearchRows,
       "memory.localMaxSearchRows",
       { min: 1, max: 1_000_000, integer: true },
+    ));
+  }
+
+  if (root.codex !== undefined) {
+    const codex = asObject(root.codex, "codex");
+    assertAllowedKeys(codex, ["delivery"], "codex");
+    setUpdate(updates, "codex.delivery", optionalEnum(
+      codex.delivery,
+      "codex.delivery",
+      ["app-server", "gui-automation"],
     ));
   }
 
@@ -522,6 +538,11 @@ export class LocalConfigStore {
         baseUrl: env.WECHAT2ALL_MEM0_BASE_URL ?? "https://api.mem0.ai",
         timeoutMs: numberOr(env.WECHAT2ALL_MEM0_TIMEOUT_MS, 15_000),
         localMaxSearchRows: nullableNumber(env.WECHAT2ALL_MEMORY_LOCAL_MAX_SEARCH_ROWS),
+      },
+      codex: {
+        delivery: env.WECHAT2ALL_CODEX_DELIVERY === "gui-automation"
+          ? "gui-automation"
+          : "app-server",
       },
       claude: {
         apiKey: maskSecret(env.ANTHROPIC_API_KEY),

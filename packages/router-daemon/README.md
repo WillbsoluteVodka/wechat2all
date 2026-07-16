@@ -54,6 +54,8 @@ Common endpoints:
 - `GET /snapshot`
 - `GET /config`
 - `PATCH /config`
+- `GET /llm/health`
+- `POST /llm/health/check`
 - `POST /profiles/:profileId/qr-login`
 - `GET /profiles/:profileId/login-status`
 - settings/dashboard endpoints used by Tauri commands
@@ -95,6 +97,36 @@ is preserved, which makes an unedited password field safe to submit; send
 accepted, and updates are written atomically to `.env.local` with mode `0600`.
 Responses include `schemaVersion: 1` so the future desktop form can version its
 integration.
+
+## WeConnect LLM Health API
+
+The daemon performs one lightweight LLM check in the background whenever it
+starts. The check sends `Reply with exactly: OK` with an 8-token response limit,
+caches the result, and never returns the API key or the model response body.
+
+Read the cached startup result without issuing another paid request:
+
+```bash
+curl http://127.0.0.1:39787/llm/health
+```
+
+Explicitly run the check again, for example from a Retry button:
+
+```bash
+curl -X POST http://127.0.0.1:39787/llm/health/check \
+  -H 'content-type: application/json' \
+  -d '{}'
+```
+
+Both endpoints return HTTP 200 when the health operation itself succeeds. Read
+`llm.status`, `llm.apiKeyConfigured`, and `llm.usable` to determine provider
+health; the top-level `ok` only means that the local API request was handled.
+Possible statuses are `idle`, `checking`, `not-configured`, `ready`, and `error`.
+Provider failures include a stable error code and a sanitized message.
+
+The health check uses the configuration applied to the running daemon. After a
+`PATCH /config` response with `restartRequired: true`, restart the app before
+using the health result for the new settings.
 
 LLM, memory, and Claude providers are constructed when the daemon starts. A successful
 change therefore returns `restartRequired: true`; the UI should show that state

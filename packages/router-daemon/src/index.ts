@@ -19,13 +19,20 @@ import {
   createStateStoreMessageDeduper,
   parseCodexReplyMode,
   type CodexBridgeClient,
+  type LLMProvider,
   type RuntimeActionResult,
   type RuntimeMessage,
   type RuntimeProfileConfig,
   type RuntimeSavedCredentials,
 } from "@wechat2all/runtime";
 
-import { codexBackend, createCodexBridgeFromEnv } from "./codex.js";
+import {
+  codexBackend,
+  createCodexBridgeFromEnv,
+  getCodexSetupCheckSnapshot,
+  refreshCodexSetupCheck,
+  startCodexSetupCheckAfterStartup,
+} from "./codex.js";
 import {
   createDashboardSnapshot,
   type DashboardRouteStats,
@@ -40,6 +47,10 @@ import {
   LocalConfigStore,
   LocalConfigValidationError,
 } from "./local-config.js";
+import {
+  LlmHealthService,
+  type LlmHealthSnapshot,
+} from "./llm-health.js";
 import {
   applySavedRouteOverrides,
   defaultRoutes,
@@ -61,6 +72,7 @@ const stateStore = new FileRuntimeStateStore({ baseDir: BASE_STATE_DIR });
 let codexBridge: CodexBridgeClient | undefined;
 let server: http.Server | undefined;
 let localConfig: LocalConfigStore | undefined;
+let llmHealth: LlmHealthService | undefined;
 let sessionReminders: SessionReminderService | undefined;
 
 function finiteMetadataNumber(value: unknown): number | undefined {
@@ -104,6 +116,21 @@ function getCodexBridge(): CodexBridgeClient {
 
 function envMinutesMs(name: string, fallbackMinutes: number): number {
   return (envNumber(name) ?? fallbackMinutes) * 60_000;
+}
+
+function createRuntimeLLMProvider(): LLMProvider {
+  try {
+    return createLLMProviderFromEnv();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    trace("warn", "llm", `LLM provider is not configured: ${message}`);
+    return {
+      id: "unavailable",
+      async generate() {
+        throw new Error(message);
+      },
+    };
+  }
 }
 
 interface LoginState {
@@ -152,7 +179,7 @@ async function buildRuntime(profile: RuntimeProfileConfig): Promise<WeChatRuntim
   const mainRoute = builtInRoutes.find((route) => route.id === "main-assistant-default");
   if (!mainRoute) throw new Error("Built-in main assistant route is missing.");
   const secondaryBuiltInRoutes = builtInRoutes.filter((route) => route !== mainRoute);
-  const llm = createLLMProviderFromEnv();
+  const llm = createRuntimeLLMProvider();
   const agentMemory = createAgentMemoryProviderFromEnv({
     baseDir: stateStore.memoryDir(PROFILE_ID),
     onError(error, context) {
@@ -530,6 +557,7 @@ async function dashboardSnapshot(): Promise<unknown> {
     traces: traceLogger.events(),
     routeStats,
     routerEndpoint: `http://${HOST}:${PORT}`,
+    sessionExpiresAt: sessionReminders?.getSessionExpiresAt(),
   });
 }
 
@@ -575,6 +603,19 @@ function sendJson(res: http.ServerResponse, status: number, data: unknown): void
   res.end(JSON.stringify(data));
 }
 
+function llmHealthResponse(result: LlmHealthSnapshot): unknown {
+  return {
+    ok: true,
+    schemaVersion: 1,
+    llm: result,
+  };
+}
+
+function requireLlmHealth(): LlmHealthService {
+  if (!llmHealth) throw new Error("LLM health service is not initialized.");
+  return llmHealth;
+}
+
 async function handleRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -615,6 +656,33 @@ async function handleRequest(
         trace("info", "config", `Updated ${result.changedFields.join(", ")}`);
       }
       sendJson(res, 200, { ok: true, schemaVersion: 1, ...result });
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/llm/health") {
+      sendJson(res, 200, llmHealthResponse(requireLlmHealth().snapshot()));
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/llm/health/check") {
+      await readJson(req);
+      const result = await requireLlmHealth().check();
+      sendJson(res, 200, llmHealthResponse(result));
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/codex/setup-check") {
+      sendJson(res, 200, {
+        ok: true,
+        schemaVersion: 1,
+        check: getCodexSetupCheckSnapshot(),
+      });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/codex/setup-check") {
+      await readJson(req);
+      sendJson(res, 200, {
+        ok: true,
+        schemaVersion: 1,
+        check: await refreshCodexSetupCheck(),
+      });
       return;
     }
     if (req.method === "POST" && url.pathname === "/login/qr/start") {
@@ -690,6 +758,24 @@ async function main(): Promise<void> {
   loadLocalEnv(trace);
   refreshRuntimeSettings();
   localConfig = new LocalConfigStore({ filePath: resolveLocalEnvPath() });
+  llmHealth = new LlmHealthService({
+    timeoutMs: envNumber("WECHAT2ALL_LLM_HEALTH_TIMEOUT_MS"),
+    onResult(result) {
+      if (result.status === "ready") {
+        trace(
+          "info",
+          "llm-health",
+          `LLM check passed for ${result.provider}/${result.model} (${result.latencyMs}ms).`,
+        );
+        return;
+      }
+      trace(
+        "warn",
+        "llm-health",
+        `LLM check ${result.status}: ${result.error?.message ?? "unknown error"}`,
+      );
+    },
+  });
   await stateStore.securePermissions();
   const savedCredentials = await stateStore.loadCredentials(PROFILE_ID);
   await initializeSessionReminders(savedCredentials);
@@ -717,6 +803,11 @@ async function main(): Promise<void> {
   });
   server.listen(PORT, HOST, () => {
     trace("info", "http", `Listening on http://${HOST}:${PORT}`);
+    void requireLlmHealth().check();
+    const codexRouteInstalled = runtime?.listRoutes().some((route) =>
+      route.connectorId === "codex-bridge" && route.enabled !== false
+    );
+    if (codexRouteInstalled) startCodexSetupCheckAfterStartup();
   });
 }
 

@@ -1,11 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import type {
+  CodexSetupCheckResponse,
   DashboardSnapshot,
   LocalConfigPatch,
   LocalConfigResponse,
   LocalConfigSnapshot,
   LocalConfigUpdateResponse,
+  LlmHealthResponse,
   LoginStatus,
   QrLoginResponse,
 } from "./types";
@@ -154,6 +156,9 @@ let fallbackLocalConfig: LocalConfigSnapshot = {
     timeoutMs: 15_000,
     localMaxSearchRows: 2_000,
   },
+  codex: {
+    delivery: "app-server",
+  },
   claude: {
     apiKey: { configured: false, masked: null },
     workdir: null,
@@ -189,6 +194,53 @@ function nextValue<T>(value: T | undefined, current: T): T {
 export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
   if (!isTauri()) return fallbackSnapshot;
   return invoke<DashboardSnapshot>("get_dashboard_snapshot");
+}
+
+export async function getLlmHealth(): Promise<LlmHealthResponse> {
+  if (!isTauri()) {
+    return {
+      ok: true,
+      schemaVersion: 1,
+      llm: {
+        status: "not-configured",
+        provider: "openai-compatible",
+        model: null,
+        apiKeyConfigured: false,
+        configured: false,
+        usable: false,
+        checkedAt: null,
+        latencyMs: null,
+        error: { code: "model_missing", message: "Browser preview has no configured LLM." },
+      },
+    };
+  }
+  return invoke<LlmHealthResponse>("get_llm_health");
+}
+
+const fallbackCodexSetupCheck: CodexSetupCheckResponse = {
+  ok: true,
+  schemaVersion: 1,
+  check: {
+    status: "ready",
+    checkedAt: new Date().toISOString(),
+    items: [
+      { status: "pass", message: "ChatGPT/Codex desktop installed", section: "Common" },
+      { status: "missing", message: "Codex task binding not found", section: "Common" },
+      { status: "warn", message: "GUI automation is not selected", section: "GUI automation" },
+    ],
+    exitCode: 1,
+    error: null,
+  },
+};
+
+export async function getCodexSetupCheck(): Promise<CodexSetupCheckResponse> {
+  if (!isTauri()) return fallbackCodexSetupCheck;
+  return invoke<CodexSetupCheckResponse>("get_codex_setup_check");
+}
+
+export async function refreshCodexSetupCheck(): Promise<CodexSetupCheckResponse> {
+  if (!isTauri()) return fallbackCodexSetupCheck;
+  return invoke<CodexSetupCheckResponse>("refresh_codex_setup_check");
 }
 
 export async function requestQrLogin(profileId: string): Promise<QrLoginResponse> {
@@ -236,6 +288,7 @@ export async function patchLocalConfig(
   if (!isTauri()) {
     const llmPatch = payload.llm;
     const memoryPatch = payload.memory;
+    const codexPatch = payload.codex;
     const claudePatch = payload.claude;
     fallbackLocalConfig = {
       ...fallbackLocalConfig,
@@ -261,6 +314,12 @@ export async function patchLocalConfig(
           memoryPatch?.localMaxSearchRows,
           fallbackLocalConfig.memory.localMaxSearchRows,
         ),
+      },
+      codex: {
+        delivery: nextValue(
+          codexPatch?.delivery,
+          fallbackLocalConfig.codex.delivery,
+        ) ?? "app-server",
       },
       claude: {
         ...fallbackLocalConfig.claude,

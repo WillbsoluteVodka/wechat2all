@@ -268,6 +268,52 @@ async fn get_local_config() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
+async fn get_llm_health() -> Result<serde_json::Value, String> {
+    let daemon_url = trim_trailing_slash(&env_or_default(
+        "WECHAT2ALL_ROUTER_DAEMON_URL",
+        DEFAULT_DAEMON_URL,
+    ));
+    let url = format!("{daemon_url}/llm/health");
+    let response = daemon_http_client()?
+        .get(&url)
+        .send()
+        .await
+        .map_err(|err| format!("Router daemon is not reachable at {daemon_url}: {err}"))?;
+    daemon_json_response("Router daemon LLM health request", response).await
+}
+
+#[tauri::command]
+async fn get_codex_setup_check() -> Result<serde_json::Value, String> {
+    let daemon_url = trim_trailing_slash(&env_or_default(
+        "WECHAT2ALL_ROUTER_DAEMON_URL",
+        DEFAULT_DAEMON_URL,
+    ));
+    let url = format!("{daemon_url}/codex/setup-check");
+    let response = daemon_http_client()?
+        .get(&url)
+        .send()
+        .await
+        .map_err(|err| format!("Router daemon is not reachable at {daemon_url}: {err}"))?;
+    daemon_json_response("Router daemon Codex setup check request", response).await
+}
+
+#[tauri::command]
+async fn refresh_codex_setup_check() -> Result<serde_json::Value, String> {
+    let daemon_url = trim_trailing_slash(&env_or_default(
+        "WECHAT2ALL_ROUTER_DAEMON_URL",
+        DEFAULT_DAEMON_URL,
+    ));
+    let url = format!("{daemon_url}/codex/setup-check");
+    let response = daemon_http_client()?
+        .post(&url)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .map_err(|err| format!("Router daemon is not reachable at {daemon_url}: {err}"))?;
+    daemon_json_response("Router daemon Codex setup check refresh", response).await
+}
+
+#[tauri::command]
 async fn patch_local_config(payload: serde_json::Value) -> Result<serde_json::Value, String> {
     let daemon_url = trim_trailing_slash(&env_or_default(
         "WECHAT2ALL_ROUTER_DAEMON_URL",
@@ -365,6 +411,9 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_dashboard_snapshot,
+            get_llm_health,
+            get_codex_setup_check,
+            refresh_codex_setup_check,
             get_local_config,
             patch_local_config,
             request_qr_login,

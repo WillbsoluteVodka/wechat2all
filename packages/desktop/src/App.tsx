@@ -9,9 +9,14 @@ import {
 import QRCode from "qrcode";
 
 import {
+  getCodexSetupCheck,
   getDashboardSnapshot,
+  getLocalConfig,
+  getLlmHealth,
   getLoginStatus,
   requestQrLogin,
+  patchLocalConfig,
+  refreshCodexSetupCheck,
   unlinkWechatSession,
 } from "./api";
 import { AgentsPage, TracePage } from "./pages/ConstructionPages";
@@ -19,7 +24,9 @@ import { ConfigPage } from "./pages/ConfigPage";
 import { HomePage } from "./pages/HomePage";
 import { RoutesPage } from "./pages/RoutesPage";
 import type {
+  CodexSetupCheckResponse,
   DashboardSnapshot,
+  LlmHealthResponse,
   LoginStatus,
   PageKey,
   QrLoginResponse,
@@ -33,6 +40,13 @@ export function App() {
   const [startupOverlayVisible, setStartupOverlayVisible] = useState(true);
   const [activePage, setActivePage] = useState<PageKey>("home");
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
+  const [llmHealth, setLlmHealth] = useState<LlmHealthResponse | null>(null);
+  const [codexSetupCheck, setCodexSetupCheck] = useState<CodexSetupCheckResponse | null>(null);
+  const [codexSetupRefreshing, setCodexSetupRefreshing] = useState(false);
+  const [codexSetupError, setCodexSetupError] = useState<string | null>(null);
+  const [codexDelivery, setCodexDelivery] = useState<"app-server" | "gui-automation">("app-server");
+  const [codexDeliverySaving, setCodexDeliverySaving] = useState(false);
+  const [codexDeliveryRestartRequired, setCodexDeliveryRestartRequired] = useState(false);
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
   const [qr, setQr] = useState<QrLoginResponse | null>(null);
   const [loginStatus, setLoginStatus] = useState<LoginStatus | null>(null);
@@ -60,9 +74,12 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
-    getDashboardSnapshot()
-      .then((data) => {
-        if (!cancelled) setSnapshot(data);
+    Promise.all([getDashboardSnapshot(), getLlmHealth().catch(() => null)])
+      .then(([data, health]) => {
+        if (!cancelled) {
+          setSnapshot(data);
+          setLlmHealth(health);
+        }
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -92,14 +109,51 @@ export function App() {
     let cancelled = false;
     const refresh = async () => {
       try {
-        const data = await getDashboardSnapshot();
-        if (!cancelled) setSnapshot(data);
+        const [data, health] = await Promise.all([
+          getDashboardSnapshot(),
+          getLlmHealth().catch(() => null),
+        ]);
+        if (!cancelled) {
+          setSnapshot(data);
+          if (health) setLlmHealth(health);
+        }
       } catch {
         // Keep the last good snapshot visible if the local daemon restarts.
       }
     };
 
     const timer = window.setInterval(() => void refresh(), 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activePage, startupOverlayVisible]);
+
+  useEffect(() => {
+    if (startupOverlayVisible || activePage !== "routes") return undefined;
+    let cancelled = false;
+    const refreshCachedCheck = async () => {
+      try {
+        const [result, config] = await Promise.all([
+          getCodexSetupCheck(),
+          getLocalConfig().catch(() => null),
+        ]);
+        if (!cancelled) {
+          setCodexSetupCheck(result);
+          if (config) {
+            setCodexDelivery(config.codex?.delivery ?? "app-server");
+            setCodexDeliveryRestartRequired(config.restartRequired);
+          }
+          setCodexSetupError(null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setCodexSetupError(error instanceof Error ? error.message : String(error));
+        }
+      }
+    };
+    void refreshCachedCheck();
+    const timer = window.setInterval(() => void refreshCachedCheck(), 2000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
@@ -223,6 +277,35 @@ export function App() {
     }
   }
 
+  async function onRefreshCodexSetupCheck() {
+    if (codexSetupRefreshing) return;
+    setCodexSetupRefreshing(true);
+    setCodexSetupError(null);
+    try {
+      setCodexSetupCheck(await refreshCodexSetupCheck());
+    } catch (error) {
+      setCodexSetupError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCodexSetupRefreshing(false);
+    }
+  }
+
+  async function onToggleCodexDelivery() {
+    if (codexDeliverySaving) return;
+    const delivery = codexDelivery === "app-server" ? "gui-automation" : "app-server";
+    setCodexDeliverySaving(true);
+    setCodexSetupError(null);
+    try {
+      const result = await patchLocalConfig({ codex: { delivery } });
+      setCodexDelivery(result.config.codex?.delivery ?? delivery);
+      setCodexDeliveryRestartRequired(result.config.restartRequired);
+    } catch (error) {
+      setCodexSetupError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCodexDeliverySaving(false);
+    }
+  }
+
   return (
     <>
       <div
@@ -238,6 +321,7 @@ export function App() {
           {activePage === "home" ? (
             <HomePage
               data={snapshot}
+              llmHealth={llmHealth}
               qr={qr}
               qrImage={qrImage}
               qrError={qrError}
@@ -257,8 +341,16 @@ export function App() {
           ) : null}
           {activePage === "routes" ? (
             <RoutesPage
+              codexSetupCheck={codexSetupCheck}
+              codexSetupError={codexSetupError}
+              codexSetupRefreshing={codexSetupRefreshing}
+              codexDelivery={codexDelivery}
+              codexDeliveryRestartRequired={codexDeliveryRestartRequired}
+              codexDeliverySaving={codexDeliverySaving}
               routes={snapshot.routes}
               selectedRouteId={selectedRouteId}
+              onRefreshCodexSetupCheck={() => void onRefreshCodexSetupCheck()}
+              onToggleCodexDelivery={() => void onToggleCodexDelivery()}
               onSelect={setSelectedRouteId}
             />
           ) : null}

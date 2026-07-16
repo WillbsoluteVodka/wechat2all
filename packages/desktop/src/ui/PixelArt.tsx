@@ -1,6 +1,6 @@
 import { useMemo, type CSSProperties } from "react";
 
-export type PixelIconKind = "wechat" | "wechatGray" | "codex";
+export type PixelIconKind = "wechat" | "wechatGray" | "codex" | "openai" | "crab";
 type PixelTone =
   | "off"
   | "wechat"
@@ -17,6 +17,8 @@ type PixelTone =
   | "codexBlue"
   | "codexBlueLight"
   | "codexBlueDark"
+  | "openai"
+  | "crab"
   | "white";
 
 function setPixel(
@@ -140,10 +142,69 @@ function buildCodexPixels() {
   return pixels;
 }
 
+function buildBitmapPixels(
+  rows: string[],
+  tone: Exclude<PixelTone, "off">,
+) {
+  const pixels: PixelTone[] = Array.from({ length: 24 * 24 }, () => "off");
+  const top = Math.floor((24 - rows.length) / 2);
+
+  rows.forEach((row, rowIndex) => {
+    const left = Math.floor((24 - row.length) / 2);
+    row.split("").forEach((pixel, columnIndex) => {
+      if (pixel === "#") setPixel(pixels, left + columnIndex, top + rowIndex, tone);
+    });
+  });
+
+  return pixels;
+}
+
+function buildOpenAiPixels() {
+  return buildBitmapPixels([
+    "      #####         ",
+    "     ##########     ",
+    "    ##    ######    ",
+    "    ##  ###    ##   ",
+    "  ###  ##  ###  ##  ",
+    " ## # ##  ##### ##  ",
+    " #  # ######  ####  ",
+    "##  # ### ####  ##  ",
+    "##  # ##    ###  ## ",
+    " #  ####    # ## ## ",
+    " ##  ###   ## ## ## ",
+    "  ###  ###### ## ## ",
+    "  ##### ### # ## ## ",
+    "  #  ####  ## ####  ",
+    "  ##      ### ###   ",
+    "   ##   ###   ##    ",
+    "    ######  ###     ",
+    "      # ######      ",
+    "          ##        ",
+  ], "openai");
+}
+
+function buildCrabPixels() {
+  return buildBitmapPixels([
+    "     ##########     ",
+    "   ##############   ",
+    "   #### #### ####   ",
+    "  ################  ",
+    "####################",
+    "####################",
+    "  ################  ",
+    "   ##############   ",
+    "   ##############   ",
+    "   ## ##    ## ##   ",
+    "   ## ##    ## ##   ",
+  ], "crab");
+}
+
 function buildPixelIcon(kind: PixelIconKind) {
   if (kind === "wechat") return buildWechatPixels();
   if (kind === "wechatGray") return buildWechatPixels("gray");
-  return buildCodexPixels();
+  if (kind === "codex") return buildCodexPixels();
+  if (kind === "openai") return buildOpenAiPixels();
+  return buildCrabPixels();
 }
 
 export function PixelIcon(props: {
@@ -237,6 +298,96 @@ const PIXEL_TEXT_GLYPHS: Record<string, string[]> = {
     "010",
     "010",
     "000",
+  ],
+  "0": [
+    "01110",
+    "10001",
+    "10011",
+    "10101",
+    "11001",
+    "10001",
+    "01110",
+  ],
+  "1": [
+    "00100",
+    "01100",
+    "00100",
+    "00100",
+    "00100",
+    "00100",
+    "01110",
+  ],
+  "2": [
+    "01110",
+    "10001",
+    "00001",
+    "00010",
+    "00100",
+    "01000",
+    "11111",
+  ],
+  "3": [
+    "11110",
+    "00001",
+    "00001",
+    "01110",
+    "00001",
+    "00001",
+    "11110",
+  ],
+  "4": [
+    "00010",
+    "00110",
+    "01010",
+    "10010",
+    "11111",
+    "00010",
+    "00010",
+  ],
+  "5": [
+    "11111",
+    "10000",
+    "10000",
+    "11110",
+    "00001",
+    "00001",
+    "11110",
+  ],
+  "6": [
+    "01110",
+    "10000",
+    "10000",
+    "11110",
+    "10001",
+    "10001",
+    "01110",
+  ],
+  "7": [
+    "11111",
+    "00001",
+    "00010",
+    "00100",
+    "01000",
+    "01000",
+    "01000",
+  ],
+  "8": [
+    "01110",
+    "10001",
+    "10001",
+    "01110",
+    "10001",
+    "10001",
+    "01110",
+  ],
+  "9": [
+    "01110",
+    "10001",
+    "10001",
+    "01111",
+    "00001",
+    "00001",
+    "01110",
   ],
   "|": [
     "010",
@@ -528,4 +679,3 @@ export function PixelText(props: { text: string; className?: string }) {
     </span>
   );
 }
-

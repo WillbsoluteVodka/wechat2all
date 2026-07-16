@@ -87,12 +87,17 @@ export interface ClaudeLocalConfig {
   executable: string | null;
 }
 
+export interface CodexLocalConfig {
+  delivery: "app-server" | "gui-automation";
+}
+
 export interface LocalConfigSnapshot {
   configPath: string;
   runtimeApplied: boolean;
   restartRequired: boolean;
   llm: LlmLocalConfig;
   memory: MemoryLocalConfig;
+  codex: CodexLocalConfig;
   claude: ClaudeLocalConfig;
 }
 
@@ -112,6 +117,9 @@ export interface LocalConfigPatch {
     baseUrl?: string | null;
     timeoutMs?: number | null;
     localMaxSearchRows?: number | null;
+  };
+  codex?: {
+    delivery?: "app-server" | "gui-automation" | null;
   };
   claude?: {
     apiKey?: string | null;
@@ -146,6 +154,43 @@ export interface DashboardSnapshot {
   agents: AgentSummary[];
   traces: TraceEvent[];
   settings: SettingsSnapshot;
+}
+
+export interface LlmHealthResponse {
+  ok: true;
+  schemaVersion: 1;
+  llm: {
+    status: "idle" | "checking" | "not-configured" | "ready" | "error";
+    provider: string;
+    model: string | null;
+    apiKeyConfigured: boolean;
+    configured: boolean;
+    usable: boolean;
+    checkedAt: string | null;
+    latencyMs: number | null;
+    error: {
+      code: "api_key_missing" | "model_missing" | "provider_unsupported" | "request_failed";
+      message: string;
+    } | null;
+  };
+}
+
+export type CodexSetupCheckItemStatus = "pass" | "missing" | "warn" | "unknown" | "info";
+
+export interface CodexSetupCheckResponse {
+  ok: true;
+  schemaVersion: 1;
+  check: {
+    status: "idle" | "checking" | "ready" | "error";
+    checkedAt: string | null;
+    items: Array<{
+      status: CodexSetupCheckItemStatus;
+      message: string;
+      section: string | null;
+    }>;
+    exitCode: number | null;
+    error: string | null;
+  };
 }
 
 export interface QrLoginResponse {

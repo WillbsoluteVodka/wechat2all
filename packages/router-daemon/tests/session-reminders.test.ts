@@ -57,11 +57,14 @@ test("session reminder persists the owner context token privately", async () => 
   const statePath = path.join(dir, "session-reminder.json");
   const service = new SessionReminderService({
     statePath,
+    sessionDurationMs: 60_000,
     onReminder() {},
   });
   await service.initialize();
-  await service.startSession({ loginAt: Date.now(), ownerUserId: "owner-1" });
+  const loginAt = Date.now();
+  await service.startSession({ loginAt, ownerUserId: "owner-1" });
 
+  assert.equal(service.getSessionExpiresAt(), loginAt + 60_000);
   assert.equal(await service.captureMessage(ownerMessage()), true);
   const target = await readSessionReminderTarget(statePath);
   assert.equal(target?.userId, "owner-1");

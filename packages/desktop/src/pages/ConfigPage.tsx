@@ -9,6 +9,7 @@ import type {
   QrLoginResponse,
 } from "../types";
 import { EmptyState, StatusPill } from "../ui/Common";
+import { PixelText } from "../ui/PixelArt";
 import { QrGlitch } from "../ui/QrGlitch";
 
 type ConfigSection = "llm" | "memory";
@@ -29,6 +30,19 @@ interface LocalConfigDraft {
   memoryTimeoutMs: string;
   localMaxSearchRows: string;
 }
+
+const LLM_PRESETS = {
+  "deepseek-chat": {
+    provider: "openai-compatible",
+    baseUrl: "https://api.deepseek.com/v1",
+  },
+  "gpt-4.1-mini": {
+    provider: "openai-compatible",
+    baseUrl: "https://api.openai.com/v1",
+  },
+} as const;
+
+type LlmPresetModel = keyof typeof LLM_PRESETS;
 
 function valueFromNumber(value: number | null) {
   return value === null ? "" : String(value);
@@ -66,6 +80,63 @@ function secretPatch(value: string, remove: boolean) {
 
 function configFileName(path: string) {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+
+function remainingSessionSeconds(expiresAt: string | null | undefined) {
+  if (!expiresAt) return null;
+  const timestamp = Date.parse(expiresAt);
+  if (!Number.isFinite(timestamp)) return null;
+  return Math.max(0, Math.ceil((timestamp - Date.now()) / 1000));
+}
+
+function sessionTimeText(seconds: number | null) {
+  if (seconds === null) return "--:--:--";
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainingSeconds = seconds % 60;
+  return [hours, minutes, remainingSeconds]
+    .map((value) => String(value).padStart(2, "0"))
+    .join(":");
+}
+
+function SessionCountdown(props: { expiresAt?: string | null }) {
+  const [seconds, setSeconds] = useState(() => remainingSessionSeconds(props.expiresAt));
+
+  useEffect(() => {
+    const update = () => setSeconds(remainingSessionSeconds(props.expiresAt));
+    update();
+    const timer = window.setInterval(update, 1000);
+    return () => window.clearInterval(timer);
+  }, [props.expiresAt]);
+
+  const timeText = sessionTimeText(seconds);
+  const expired = seconds === 0;
+
+  return (
+    <section
+      aria-label={seconds === null
+        ? "Connected session expiration time unavailable"
+        : expired
+          ? "Connected session time has ended"
+          : `${timeText} remaining in the connected session`}
+      className={expired ? "session-countdown is-expired" : "session-countdown"}
+      role="timer"
+    >
+      <PixelText
+        text={expired ? "SESSION ENDED" : "SESSION TIME"}
+        className="session-countdown-title"
+      />
+      <PixelText text={timeText} className="session-countdown-time" />
+      <div className="session-countdown-units" aria-hidden="true">
+        <span>HOURS</span>
+        <span>MINUTES</span>
+        <span>SECONDS</span>
+      </div>
+      <div className="session-countdown-track" aria-hidden="true">
+        {Array.from({ length: 12 }, (_, index) => <span key={index} />)}
+      </div>
+    </section>
+  );
 }
 
 function ConfigField(props: {
@@ -202,10 +273,14 @@ export function ConfigPage(props: {
           ) : (
             <>
               {visibleQrError ? <p className="error-copy">{visibleQrError}</p> : null}
-              <EmptyState
-                title="No QR requested yet"
-                body="Click the Request New QR button to ask the local router for a new QR session."
-              />
+              {profile.connected ? (
+                <SessionCountdown expiresAt={profile.sessionExpiresAt} />
+              ) : (
+                <EmptyState
+                  title="No QR requested yet"
+                  body="Click the Request New QR button to ask the local router for a new QR session."
+                />
+              )}
             </>
           )}
         </div>
@@ -272,25 +347,23 @@ export function ConfigPage(props: {
             <div className="config-settings-fields">
               {activeSection === "llm" ? (
                 <>
-                  <ConfigField label="LLM provider">
+                  <ConfigField label="Model" wide>
                     <select
-                      value={draft.llmProvider}
-                      onChange={(event) =>
-                        setDraft({ ...draft, llmProvider: event.currentTarget.value })
-                      }
-                    >
-                      <option value="openai-compatible">openai-compatible</option>
-                      <option value="mock">mock</option>
-                    </select>
-                  </ConfigField>
-                  <ConfigField label="Model">
-                    <input
                       value={draft.llmModel}
-                      placeholder="gpt-4.1-mini"
-                      onChange={(event) =>
-                        setDraft({ ...draft, llmModel: event.currentTarget.value })
-                      }
-                    />
+                      onChange={(event) => {
+                        const model = event.currentTarget.value as LlmPresetModel;
+                        const preset = LLM_PRESETS[model];
+                        setDraft({
+                          ...draft,
+                          llmProvider: preset.provider,
+                          llmModel: model,
+                          llmBaseUrl: preset.baseUrl,
+                        });
+                      }}
+                    >
+                      <option value="deepseek-chat">DeepSeek</option>
+                      <option value="gpt-4.1-mini">OpenAI</option>
+                    </select>
                   </ConfigField>
                   <div className="config-field config-field-wide">
                     <div className="config-field-heading">
@@ -341,15 +414,6 @@ export function ConfigPage(props: {
                       </button>
                     </div>
                   </div>
-                  <ConfigField label="Base URL" wide>
-                    <input
-                      type="url"
-                      value={draft.llmBaseUrl}
-                      onChange={(event) =>
-                        setDraft({ ...draft, llmBaseUrl: event.currentTarget.value })
-                      }
-                    />
-                  </ConfigField>
                   <ConfigField label="Temperature">
                     <input
                       type="number"

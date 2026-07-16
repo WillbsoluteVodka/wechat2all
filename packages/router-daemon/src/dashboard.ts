@@ -19,6 +19,7 @@ export interface DashboardSnapshotOptions {
   traces: TraceEvent[];
   routeStats: ReadonlyMap<string, DashboardRouteStats>;
   routerEndpoint: string;
+  sessionExpiresAt?: number;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -48,7 +49,9 @@ export async function createDashboardSnapshot(
       lastSeenAt: savedCredentials?.loginAt
         ? new Date(savedCredentials.loginAt).toISOString()
         : null,
-      sessionExpiresAt: null,
+      sessionExpiresAt: opts.sessionExpiresAt
+        ? new Date(opts.sessionExpiresAt).toISOString()
+        : null,
     },
     routes: dashboardRoutes.map((route) => {
       const routeStats = opts.routeStats.get(route.id);

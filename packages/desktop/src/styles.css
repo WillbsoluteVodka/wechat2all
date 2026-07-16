@@ -3834,6 +3834,14 @@ nav {
   background: #233ee5;
 }
 
+.pixel-icon .tone-openai {
+  background: #dfe6e3;
+}
+
+.pixel-icon .tone-crab {
+  background: #f0714f;
+}
+
 .pixel-icon .tone-white {
   background: #fff;
 }
@@ -4809,7 +4817,7 @@ nav {
 .signal-lane {
   display: grid;
   min-height: 54px;
-  grid-template-columns: minmax(160px, 1fr) minmax(140px, 0.8fr) 80px;
+  grid-template-columns: minmax(160px, 1fr) minmax(140px, 0.8fr) 150px 80px;
   align-items: center;
   gap: 12px;
   padding: 12px 0;
@@ -4834,6 +4842,33 @@ nav {
   justify-self: end;
   color: var(--pixel-green-2);
   font-weight: 900;
+}
+
+.signal-lane span.lane-config-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--pixel-yellow);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+.signal-lane .lane-config-status i {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  background: currentColor;
+  box-shadow: 2px 2px 0 #493f17;
+}
+
+.signal-lane span.lane-config-status.is-configured {
+  color: var(--pixel-green-2);
+}
+
+.signal-lane .lane-config-status.is-configured i {
+  box-shadow: 2px 2px 0 #0d431e;
 }
 
 .lane-pulse {
@@ -5018,6 +5053,52 @@ nav {
   border-top: 2px solid #1a2b20;
 }
 
+.route-detail-section-heading {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.route-detail-section-heading h2 {
+  margin: 0;
+}
+
+.route-config-refresh {
+  min-height: 34px;
+  padding: 6px 16px;
+  color: var(--pixel-green-2);
+}
+
+.route-config-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.route-delivery-toggle {
+  min-height: 34px;
+  padding: 6px 16px;
+  color: var(--pixel-green-2);
+  white-space: nowrap;
+}
+
+.route-delivery-toggle.is-gui {
+  border-color: var(--pixel-yellow);
+  color: var(--pixel-yellow);
+  box-shadow: 4px 4px 0 #493f17;
+}
+
+.route-delivery-restart {
+  color: var(--pixel-yellow);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
 .route-match-rule-list,
 .route-config-checklist {
   display: grid;
@@ -5062,13 +5143,33 @@ nav {
   border-bottom: 2px solid #1a2b20;
 }
 
+.route-config-checklist li:last-child {
+  border-bottom: 0;
+}
+
 .route-config-check {
   color: var(--pixel-muted);
   font-weight: 900;
 }
 
-.route-config-checklist .is-complete .route-config-check {
+.route-config-checklist .is-pass .route-config-check {
   color: var(--pixel-green-2);
+}
+
+.route-config-checklist .is-missing .route-config-check {
+  color: var(--pixel-red);
+}
+
+.route-config-checklist .is-warn .route-config-check {
+  color: var(--pixel-yellow);
+}
+
+.route-config-checklist .is-unknown .route-config-check {
+  color: #75a7ff;
+}
+
+.route-config-checklist .is-info .route-config-check {
+  color: var(--pixel-muted);
 }
 
 .route-config-checklist strong {
@@ -5077,10 +5178,76 @@ nav {
 }
 
 .route-config-checklist small {
+  max-width: 320px;
   color: var(--pixel-muted);
   font-size: 11px;
   font-weight: 900;
+  overflow-wrap: anywhere;
+  text-align: right;
   text-transform: uppercase;
+}
+
+.route-manual-permissions {
+  gap: 18px;
+}
+
+.route-manual-permissions-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.route-manual-permissions-heading h2 {
+  margin: 0;
+}
+
+.route-manual-permissions-heading span {
+  color: var(--pixel-yellow);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.route-manual-permissions-intro {
+  max-width: 86ch;
+  margin: 0;
+  color: var(--pixel-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.route-manual-permission-groups {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 24px;
+}
+
+.route-manual-permission-group {
+  min-width: 0;
+  padding-left: 14px;
+  border-left: 2px solid #493f17;
+}
+
+.route-manual-permission-group h3 {
+  margin: 0 0 8px;
+  color: var(--pixel-yellow);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+
+.route-manual-permission-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: 10px;
+  user-select: none;
+}
+
+@media (max-width: 980px) {
+  .route-manual-permission-groups {
+    grid-template-columns: 1fr;
+  }
 }
 
 .route-card::before,
@@ -5137,6 +5304,73 @@ nav {
   display: grid;
   min-height: 0;
   place-items: center;
+}
+
+.session-countdown {
+  display: grid;
+  width: min(440px, 88%);
+  justify-items: center;
+  gap: 20px;
+  color: var(--pixel-green-2);
+}
+
+.session-countdown-title {
+  --pixel-text-size: 3px;
+  filter: drop-shadow(3px 3px 0 var(--pixel-shadow));
+}
+
+.session-countdown-time {
+  --pixel-text-size: 8px;
+  color: var(--pixel-ink);
+  filter: drop-shadow(5px 5px 0 #12351b);
+}
+
+.session-countdown-units {
+  display: grid;
+  width: min(360px, 90%);
+  grid-template-columns: repeat(3, 1fr);
+  color: var(--pixel-muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-align: center;
+}
+
+.session-countdown-track {
+  display: grid;
+  width: min(400px, 96%);
+  grid-template-columns: repeat(12, 1fr);
+  gap: 5px;
+}
+
+.session-countdown-track span {
+  height: 5px;
+  background: var(--pixel-green);
+  box-shadow: 2px 2px 0 #0d3117;
+  animation: session-countdown-pulse 2.4s steps(1, end) infinite;
+}
+
+.session-countdown-track span:nth-child(3n + 2) {
+  animation-delay: -0.8s;
+}
+
+.session-countdown-track span:nth-child(3n) {
+  animation-delay: -1.6s;
+}
+
+.session-countdown.is-expired {
+  color: var(--pixel-red);
+}
+
+.session-countdown.is-expired .session-countdown-time,
+.session-countdown.is-expired .session-countdown-track span {
+  color: var(--pixel-red);
+  background: var(--pixel-red);
+}
+
+@keyframes session-countdown-pulse {
+  0%, 66% { opacity: 1; }
+  67%, 100% { opacity: 0.28; }
 }
 
 .config-qr-frame {
@@ -5468,6 +5702,10 @@ nav {
   font-weight: 800;
   caret-color: var(--pixel-green-2);
   transition: none;
+}
+
+.config-settings-panel .config-field select {
+  height: 44px;
 }
 
 .config-settings-panel .config-field input:hover,

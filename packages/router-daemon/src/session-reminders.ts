@@ -180,6 +180,10 @@ export class SessionReminderService {
     this.scheduleNext();
   }
 
+  getSessionExpiresAt(): number | undefined {
+    return this.activeSession?.expiresAt;
+  }
+
   stopSession(): void {
     this.generation += 1;
     this.activeSession = undefined;

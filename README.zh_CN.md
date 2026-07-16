@@ -97,6 +97,18 @@ flowchart TD
 
 ## 安装
 
+首次在 Mac 上运行，推荐使用仓库根目录的一键 onboarding：
+
+```bash
+./onboard.sh
+```
+
+它会检查并安装主应用所需的 Homebrew、Xcode Command Line Tools、Node.js、pnpm、
+Rust/Cargo 和项目依赖，然后自动运行 `pnpm desktop`。脚本不会检查 Codex、Claude
+等具体 route 的专属依赖或账号。完整说明见 [`onboard.md`](./onboard.md)。
+
+手动安装项目依赖：
+
 ```bash
 pnpm install
 pnpm check

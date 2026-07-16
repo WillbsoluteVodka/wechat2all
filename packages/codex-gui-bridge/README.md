@@ -76,6 +76,29 @@ pnpm --filter @wechat2all/codex-gui-bridge dev -- alarm 09:30
 pnpm --filter @wechat2all/codex-gui-bridge dev -- alarm off
 ```
 
+## Setup Check
+
+The package owns a read-only setup checker for the shared Codex prerequisites,
+app-server, and optional GUI automation permissions:
+
+```bash
+./packages/codex-gui-bridge/scripts/check.sh
+./packages/codex-gui-bridge/scripts/check.sh --probe
+```
+
+The passive check does not prompt for macOS permissions. `--probe` connects to
+Codex app-server, reads the task list, and sends read-only AppleScript events to
+System Events and ChatGPT/Codex. It does not paste text, simulate keys, or send
+a Codex prompt, but the first Automation request can display a macOS permission
+dialog.
+
+After router-daemon is listening and all routes are initialized, the router
+starts the `--probe` check asynchronously if the Codex route is installed and
+enabled. It streams output to the startup terminal with a
+`[codex-route/setup-check]` prefix. A failed check does not prevent WeConnect or
+other routes from starting. Set `WECHAT2ALL_CODEX_SETUP_CHECK=0` to disable this
+startup check temporarily.
+
 `autoopen 1` is the same persisted setting exposed in the WeChat `codex` route
 as `/autoopen 1`. `autoopen 0` disables it. The default is disabled.
 `bind` also persists the selected thread locally, so daemon/desktop restarts do

@@ -12,6 +12,7 @@ import { PixelIcon, PixelText, type PixelIconKind } from "./PixelArt";
 
 const PIXEL_REVEAL_MS = 2200;
 const STARTUP_PIXEL_SIZE = 7;
+const STARTUP_ICONS: PixelIconKind[] = ["wechat", "codex", "openai", "crab"];
 
 function clamp01(value: number) {
   return Math.min(1, Math.max(0, value));
@@ -156,7 +157,10 @@ export function PixelStartupGate(props: { onEnter: () => void; onDockStart: () =
   useEffect(() => {
     if (phase !== "idle") return undefined;
     const timer = window.setInterval(() => {
-      setIconKind((current) => (current === "wechat" ? "codex" : "wechat"));
+      setIconKind((current) => {
+        const currentIndex = STARTUP_ICONS.indexOf(current);
+        return STARTUP_ICONS[(currentIndex + 1) % STARTUP_ICONS.length];
+      });
     }, 1450);
 
     return () => window.clearInterval(timer);
@@ -208,4 +212,3 @@ export function PixelStartupGate(props: { onEnter: () => void; onDockStart: () =
     </div>
   );
 }
-

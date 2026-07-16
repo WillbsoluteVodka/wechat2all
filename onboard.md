@@ -2,6 +2,44 @@
 
 这份文档面向第一次在全新 Mac 上运行 wechat2all 的 collaborator。
 
+## 一键 Onboarding（推荐）
+
+在仓库根目录运行：
+
+```bash
+./onboard.sh
+```
+
+脚本会检查并准备启动大助手主应用所需的环境：
+
+- Xcode Command Line Tools；
+- Homebrew；
+- Git；
+- 项目兼容的 Node.js 和 pnpm；
+- Rust stable 与 Cargo；
+- 与 `pnpm-lock.yaml` 一致的项目依赖。
+
+缺失项会自动安装。Xcode Command Line Tools 由 macOS 系统安装器负责，因此首次安装时
+需要在系统弹窗中确认；完成后回到 Terminal 按 Return，脚本会继续。全部就绪后脚本
+直接运行 `pnpm desktop` 打开软件。
+
+它不会检查或配置 Codex Desktop、Anthropic/Claude、route workspace、route 账号或
+其他具体 route 的专属依赖。这些能力仍然按需单独配置。
+
+只检查环境而不安装或启动：
+
+```bash
+./onboard.sh --check
+```
+
+完成安装但暂不启动：
+
+```bash
+./onboard.sh --no-launch
+```
+
+下面的步骤保留为手动安装说明和故障排查参考。
+
 先说结论：**不是 clone/pull 后立即就能用**。一台全新的电脑需要先完成：
 
 1. 安装 Node.js、pnpm、Rust 和 Xcode Command Line Tools。
