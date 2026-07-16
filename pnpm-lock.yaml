@@ -41,8 +41,6 @@ importers:
 
   packages/codex-gui-bridge: {}
 
-  packages/codex-mcp: {}
-
   packages/desktop:
     dependencies:
       '@tauri-apps/api':
