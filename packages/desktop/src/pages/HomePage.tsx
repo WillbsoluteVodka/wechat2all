@@ -1,6 +1,11 @@
 import type { CSSProperties } from "react";
 
-import type { DashboardSnapshot, LlmHealthResponse, QrLoginResponse } from "../types";
+import type {
+  CodexSetupCheckResponse,
+  DashboardSnapshot,
+  LlmHealthResponse,
+  QrLoginResponse,
+} from "../types";
 import { TerminalLog } from "../ui/Common";
 import { displayRouteName } from "../ui/constants";
 import { HomeIntroCopy } from "../ui/HomeIntroCopy";
@@ -29,6 +34,7 @@ function HomeQrPanel(props: {
 export function HomePage(props: {
   data: DashboardSnapshot;
   llmHealth: LlmHealthResponse | null;
+  codexSetupCheck: CodexSetupCheckResponse | null;
   qr: QrLoginResponse | null;
   qrImage: string | null;
   qrError: string | null;
@@ -36,6 +42,9 @@ export function HomePage(props: {
 }) {
   const enabledRoutes = props.data.routes.filter((route) => route.enabled).length;
   const visibleRoutes = props.data.routes.slice(0, 4);
+  const codexConfigured =
+    props.codexSetupCheck?.check.status === "ready"
+    && !props.codexSetupCheck.check.items.some((item) => item.status === "warn");
 
   return (
     <main className="home-page">
@@ -91,10 +100,11 @@ export function HomePage(props: {
               16,
               Math.min(100, Math.abs(route.priority) / 10 + route.stats.messagesToday * 6),
             );
-            const llmConfigured =
-              route.connectorId === "main-assistant"
-              && props.llmHealth?.llm.status === "ready"
-              && props.llmHealth.llm.usable;
+            const routeConfigured =
+              (route.connectorId === "main-assistant"
+                && props.llmHealth?.llm.status === "ready"
+                && props.llmHealth.llm.usable)
+              || (route.connectorId === "codex-bridge" && codexConfigured);
             return (
               <button
                 className={route.enabled ? "signal-lane is-enabled" : "signal-lane"}
@@ -111,12 +121,12 @@ export function HomePage(props: {
                 <strong>{displayRouteName(route)}</strong>
                 <span>{route.connectorId}</span>
                 <span
-                  className={llmConfigured
+                  className={routeConfigured
                     ? "lane-config-status is-configured"
                     : "lane-config-status is-not-configured"}
                 >
                   <i aria-hidden="true" />
-                  {llmConfigured ? "CONFIGURED" : "NOT CONFIGURED"}
+                  {routeConfigured ? "CONFIGURED" : "NOT CONFIGURED"}
                 </span>
                 <small>{route.stats.messagesToday} HITS</small>
               </button>

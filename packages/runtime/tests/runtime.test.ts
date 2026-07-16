@@ -1277,7 +1277,7 @@ test("codex connector returns token usage for /token", async () => {
   assert.equal(actions[0].conversationId, "user-1");
   assert.match((actions[0] as { text: string }).text, /◆ Codex - Token/);
   assert.match((actions[0] as { text: string }).text, /- 5h: 97% 11:35 PM/);
-  assert.match((actions[0] as { text: string }).text, /- Weekly: 93% Jul 7/);
+  assert.doesNotMatch((actions[0] as { text: string }).text, /Weekly/);
   assert.match((actions[0] as { text: string }).text, /- 1 reset available/);
 });
 

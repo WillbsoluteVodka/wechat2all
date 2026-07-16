@@ -62,6 +62,7 @@ import {
   type SessionReminderEvent,
 } from "./session-reminders.js";
 import { createTraceLogger } from "./trace.js";
+import { createUpochiConnector } from "./upochi.js";
 
 let routerAddress = readRouterAddress();
 let HOST = routerAddress.host;
@@ -229,6 +230,7 @@ async function buildRuntime(profile: RuntimeProfileConfig): Promise<WeChatRuntim
           );
         },
       }),
+      createUpochiConnector(),
       createMainAssistantConnector({
         id: "main-assistant",
         llm,

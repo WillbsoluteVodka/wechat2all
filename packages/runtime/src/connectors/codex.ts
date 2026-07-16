@@ -963,14 +963,11 @@ async function resolveBindTarget(
 function formatTokenUsageForWechat(usage: CodexTokenUsage): string {
   const primary = usage.windows.find((window) => window.label === "5h") ??
     usage.windows[0] ?? null;
-  const secondary = usage.windows.find((window) => window.label === "Weekly") ??
-    usage.windows[1] ?? null;
 
   return codexPanel([
     "codex / token",
     "",
     `- ${primary?.label ?? "5h"}: ${primary?.remainingText ?? "unknown"} ${primary?.resetText ?? "unknown"}`,
-    `- ${secondary?.label ?? "Weekly"}: ${secondary?.remainingText ?? "unknown"} ${secondary?.resetText ?? "unknown"}`,
     `- ${usage.resetCreditsText ?? "reset credits unavailable"}`,
   ]);
 }

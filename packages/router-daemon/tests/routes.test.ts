@@ -6,12 +6,13 @@ import {
   defaultRoutes,
 } from "../src/routes.js";
 
-test("default routes expose isolated Codex and Claude apps before the main fallback", () => {
+test("default routes expose isolated built-in apps before the main fallback", () => {
   const routes = defaultRoutes("profile-1");
 
   assert.deepEqual(routes.map((route) => route.id), [
     "codex",
     "claude",
+    "upochi",
     "main-assistant-default",
   ]);
   const claude = routes.find((route) => route.id === "claude");
@@ -20,6 +21,13 @@ test("default routes expose isolated Codex and Claude apps before the main fallb
   assert.equal(claude?.terminal, true);
   assert.equal(claude?.metadata?.builtIn, true);
   assert.deepEqual(claude?.match?.textCommands, []);
+  const upochi = routes.find((route) => route.id === "upochi");
+  assert.equal(upochi?.profileId, "profile-1");
+  assert.equal(upochi?.connectorId, "upochi-route");
+  assert.equal(upochi?.metadata?.assistantName, "Upochi");
+  assert.equal(upochi?.metadata?.systemPrompt, "");
+  assert.equal(upochi?.metadata?.builtIn, true);
+  assert.deepEqual(upochi?.match?.textCommands, []);
   assert.equal(routes.at(-1)?.connectorId, "main-assistant");
 });
 
@@ -42,4 +50,3 @@ test("a saved user rename applies to the Claude route without replacing its conn
   assert.equal(renamed.metadata?.assistantName, "我的 Claude");
   assert.equal(renamed.metadata?.renamedBy, "user");
 });
-

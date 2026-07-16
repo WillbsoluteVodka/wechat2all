@@ -74,11 +74,16 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([getDashboardSnapshot(), getLlmHealth().catch(() => null)])
-      .then(([data, health]) => {
+    Promise.all([
+      getDashboardSnapshot(),
+      getLlmHealth().catch(() => null),
+      getCodexSetupCheck().catch(() => null),
+    ])
+      .then(([data, health, codexCheck]) => {
         if (!cancelled) {
           setSnapshot(data);
           setLlmHealth(health);
+          setCodexSetupCheck(codexCheck);
         }
       })
       .catch((err: unknown) => {
@@ -130,13 +135,18 @@ export function App() {
   }, [activePage, startupOverlayVisible]);
 
   useEffect(() => {
-    if (startupOverlayVisible || activePage !== "routes") return undefined;
+    if (
+      startupOverlayVisible
+      || (activePage !== "home" && activePage !== "routes")
+    ) return undefined;
     let cancelled = false;
     const refreshCachedCheck = async () => {
       try {
         const [result, config] = await Promise.all([
           getCodexSetupCheck(),
-          getLocalConfig().catch(() => null),
+          activePage === "routes"
+            ? getLocalConfig().catch(() => null)
+            : Promise.resolve(null),
         ]);
         if (!cancelled) {
           setCodexSetupCheck(result);
@@ -322,6 +332,7 @@ export function App() {
             <HomePage
               data={snapshot}
               llmHealth={llmHealth}
+              codexSetupCheck={codexSetupCheck}
               qr={qr}
               qrImage={qrImage}
               qrError={qrError}
