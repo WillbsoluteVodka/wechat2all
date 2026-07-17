@@ -10,6 +10,11 @@ import type {
   LlmHealthResponse,
   LoginStatus,
   QrLoginResponse,
+  UpochiConfigPatch,
+  UpochiConfigResponse,
+  UpochiConfigSnapshot,
+  UpochiConfigUpdateResponse,
+  UpochiHealthResponse,
 } from "./types";
 
 declare global {
@@ -61,6 +66,16 @@ const fallbackSnapshot: DashboardSnapshot = {
       priority: 850,
       connectorId: "claude-route",
       matchText: [],
+      stats: { messagesToday: 0, lastHitAt: null },
+    },
+    {
+      id: "upochi",
+      name: "Upochi",
+      description: "连接本机 Upochi Todo。进入 route 后可使用 /check、/add 标题、/remove id。",
+      enabled: true,
+      priority: 800,
+      connectorId: "upochi-route",
+      matchText: ["/check", "/add", "/remove"],
       stats: { messagesToday: 0, lastHitAt: null },
     },
     {
@@ -172,6 +187,18 @@ let fallbackLocalConfig: LocalConfigSnapshot = {
     timeoutMs: 10 * 60_000,
     allowCliAuth: false,
     executable: null,
+  },
+};
+
+let fallbackUpochiConfig: UpochiConfigSnapshot = {
+  projectPath: "Auto-discovered Upochi project",
+  envPath: "Auto-discovered Upochi project/.env",
+  envExists: false,
+  restartRequired: false,
+  llm: {
+    endpoint: null,
+    model: null,
+    apiKey: { configured: false, masked: null },
   },
 };
 
@@ -376,4 +403,85 @@ export async function patchLocalConfig(
     };
   }
   return invoke<LocalConfigUpdateResponse>("patch_local_config", { payload });
+}
+
+const UPOCHI_ENDPOINTS = {
+  "deepseek-chat": "https://api.deepseek.com/v1",
+  "gpt-4.1-mini": "https://api.openai.com/v1",
+} as const;
+
+function upochiConfigError(error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("404") && message.includes("/upochi/config")) {
+    return new Error("Router daemon 需要重启以加载 Upochi 配置接口。请重启 WeConnect。");
+  }
+  return error instanceof Error ? error : new Error(message);
+}
+
+export async function getUpochiConfig(): Promise<UpochiConfigSnapshot> {
+  if (!isTauri()) return fallbackUpochiConfig;
+  try {
+    const response = await invoke<UpochiConfigResponse>("get_upochi_config");
+    return response.config;
+  } catch (error) {
+    throw upochiConfigError(error);
+  }
+}
+
+export async function getUpochiHealth(): Promise<UpochiHealthResponse> {
+  if (!isTauri()) {
+    return {
+      ok: true,
+      schemaVersion: 1,
+      upochi: {
+        status: "not-running",
+        running: false,
+        baseUrl: "http://127.0.0.1:8765",
+        checkedAt: new Date().toISOString(),
+        latencyMs: 0,
+        error: "Browser preview cannot probe the local Upochi process.",
+      },
+    };
+  }
+  try {
+    return await invoke<UpochiHealthResponse>("get_upochi_health");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("404") && message.includes("/upochi/health")) {
+      throw new Error("Router daemon 需要重启以加载 Upochi 状态检查。请重启 WeConnect。");
+    }
+    throw error;
+  }
+}
+
+export async function patchUpochiConfig(
+  payload: UpochiConfigPatch,
+): Promise<UpochiConfigUpdateResponse> {
+  if (!isTauri()) {
+    const model = payload.model ?? fallbackUpochiConfig.llm.model;
+    fallbackUpochiConfig = {
+      ...fallbackUpochiConfig,
+      envExists: true,
+      restartRequired: true,
+      llm: {
+        model,
+        endpoint: payload.model
+          ? UPOCHI_ENDPOINTS[payload.model]
+          : fallbackUpochiConfig.llm.endpoint,
+        apiKey: previewSecretStatus(payload.apiKey, fallbackUpochiConfig.llm.apiKey),
+      },
+    };
+    return {
+      ok: true,
+      schemaVersion: 1,
+      changed: true,
+      changedFields: ["browser-preview"],
+      config: fallbackUpochiConfig,
+    };
+  }
+  try {
+    return await invoke<UpochiConfigUpdateResponse>("patch_upochi_config", { payload });
+  } catch (error) {
+    throw upochiConfigError(error);
+  }
 }

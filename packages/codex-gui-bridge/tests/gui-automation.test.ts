@@ -45,6 +45,12 @@ test("GUI automation submits pasted prompts with Return after a send delay", asy
   assert.equal(args[0], "-e");
   assert.match(args[1], /keystroke "v" using command down/);
   assert.match(args[1], /key code 36/);
+  assert.match(args[1], /UI elements enabled is false/);
+  assert.match(args[1], /count of windows/);
+  assert.ok(
+    args[1].indexOf("count of windows") < args[1].indexOf("set the clipboard to promptText"),
+  );
+  assert.match(args[1], /on error errorMessage number errorNumber/);
   assert.doesNotMatch(args[1], /click at/);
   assert.equal(args[2], "hello from WeChat");
   assert.equal(args[3], "Codex");

@@ -148,6 +148,49 @@ export interface LocalConfigUpdateResponse extends LocalConfigResponse {
   changedFields: string[];
 }
 
+export type UpochiLlmModel = "deepseek-chat" | "gpt-4.1-mini";
+
+export interface UpochiConfigSnapshot {
+  projectPath: string;
+  envPath: string;
+  envExists: boolean;
+  restartRequired: boolean;
+  llm: {
+    endpoint: string | null;
+    model: string | null;
+    apiKey: SecretConfigStatus;
+  };
+}
+
+export interface UpochiConfigPatch {
+  model?: UpochiLlmModel;
+  apiKey?: string | null;
+}
+
+export interface UpochiConfigResponse {
+  ok: true;
+  schemaVersion: 1;
+  config: UpochiConfigSnapshot;
+}
+
+export interface UpochiConfigUpdateResponse extends UpochiConfigResponse {
+  changed: boolean;
+  changedFields: string[];
+}
+
+export interface UpochiHealthResponse {
+  ok: true;
+  schemaVersion: 1;
+  upochi: {
+    status: "ready" | "not-running";
+    running: boolean;
+    baseUrl: string;
+    checkedAt: string;
+    latencyMs: number;
+    error: string | null;
+  };
+}
+
 export interface DashboardSnapshot {
   profile: ProfileStatus;
   routes: RouteSummary[];

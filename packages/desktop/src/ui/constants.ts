@@ -69,6 +69,12 @@ const CODEX_ROUTE_RULES: RouteRuleDetail[] = [
   { rule: "/cd ..", description: "回到主 Router" },
 ];
 
+const UPOCHI_ROUTE_RULES: RouteRuleDetail[] = [
+  { rule: "/check", description: "查看 Upochi 中的所有 Todo" },
+  { rule: "/add <标题>", description: "在 Upochi 中新增 Todo" },
+  { rule: "/remove <id>", description: "按 id 删除 Upochi Todo" },
+];
+
 function describeMatchRule(rule: string) {
   const descriptions: Record<string, string> = {
     fallback: "Handles messages that do not match another route.",
@@ -90,6 +96,9 @@ export function routeRuleDetails(route: RouteSummary): RouteRuleDetail[] {
   }
   if (route.id === "codex" || route.connectorId.includes("codex")) {
     return CODEX_ROUTE_RULES;
+  }
+  if (route.id === "upochi" || route.connectorId.includes("upochi")) {
+    return UPOCHI_ROUTE_RULES;
   }
   return route.matchText.map((rule) => ({ rule, description: describeMatchRule(rule) }));
 }

@@ -62,7 +62,12 @@ import {
   type SessionReminderEvent,
 } from "./session-reminders.js";
 import { createTraceLogger } from "./trace.js";
-import { createUpochiConnector } from "./upochi.js";
+import { checkUpochiHealth, createUpochiConnector } from "./upochi.js";
+import {
+  UpochiConfigStore,
+  UpochiConfigValidationError,
+  UpochiProjectNotFoundError,
+} from "./upochi-config.js";
 
 let routerAddress = readRouterAddress();
 let HOST = routerAddress.host;
@@ -73,6 +78,7 @@ const stateStore = new FileRuntimeStateStore({ baseDir: BASE_STATE_DIR });
 let codexBridge: CodexBridgeClient | undefined;
 let server: http.Server | undefined;
 let localConfig: LocalConfigStore | undefined;
+let upochiConfig: UpochiConfigStore | undefined;
 let llmHealth: LlmHealthService | undefined;
 let sessionReminders: SessionReminderService | undefined;
 
@@ -660,6 +666,36 @@ async function handleRequest(
       sendJson(res, 200, { ok: true, schemaVersion: 1, ...result });
       return;
     }
+    if (req.method === "GET" && url.pathname === "/upochi/config") {
+      if (!upochiConfig) throw new Error("Upochi config store is not initialized.");
+      sendJson(res, 200, {
+        ok: true,
+        schemaVersion: 1,
+        config: await upochiConfig.snapshot(),
+      });
+      return;
+    }
+    if (req.method === "PATCH" && url.pathname === "/upochi/config") {
+      if (!upochiConfig) throw new Error("Upochi config store is not initialized.");
+      const result = await upochiConfig.update(await readJson(req));
+      if (result.changed) {
+        trace(
+          "info",
+          "upochi-config",
+          `Updated ${result.changedFields.join(", ")} in ${result.config.envPath}`,
+        );
+      }
+      sendJson(res, 200, { ok: true, schemaVersion: 1, ...result });
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/upochi/health") {
+      sendJson(res, 200, {
+        ok: true,
+        schemaVersion: 1,
+        upochi: await checkUpochiHealth(),
+      });
+      return;
+    }
     if (req.method === "GET" && url.pathname === "/llm/health") {
       sendJson(res, 200, llmHealthResponse(requireLlmHealth().snapshot()));
       return;
@@ -750,7 +786,11 @@ async function handleRequest(
       ? error.status
       : error instanceof LocalConfigValidationError
         ? 400
-        : 500;
+        : error instanceof UpochiConfigValidationError
+          ? 400
+          : error instanceof UpochiProjectNotFoundError
+            ? 404
+            : 500;
     trace(status >= 500 ? "error" : "warn", "http", message);
     sendJson(res, status, { error: message });
   }
@@ -760,6 +800,7 @@ async function main(): Promise<void> {
   loadLocalEnv(trace);
   refreshRuntimeSettings();
   localConfig = new LocalConfigStore({ filePath: resolveLocalEnvPath() });
+  upochiConfig = new UpochiConfigStore();
   llmHealth = new LlmHealthService({
     timeoutMs: envNumber("WECHAT2ALL_LLM_HEALTH_TIMEOUT_MS"),
     onResult(result) {

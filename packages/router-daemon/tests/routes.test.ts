@@ -28,7 +28,7 @@ test("default routes expose isolated built-in apps before the main fallback", ()
   assert.equal(upochi?.metadata?.systemPrompt, "");
   assert.match(upochi?.metadata?.description ?? "", /\/check/);
   assert.equal(upochi?.metadata?.builtIn, true);
-  assert.deepEqual(upochi?.match?.textCommands, []);
+  assert.deepEqual(upochi?.match?.textCommands, ["/check", "/add", "/remove"]);
   assert.equal(routes.at(-1)?.connectorId, "main-assistant");
 });
 

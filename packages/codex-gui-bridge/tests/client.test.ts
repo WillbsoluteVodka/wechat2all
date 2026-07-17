@@ -38,6 +38,7 @@ class FakeTransport implements CodexAppServerTransport {
   readonly appServerTurnsByThread = new Map<string, Array<Record<string, unknown>>>();
   threadStatus: { type: string; activeFlags?: unknown[] } = { type: "idle" };
   activeTurn?: Record<string, unknown>;
+  turnStartError?: Error;
 
   async request<T>(method: string, params?: unknown): Promise<T> {
     this.calls.push({ method, params });
@@ -94,6 +95,7 @@ class FakeTransport implements CodexAppServerTransport {
           },
         } as T;
       case "turn/start":
+        if (this.turnStartError) throw this.turnStartError;
         return { turn: { id: "turn-1" } } as T;
       case "turn/steer":
         return { turnId: (params as { expectedTurnId: string }).expectedTurnId } as T;
@@ -1410,6 +1412,120 @@ test("gui-automation mode injects into Codex GUI and polls bound thread", async 
   assert.equal(
     transport.calls.some((call) => call.method === "turn/start"),
     false,
+  );
+});
+
+test("gui-automation falls back to app-server when the GUI is unavailable", async () => {
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    desktopIpcTransport: {
+      async request<T>(): Promise<T> {
+        throw new Error("unexpected desktop IPC request");
+      },
+    },
+    deliveryMode: "gui-automation",
+    guiPollIntervalMs: 1,
+    guiFallbackReconcileMs: 2,
+    guiPromptInjector: async () => {
+      throw new Error("Codex has no accessible window while the display is asleep");
+    },
+  });
+
+  await bridge.bindThread("thread-1");
+  const pending = bridge.sendPrompt({
+    id: "wechat-screen-asleep",
+    text: "continue while the display is asleep",
+  });
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  const startCall = transport.calls.find((call) => call.method === "turn/start");
+  assert.deepEqual(startCall?.params, {
+    threadId: "thread-1",
+    clientUserMessageId: "wechat-screen-asleep",
+    input: [{
+      type: "text",
+      text: "continue while the display is asleep",
+      text_elements: [],
+    }],
+  });
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      items: [{
+        type: "agentMessage",
+        id: "fallback-agent-1",
+        text: "App-server fallback completed.",
+        phase: "final_answer",
+      }],
+    },
+  });
+
+  const result = await pending;
+  assert.equal(result.threadId, "thread-1");
+  assert.equal(result.finalText, "App-server fallback completed.");
+  assert.equal(
+    transport.calls.filter((call) => call.method === "turn/start").length,
+    1,
+  );
+  const status = await bridge.getStatus();
+  assert.match(status.summary ?? "", /Last delivery: app-server-fallback/);
+});
+
+test("gui-automation suppresses fallback when a turn appeared before the injector error", async () => {
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    deliveryMode: "gui-automation",
+    guiPollIntervalMs: 1,
+    guiFallbackReconcileMs: 10,
+    guiPromptInjector: async (text, context) => {
+      transport.guiInjectedTextByThread.set(context?.threadId ?? "frontmost-thread", text);
+      throw new Error("clipboard restoration failed after Return was sent");
+    },
+  });
+
+  await bridge.bindThread("thread-1");
+  const result = await bridge.sendPrompt({
+    id: "wechat-gui-reconciled",
+    text: "send exactly once",
+  });
+
+  assert.equal(result.threadId, "thread-1");
+  assert.equal(result.turnId, "gui-turn-1");
+  assert.equal(result.finalText, "GUI final answer.");
+  assert.equal(
+    transport.calls.some((call) => call.method === "turn/start"),
+    false,
+  );
+});
+
+test("gui-automation reports both errors when app-server fallback also fails", async () => {
+  const transport = new FakeTransport();
+  transport.turnStartError = new Error("app-server is unavailable");
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    deliveryMode: "gui-automation",
+    guiPollIntervalMs: 1,
+    guiFallbackReconcileMs: 1,
+    guiPromptInjector: async () => {
+      throw new Error("display has no accessible Codex window");
+    },
+  });
+
+  await bridge.bindThread("thread-1");
+  await assert.rejects(
+    bridge.sendPrompt({ text: "try both delivery paths" }),
+    (error: Error) => {
+      assert.match(error.message, /GUI automation failed.*no accessible Codex window/);
+      assert.match(error.message, /App-server fallback also failed.*app-server is unavailable/);
+      return true;
+    },
   );
 });
 

@@ -25,34 +25,51 @@ on run argv
   set threadOpenDelaySeconds to (item 6 of argv) as number
   set sendDelaySeconds to (item 7 of argv) as number
   set oldClipboard to missing value
+  set clipboardChanged to false
 
   try
-    set oldClipboard to the clipboard as text
+    if targetThreadId is not "" then
+      open location ("codex://threads/" & targetThreadId)
+      delay threadOpenDelaySeconds
+    end if
+
+    tell application appName to activate
+    delay activateDelaySeconds
+
+    tell application "System Events"
+      if UI elements enabled is false then error "Accessibility is not available for GUI automation"
+      if not (exists process processName) then error processName & " is not running"
+      tell process processName
+        if (count of windows) is 0 then error processName & " has no accessible window"
+        set frontmost to true
+        delay 0.2
+      end tell
+    end tell
+
+    try
+      set oldClipboard to the clipboard as text
+    end try
+    set the clipboard to promptText
+    set clipboardChanged to true
+
+    tell application "System Events"
+      tell process processName
+        keystroke "v" using command down
+        delay sendDelaySeconds
+        key code 36
+      end tell
+    end tell
+  on error errorMessage number errorNumber
+    if clipboardChanged and oldClipboard is not missing value then
+      try
+        set the clipboard to oldClipboard
+      end try
+    end if
+    error errorMessage number errorNumber
   end try
 
-  set the clipboard to promptText
-
-  if targetThreadId is not "" then
-    open location ("codex://threads/" & targetThreadId)
-    delay threadOpenDelaySeconds
-  end if
-
-  tell application appName to activate
-  delay activateDelaySeconds
-
-  tell application "System Events"
-    if not (exists process processName) then error processName & " is not running"
-    tell process processName
-      set frontmost to true
-      delay 0.2
-      keystroke "v" using command down
-      delay sendDelaySeconds
-      key code 36
-    end tell
-  end tell
-
   delay 0.2
-  if oldClipboard is not missing value then
+  if clipboardChanged and oldClipboard is not missing value then
     set the clipboard to oldClipboard
   end if
 end run

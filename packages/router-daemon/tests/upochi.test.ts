@@ -10,6 +10,7 @@ import {
 import type { WeChatClient } from "wechat2all";
 
 import {
+  checkUpochiHealth,
   createUpochiConnector,
   createUpochiRouteDefinition,
 } from "../src/upochi.js";
@@ -51,6 +52,53 @@ function jsonResponse(payload: unknown, status = 200): Response {
     headers: { "Content-Type": "application/json" },
   });
 }
+
+test("Upochi route exposes check, add, and remove match rules", () => {
+  assert.deepEqual(createUpochiRouteDefinition("default").match?.textCommands, [
+    "/check",
+    "/add",
+    "/remove",
+  ]);
+});
+
+test("Upochi health probe verifies the local Upochi service", async () => {
+  const requestedUrls: string[] = [];
+  const health = await checkUpochiHealth({
+    baseUrl: "http://127.0.0.1:8765",
+    fetch: (async (input) => {
+      requestedUrls.push(String(input));
+      return jsonResponse({ status: "ok", service: "upochi-local-api", version: 1 });
+    }) as typeof fetch,
+  });
+
+  assert.deepEqual(requestedUrls, ["http://127.0.0.1:8765/health"]);
+  assert.equal(health.status, "ready");
+  assert.equal(health.running, true);
+  assert.equal(health.baseUrl, "http://127.0.0.1:8765");
+  assert.equal(health.error, null);
+});
+
+test("Upochi health probe rejects another service on the configured port", async () => {
+  const health = await checkUpochiHealth({
+    fetch: (async () => jsonResponse({ status: "ok", service: "something-else" })) as typeof fetch,
+  });
+
+  assert.equal(health.status, "not-running");
+  assert.equal(health.running, false);
+  assert.match(health.error ?? "", /不是 Upochi API/);
+});
+
+test("Upochi health probe reports a stopped local app without throwing", async () => {
+  const health = await checkUpochiHealth({
+    fetch: (async () => {
+      throw new TypeError("fetch failed");
+    }) as typeof fetch,
+  });
+
+  assert.equal(health.status, "not-running");
+  assert.equal(health.running, false);
+  assert.match(health.error ?? "", /fetch failed/);
+});
 
 test("Upochi route ignores ordinary messages", async () => {
   const routes = new RuntimeRouteRegistry({

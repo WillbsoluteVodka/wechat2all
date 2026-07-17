@@ -268,6 +268,36 @@ async fn get_local_config() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
+async fn get_upochi_config() -> Result<serde_json::Value, String> {
+    let daemon_url = trim_trailing_slash(&env_or_default(
+        "WECHAT2ALL_ROUTER_DAEMON_URL",
+        DEFAULT_DAEMON_URL,
+    ));
+    let url = format!("{daemon_url}/upochi/config");
+    let response = daemon_http_client()?
+        .get(&url)
+        .send()
+        .await
+        .map_err(|err| format!("Router daemon is not reachable at {daemon_url}: {err}"))?;
+    daemon_json_response("Router daemon Upochi config request", response).await
+}
+
+#[tauri::command]
+async fn get_upochi_health() -> Result<serde_json::Value, String> {
+    let daemon_url = trim_trailing_slash(&env_or_default(
+        "WECHAT2ALL_ROUTER_DAEMON_URL",
+        DEFAULT_DAEMON_URL,
+    ));
+    let url = format!("{daemon_url}/upochi/health");
+    let response = daemon_http_client()?
+        .get(&url)
+        .send()
+        .await
+        .map_err(|err| format!("Router daemon is not reachable at {daemon_url}: {err}"))?;
+    daemon_json_response("Router daemon Upochi health request", response).await
+}
+
+#[tauri::command]
 async fn get_llm_health() -> Result<serde_json::Value, String> {
     let daemon_url = trim_trailing_slash(&env_or_default(
         "WECHAT2ALL_ROUTER_DAEMON_URL",
@@ -327,6 +357,22 @@ async fn patch_local_config(payload: serde_json::Value) -> Result<serde_json::Va
         .await
         .map_err(|err| format!("Router daemon is not reachable at {daemon_url}: {err}"))?;
     daemon_json_response("Router daemon config update", response).await
+}
+
+#[tauri::command]
+async fn patch_upochi_config(payload: serde_json::Value) -> Result<serde_json::Value, String> {
+    let daemon_url = trim_trailing_slash(&env_or_default(
+        "WECHAT2ALL_ROUTER_DAEMON_URL",
+        DEFAULT_DAEMON_URL,
+    ));
+    let url = format!("{daemon_url}/upochi/config");
+    let response = daemon_http_client()?
+        .patch(&url)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|err| format!("Router daemon is not reachable at {daemon_url}: {err}"))?;
+    daemon_json_response("Router daemon Upochi config update", response).await
 }
 
 #[tauri::command]
@@ -416,6 +462,9 @@ fn main() {
             refresh_codex_setup_check,
             get_local_config,
             patch_local_config,
+            get_upochi_config,
+            get_upochi_health,
+            patch_upochi_config,
             request_qr_login,
             get_login_status,
             unlink_wechat_session

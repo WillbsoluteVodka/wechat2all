@@ -5368,6 +5368,148 @@ nav {
   user-select: none;
 }
 
+.upochi-llm-settings {
+  gap: 18px;
+}
+
+.upochi-llm-heading > div {
+  display: grid;
+  gap: 7px;
+}
+
+.upochi-llm-heading p {
+  margin: 0;
+  color: var(--pixel-muted);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.upochi-llm-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.upochi-config-field,
+.upochi-endpoint-field {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.upochi-config-field > span,
+.upochi-config-field-heading > span,
+.upochi-endpoint-field > span {
+  color: var(--pixel-green-2);
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+}
+
+.upochi-config-field-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.upochi-config-field-heading small {
+  overflow: hidden;
+  color: var(--pixel-muted);
+  font-size: 13px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upochi-config-field input,
+.upochi-config-field select,
+.upochi-endpoint-field code {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 46px;
+  padding: 11px 13px;
+  border: 2px solid #27382c;
+  border-radius: 0;
+  color: var(--pixel-ink);
+  background: #020805;
+  box-shadow: 4px 4px 0 #0b1c10;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.upochi-config-field input:focus,
+.upochi-config-field select:focus {
+  border-color: var(--pixel-green-2);
+  outline: 0;
+  box-shadow:
+    4px 4px 0 #0b1c10,
+    inset 4px 0 0 var(--pixel-green);
+}
+
+.upochi-secret-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.upochi-clear-key {
+  min-width: 76px;
+  color: var(--pixel-green-2);
+  font-size: 13px;
+}
+
+.upochi-endpoint-field {
+  grid-column: 1 / -1;
+}
+
+.upochi-endpoint-field code {
+  display: flex;
+  align-items: center;
+  color: var(--pixel-muted);
+  overflow-wrap: anywhere;
+}
+
+.upochi-config-state {
+  display: grid;
+  min-height: 84px;
+  place-items: center;
+  padding: 16px;
+  border: 2px solid #27382c;
+  color: var(--pixel-muted);
+  background: #020805;
+  font-size: 15px;
+  font-weight: 900;
+  text-align: center;
+}
+
+.upochi-config-state.is-error,
+.upochi-config-footer strong.is-error {
+  color: var(--pixel-red);
+}
+
+.upochi-config-footer > div {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.upochi-config-footer strong {
+  color: var(--pixel-green-2);
+  font-size: 13px;
+  letter-spacing: 0.05em;
+}
+
+.upochi-config-footer small {
+  overflow: hidden;
+  color: var(--pixel-muted);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 980px) {
   .routes-weconnect-stage {
     grid-template-columns: 1fr;
@@ -5382,6 +5524,14 @@ nav {
 
   .route-manual-permission-groups {
     grid-template-columns: 1fr;
+  }
+
+  .upochi-llm-form {
+    grid-template-columns: 1fr;
+  }
+
+  .upochi-endpoint-field {
+    grid-column: auto;
   }
 }
 

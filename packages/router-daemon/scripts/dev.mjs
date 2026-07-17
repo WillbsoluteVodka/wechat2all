@@ -97,7 +97,7 @@ async function probeDaemon(baseUrl) {
 }
 
 function runDaemon() {
-  const child = spawn("tsx", ["src/index.ts"], {
+  const child = spawn("tsx", ["watch", "--clear-screen=false", "src/index.ts"], {
     cwd: process.cwd(),
     stdio: "inherit",
     env: process.env,

@@ -6,6 +6,8 @@ import type {
 
 const DEFAULT_UPOCHI_API_PORT = "8765";
 const UPOCHI_REQUEST_TIMEOUT_MS = 5_000;
+const UPOCHI_HEALTH_TIMEOUT_MS = 1_500;
+const UPOCHI_ADD_REQUEST_TIMEOUT_MS = 30_000;
 const UPOCHI_TODO_SOURCE = "wechat2all-upochi-route";
 
 interface UpochiTodo {
@@ -15,10 +17,23 @@ interface UpochiTodo {
   completed?: boolean;
 }
 
-interface UpochiConnectorOptions {
+export interface UpochiClientOptions {
   baseUrl?: string;
   fetch?: typeof fetch;
   env?: NodeJS.ProcessEnv;
+}
+
+export interface UpochiHealthCheckOptions extends UpochiClientOptions {
+  timeoutMs?: number;
+}
+
+export interface UpochiHealthSnapshot {
+  status: "ready" | "not-running";
+  running: boolean;
+  baseUrl: string;
+  checkedAt: string;
+  latencyMs: number;
+  error: string | null;
 }
 
 class UpochiApiError extends Error {
@@ -31,7 +46,7 @@ class UpochiApiError extends Error {
   }
 }
 
-function resolveUpochiBaseUrl(opts: UpochiConnectorOptions): string {
+function resolveUpochiBaseUrl(opts: UpochiClientOptions): string {
   if (opts.baseUrl?.trim()) return opts.baseUrl.trim().replace(/\/+$/, "");
   const env = opts.env ?? process.env;
   const port = env.UPOCHI_API_PORT?.trim()
@@ -135,7 +150,7 @@ export function createUpochiRouteDefinition(profileId: string): RuntimeRoute {
     terminal: true,
     match: {
       kind: "text",
-      textCommands: [],
+      textCommands: ["/check", "/add", "/remove"],
     },
     metadata: {
       assistantName: "Upochi",
@@ -147,20 +162,66 @@ export function createUpochiRouteDefinition(profileId: string): RuntimeRoute {
   };
 }
 
+export async function checkUpochiHealth(
+  opts: UpochiHealthCheckOptions = {},
+): Promise<UpochiHealthSnapshot> {
+  const baseUrl = resolveUpochiBaseUrl(opts);
+  const fetchImpl = opts.fetch ?? fetch;
+  const startedAt = Date.now();
+  try {
+    const response = await fetchImpl(`${baseUrl}/health`, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(opts.timeoutMs ?? UPOCHI_HEALTH_TIMEOUT_MS),
+    });
+    const payload = await responseJson(response);
+    if (!response.ok) {
+      throw new UpochiApiError(apiErrorMessage(payload, response), response.status);
+    }
+    if (
+      !isRecord(payload)
+      || payload.status !== "ok"
+      || payload.service !== "upochi-local-api"
+    ) {
+      throw new UpochiApiError("本地端口响应的不是 Upochi API。");
+    }
+    return {
+      status: "ready",
+      running: true,
+      baseUrl,
+      checkedAt: new Date().toISOString(),
+      latencyMs: Date.now() - startedAt,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      status: "not-running",
+      running: false,
+      baseUrl,
+      checkedAt: new Date().toISOString(),
+      latencyMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export function createUpochiConnector(
-  opts: UpochiConnectorOptions = {},
+  opts: UpochiClientOptions = {},
 ): RuntimeConnector {
   const baseUrl = resolveUpochiBaseUrl(opts);
   const fetchImpl = opts.fetch ?? fetch;
 
-  async function request(path: string, init?: RequestInit): Promise<unknown> {
+  async function request(
+    path: string,
+    init?: RequestInit,
+    timeoutMs = UPOCHI_REQUEST_TIMEOUT_MS,
+  ): Promise<unknown> {
     const response = await fetchImpl(`${baseUrl}${path}`, {
       ...init,
       headers: {
         Accept: "application/json",
         ...init?.headers,
       },
-      signal: init?.signal ?? AbortSignal.timeout(UPOCHI_REQUEST_TIMEOUT_MS),
+      signal: init?.signal ?? AbortSignal.timeout(timeoutMs),
     });
     const payload = await responseJson(response);
     if (!response.ok) {
@@ -216,7 +277,7 @@ export function createUpochiConnector(
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ title, source: UPOCHI_TODO_SOURCE }),
-          });
+          }, UPOCHI_ADD_REQUEST_TIMEOUT_MS);
           const todo = isRecord(payload) ? parseTodo(payload.todo) : null;
           if (!todo) throw new UpochiApiError("Upochi 返回的新 Todo 格式不正确。");
           return sendText(message, ["已新增 Todo：", ...formatTodoLine(todo)].join("\n"));

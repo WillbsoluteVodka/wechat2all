@@ -137,6 +137,7 @@ export interface CodexGuiBridgeOptions {
   compactionGraceMs?: number;
   guiPollIntervalMs?: number;
   guiThreadOpenDelayMs?: number;
+  guiFallbackReconcileMs?: number;
   listLimit?: number;
   clientName?: string;
   clientTitle?: string;

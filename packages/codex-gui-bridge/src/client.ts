@@ -167,6 +167,20 @@ interface AppServerRateLimitsResponse {
   rateLimitResetCredits?: AppServerRateLimitResetCredits | null;
 }
 
+interface PromptDeliveryArgs {
+  id: string;
+  threadId: string;
+  text: string;
+  attachments: CodexGuiPromptAttachment[];
+  replyMode: CodexGuiReplyMode;
+}
+
+type ActualDeliveryMode =
+  | "app-server"
+  | "desktop-ipc"
+  | "gui-automation"
+  | "app-server-fallback";
+
 export interface CodexGuiBridgeEnvOptions {
   env?: NodeJS.ProcessEnv;
   enableAlarmScheduler?: boolean;
@@ -298,6 +312,7 @@ export class CodexGuiAppServerBridge {
   private readonly turnTimeoutMs: number;
   private readonly guiPollIntervalMs: number;
   private readonly guiThreadOpenDelayMs: number;
+  private readonly guiFallbackReconcileMs: number;
   private readonly listLimit: number;
   private readonly clientName: string;
   private readonly clientTitle: string;
@@ -315,6 +330,10 @@ export class CodexGuiAppServerBridge {
   private bindingLoaded: boolean;
   private alarmTimer?: ReturnType<typeof setTimeout>;
   private readonly activePromptCounts = new Map<string, number>();
+  private lastDelivery?: {
+    mode: ActualDeliveryMode;
+    threadId: string;
+  };
 
   constructor(opts: CodexGuiBridgeOptions = {}) {
     this.transport = opts.transport ?? new CodexAppServerRpc({
@@ -333,6 +352,7 @@ export class CodexGuiAppServerBridge {
     this.turnTimeoutMs = opts.turnTimeoutMs ?? 180_000;
     this.guiPollIntervalMs = opts.guiPollIntervalMs ?? 1_000;
     this.guiThreadOpenDelayMs = opts.guiThreadOpenDelayMs ?? 900;
+    this.guiFallbackReconcileMs = opts.guiFallbackReconcileMs ?? 1_500;
     this.listLimit = opts.listLimit ?? 20;
     this.clientName = opts.clientName ?? "wechat2all-codex-gui-bridge";
     this.clientTitle = opts.clientTitle ?? "wechat2all Codex GUI Bridge";
@@ -440,7 +460,10 @@ export class CodexGuiAppServerBridge {
     if ((this.activePromptCounts.get(binding.threadId) ?? 0) > 0) {
       return {
         state: "working",
-        summary: "Codex bridge is waiting for the current turn to finish.",
+        summary: this.statusSummary(
+          "Codex bridge is waiting for the current turn to finish.",
+          binding.threadId,
+        ),
         currentThreadId: binding.threadId,
         currentProject: binding.project,
         updatedAt: Date.now(),
@@ -469,15 +492,16 @@ export class CodexGuiAppServerBridge {
               : runtimeType === "idle"
                 ? "idle"
                 : "unknown";
+        const summary = state === "working"
+          ? "Codex Desktop reports this chat is active."
+          : state === "completed"
+            ? "Codex Desktop reports the latest turn completed."
+            : runtimeType
+              ? `Codex Desktop live status: ${runtimeType}.`
+              : "Codex Desktop returned a snapshot without a runtime status.";
         return {
           state,
-          summary: state === "working"
-            ? "Codex Desktop reports this chat is active."
-            : state === "completed"
-              ? "Codex Desktop reports the latest turn completed."
-              : runtimeType
-                ? `Codex Desktop live status: ${runtimeType}.`
-                : "Codex Desktop returned a snapshot without a runtime status.",
+          summary: this.statusSummary(summary, binding.threadId),
           currentThreadId: snapshot.threadId,
           currentProject: projectName(snapshot.projectPath) ?? binding.project,
           updatedAt: snapshot.updatedAt ?? Date.now(),
@@ -496,23 +520,25 @@ export class CodexGuiAppServerBridge {
         !resultFromItems(latestTurn.items ?? [], "silent").outputFiles?.length;
       const isWorking = status === "active" || status?.startsWith("active:") || turnIsWorking;
       if (readDesktopSnapshot && !isWorking) {
+        const summary = desktopSnapshotError
+          ? `Cannot read Codex Desktop live status: ${desktopSnapshotError}`
+          : "Codex Desktop live status is unavailable.";
         return {
           state: "unknown",
-          summary: desktopSnapshotError
-            ? `Cannot read Codex Desktop live status: ${desktopSnapshotError}`
-            : "Codex Desktop live status is unavailable.",
+          summary: this.statusSummary(summary, binding.threadId),
           currentThreadId: thread.id,
           currentProject: chatFromThread(thread).project ?? thread.cwd,
           updatedAt: Date.now(),
         };
       }
+      const summary = turnIsWorking
+        ? `Codex turn ${latestTurn.id} is in progress.`
+        : status
+          ? `Codex thread status: ${status}`
+          : "Codex thread is reachable.";
       return {
         state: isWorking ? "working" : "idle",
-        summary: turnIsWorking
-          ? `Codex turn ${latestTurn.id} is in progress.`
-          : status
-            ? `Codex thread status: ${status}`
-            : "Codex thread is reachable.",
+        summary: this.statusSummary(summary, binding.threadId),
         currentThreadId: thread.id,
         currentProject: chatFromThread(thread).project ?? thread.cwd,
         updatedAt: Date.now(),
@@ -520,7 +546,7 @@ export class CodexGuiAppServerBridge {
     } catch (error) {
       return {
         state: "unknown",
-        summary: error instanceof Error ? error.message : String(error),
+        summary: this.statusSummary(errorDetail(error), binding.threadId),
         currentThreadId: binding.threadId,
         currentProject: binding.project,
         updatedAt: Date.now(),
@@ -540,65 +566,71 @@ export class CodexGuiAppServerBridge {
       throw new Error("Codex GUI bridge is not bound. Send /ls, then /bind <序号>.");
     }
     const replyMode = prompt.replyMode ?? this.replyMode;
+    const args: PromptDeliveryArgs = {
+      id: prompt.id ?? randomUUID(),
+      threadId,
+      text,
+      attachments,
+      replyMode,
+    };
 
     if (this.deliveryMode === "desktop-ipc") {
-      return this.sendPromptViaDesktopIpc({
-        id: prompt.id ?? randomUUID(),
-        threadId,
-        text,
-        attachments,
-        replyMode,
-      });
+      const result = await this.sendPromptViaDesktopIpc(args);
+      this.recordDelivery("desktop-ipc", threadId);
+      return result;
     }
 
     const shouldUseGuiAutomation = this.deliveryMode === "gui-automation" &&
       attachments.every((attachment) => attachment.kind === "file");
     if (shouldUseGuiAutomation) {
-      return this.sendPromptViaGuiAutomation({
-        id: prompt.id ?? randomUUID(),
-        threadId,
-        text,
-        attachments,
-        replyMode,
-      });
+      return this.sendPromptViaGuiAutomation(args);
     }
 
+    return this.deliverViaAppServer(args, "app-server");
+  }
+
+  private async sendPromptViaAppServer(
+    args: PromptDeliveryArgs,
+  ): Promise<CodexGuiPromptResult> {
     await this.ensureInitialized();
-    const threadMetadata = attachments.length > 0
-      ? await this.readThread(threadId)
+    const threadMetadata = args.attachments.length > 0
+      ? await this.readThread(args.threadId)
       : undefined;
     const runtimeWorkspaceRoots = threadMetadata
-      ? promptWorkspaceRoots(threadMetadata, attachments)
+      ? promptWorkspaceRoots(threadMetadata, args.attachments)
       : [];
     const resumed = await this.transport.request<ThreadResumeResponse>(
       "thread/resume",
       {
-        threadId,
+        threadId: args.threadId,
         ...(runtimeWorkspaceRoots.length ? { runtimeWorkspaceRoots } : {}),
       },
       this.timeoutMs,
     );
-    const id = prompt.id ?? randomUUID();
-    const input = promptInputItems(text, attachments);
+    const input = promptInputItems(args.text, args.attachments);
     const activeTurn = await this.activeTurnForThread(resumed.thread);
     if (activeTurn) {
       const steered = await this.transport.request<TurnSteerResponse>(
         "turn/steer",
         {
-          threadId,
-          clientUserMessageId: id,
+          threadId: args.threadId,
+          clientUserMessageId: args.id,
           input,
           expectedTurnId: activeTurn.id,
         },
         this.timeoutMs,
       );
       const turnId = steered.turnId ?? activeTurn.id;
-      const completed = await this.waitForTurnCompletion(threadId, turnId, replyMode);
-      return {
-        id,
-        threadId,
+      const completed = await this.waitForTurnCompletion(
+        args.threadId,
         turnId,
-        replyMode,
+        args.replyMode,
+      );
+      return {
+        id: args.id,
+        threadId: args.threadId,
+        turnId,
+        replyMode: args.replyMode,
         ...completed,
       };
     }
@@ -606,34 +638,39 @@ export class CodexGuiAppServerBridge {
     const response = await this.transport.request<TurnStartResponse>(
       "turn/start",
       {
-        threadId,
-        clientUserMessageId: id,
+        threadId: args.threadId,
+        clientUserMessageId: args.id,
         input,
         ...(runtimeWorkspaceRoots.length ? { runtimeWorkspaceRoots } : {}),
       },
       this.timeoutMs,
     );
     const turnId = response.turn?.id;
-    const startedTurnResult = resultFromTurn(response.turn, threadId, turnId, replyMode);
+    const startedTurnResult = resultFromTurn(
+      response.turn,
+      args.threadId,
+      turnId,
+      args.replyMode,
+    );
     if (startedTurnResult?.finalText || isTerminalStatus(startedTurnResult?.status)) {
       return {
-        id,
-        threadId,
+        id: args.id,
+        threadId: args.threadId,
         turnId,
-        replyMode,
+        replyMode: args.replyMode,
         ...startedTurnResult,
       };
     }
 
     const completed = turnId && this.transport.onNotification
-      ? await this.waitForTurnCompletion(threadId, turnId, replyMode)
+      ? await this.waitForTurnCompletion(args.threadId, turnId, args.replyMode)
       : null;
 
     return {
-      id,
-      threadId,
+      id: args.id,
+      threadId: args.threadId,
       turnId,
-      replyMode,
+      replyMode: args.replyMode,
       ...completed,
     };
   }
@@ -771,6 +808,39 @@ export class CodexGuiAppServerBridge {
     return response.thread;
   }
 
+  private async deliverViaAppServer(
+    args: PromptDeliveryArgs,
+    mode: "app-server" | "app-server-fallback",
+    guiError?: unknown,
+  ): Promise<CodexGuiPromptResult> {
+    try {
+      const result = await this.sendPromptViaAppServer(args);
+      this.recordDelivery(mode, args.threadId);
+      return result;
+    } catch (fallbackError) {
+      if (mode !== "app-server-fallback") throw fallbackError;
+      throw new Error(
+        `Codex GUI automation failed: ${errorDetail(guiError)}. ` +
+          `App-server fallback also failed: ${errorDetail(fallbackError)}.`,
+      );
+    }
+  }
+
+  private recordDelivery(
+    mode: ActualDeliveryMode,
+    threadId: string,
+    detail?: string,
+  ): void {
+    this.lastDelivery = { mode, threadId };
+    const suffix = detail ? ` detail=${JSON.stringify(detail)}` : "";
+    console.info(`[codex-gui-bridge] delivery=${mode} thread=${threadId}${suffix}`);
+  }
+
+  private statusSummary(summary: string, threadId: string): string {
+    if (!this.lastDelivery || this.lastDelivery.threadId !== threadId) return summary;
+    return `${summary} Last delivery: ${this.lastDelivery.mode}.`;
+  }
+
   private async sendPromptViaDesktopIpc(args: {
     id: string;
     threadId: string;
@@ -872,24 +942,48 @@ export class CodexGuiAppServerBridge {
     return activeTurn;
   }
 
-  private async sendPromptViaGuiAutomation(args: {
-    id: string;
-    threadId: string;
-    text: string;
-    attachments: CodexGuiPromptAttachment[];
-    replyMode: CodexGuiReplyMode;
-  }): Promise<CodexGuiPromptResult> {
+  private async sendPromptViaGuiAutomation(
+    args: PromptDeliveryArgs,
+  ): Promise<CodexGuiPromptResult> {
     return this.trackActivePrompt(args.threadId, async () => {
       const before = await this.readThreadWithTurns(args.threadId);
       const previousTurnIds = new Set((before.turns ?? []).map((turn) => turn.id));
 
-      await this.guiPromptInjector(textWithAttachmentReferences(args.text, args.attachments), {
-        threadId: args.threadId,
-        threadTitle: this.binding?.threadId === args.threadId
-          ? this.binding.title
-          : undefined,
-        threadOpenDelayMs: this.guiThreadOpenDelayMs,
-      });
+      try {
+        await this.guiPromptInjector(
+          textWithAttachmentReferences(args.text, args.attachments),
+          {
+            threadId: args.threadId,
+            threadTitle: this.binding?.threadId === args.threadId
+              ? this.binding.title
+              : undefined,
+            threadOpenDelayMs: this.guiThreadOpenDelayMs,
+          },
+        );
+        this.recordDelivery("gui-automation", args.threadId);
+      } catch (guiError) {
+        const submitted = await this.guiTurnStartedAfterInjectionError(
+          args.threadId,
+          previousTurnIds,
+        );
+        if (submitted) {
+          this.recordDelivery(
+            "gui-automation",
+            args.threadId,
+            "turn detected after GUI injector reported an error; fallback suppressed",
+          );
+        } else {
+          console.warn(
+            `[codex-gui-bridge] GUI automation unavailable for thread=${args.threadId}; ` +
+              `using app-server fallback: ${errorDetail(guiError)}`,
+          );
+          return this.deliverViaAppServer(
+            args,
+            "app-server-fallback",
+            guiError,
+          );
+        }
+      }
       const completed = await this.waitForNextThreadTurn(
         args.threadId,
         previousTurnIds,
@@ -908,6 +1002,30 @@ export class CodexGuiAppServerBridge {
         error: completed.error,
       };
     });
+  }
+
+  private async guiTurnStartedAfterInjectionError(
+    threadId: string,
+    previousTurnIds: Set<string>,
+  ): Promise<boolean> {
+    const deadline = Date.now() + this.guiFallbackReconcileMs;
+    while (true) {
+      try {
+        const thread = await this.readThreadWithTurns(threadId);
+        if ((thread.turns ?? []).some((turn) => !previousTurnIds.has(turn.id))) {
+          return true;
+        }
+      } catch (error) {
+        console.warn(
+          `[codex-gui-bridge] could not reconcile GUI injection for thread=${threadId}: ` +
+            errorDetail(error),
+        );
+        return false;
+      }
+
+      if (Date.now() >= deadline) return false;
+      await sleep(Math.min(this.guiPollIntervalMs, Math.max(1, deadline - Date.now())));
+    }
   }
 
   private async trackActivePrompt<T>(threadId: string, task: () => Promise<T>): Promise<T> {
@@ -1158,6 +1276,10 @@ function isCompletedTurnForGuiPolling(turn: RawTurn): boolean {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function errorDetail(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function isUsablePromptAttachment(
@@ -1612,6 +1734,10 @@ export function createCodexGuiBridgeClientFromEnv(
     compactionGraceMs: envNumber(env, "WECHAT2ALL_CODEX_COMPACTION_GRACE_MS"),
     guiPollIntervalMs: envNumber(env, "WECHAT2ALL_CODEX_GUI_POLL_INTERVAL_MS"),
     guiThreadOpenDelayMs: envNumber(env, "WECHAT2ALL_CODEX_GUI_THREAD_OPEN_DELAY_MS"),
+    guiFallbackReconcileMs: envNumber(
+      env,
+      "WECHAT2ALL_CODEX_GUI_FALLBACK_RECONCILE_MS",
+    ),
     listLimit: envNumber(env, "WECHAT2ALL_CODEX_LIST_LIMIT"),
   });
 }
