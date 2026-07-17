@@ -11,6 +11,7 @@ import type {
   RuntimeMessage,
 } from "../types.js";
 import type { RuntimeMediaCacheStats } from "../media/pipeline.js";
+import { createCodexProcessingReminderPicker } from "./codex-processing-reminders.js";
 
 export type CodexBridgeStatusState =
   | "idle"
@@ -177,7 +178,6 @@ const DEFAULT_IMAGE_PENDING_TTL_MS = 30 * 60_000;
 const DEFAULT_IMAGE_MAX_COUNT = 9;
 const DEFAULT_PROCESSING_REMINDER_MS = 2 * 60_000;
 const ATTACHMENT_PROMPT_REMINDER_TEXT = "请问想对这些附件做什么操作？";
-const PROCESSING_REMINDER_TEXT = "请稍等，正在处理。";
 
 function messageText(message: RuntimeMessage): string {
   return message.text?.trim() ?? "";
@@ -351,12 +351,13 @@ function startProcessingReminder(params: {
   const dispatchActions = params.context.dispatchActions;
   if (!dispatchActions || params.intervalMs <= 0) return () => undefined;
 
+  const nextReminderText = createCodexProcessingReminderPicker();
   let dispatching = false;
   const timer = setInterval(() => {
     if (dispatching) return;
     dispatching = true;
     void dispatchActions(
-      textAction(params.message, PROCESSING_REMINDER_TEXT),
+      textAction(params.message, nextReminderText()),
     ).catch(() => undefined).finally(() => {
       dispatching = false;
     });

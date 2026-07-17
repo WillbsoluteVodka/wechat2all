@@ -38,6 +38,8 @@ import type {
   RuntimeMessage,
   RuntimeRoute,
 } from "../src/index.js";
+import { CODEX_PROCESSING_REMINDER_TEXTS } from
+  "../src/connectors/codex-processing-reminders.js";
 
 import { MessageItemType, MessageType } from "wechat2all";
 import type { WeChatClient } from "wechat2all";
@@ -1468,7 +1470,9 @@ test("codex connector reports progress periodically and keeps waiting for the fi
   assert.ok(progressActions.length >= 1);
   assert.equal(
     progressActions.every((action) =>
-      action.type === "send_text" && action.text === "请稍等，正在处理。"
+      action.type === "send_text" && CODEX_PROCESSING_REMINDER_TEXTS.some(
+        (reminderText) => reminderText === action.text,
+      )
     ),
     true,
   );

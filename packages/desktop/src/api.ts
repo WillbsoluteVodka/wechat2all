@@ -46,7 +46,7 @@ const fallbackSnapshot: DashboardSnapshot = {
     {
       id: "codex",
       name: "codex",
-      description: "Codex bridge：本地 Codex 连接能力，通过大助手 /cd codex 进入。",
+      description: "Codex bridge：通过大助手 /cd codex 进入。app-server 通过本地后台接口连接 Codex，稳定且无需操作界面；gui-automation 是直接驱动 Codex 桌面界面的高级模式，需要额外开启 macOS 系统权限。",
       enabled: true,
       priority: 900,
       connectorId: "codex-bridge",

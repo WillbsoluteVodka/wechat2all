@@ -7,7 +7,6 @@ import accessibilityPermissionsImage from "../assets/codex-permissions-accessibi
 import automationPermissionsImage from "../assets/codex-permissions-automation.png";
 import screenRecordingPermissionsImage from "../assets/codex-permissions-screen-recording.png";
 import { StatusPill } from "../ui/Common";
-import { ConstructionBarrier } from "../ui/Construction";
 import { displayRouteName, routeRuleDetails } from "../ui/constants";
 import { PixelText } from "../ui/PixelArt";
 
@@ -28,6 +27,12 @@ const CODEX_MANUAL_PERMISSION_GROUPS = [
     alt: "Screen and System Audio Recording enabled for ChatGPT",
   },
 ] as const;
+
+function isWeConnectRoute(route: RouteSummary) {
+  return route.id === "main-assistant-default"
+    || route.connectorId === "main-assistant"
+    || route.name === "大助手";
+}
 
 function RouteCard(props: {
   route: RouteSummary;
@@ -67,12 +72,42 @@ function RouteCard(props: {
   );
 }
 
-function RoutesStage() {
+function WeConnectStage(props: { route: RouteSummary | null }) {
+  if (!props.route) return null;
+  const rules = routeRuleDetails(props.route);
+
   return (
-    <section className="command-stage routes-construction-stage" aria-label="Routes under construction">
-      <div className="routes-construction-content">
-        <ConstructionBarrier />
-        <PixelText text="Construction Site" className="construction-label" />
+    <section className="command-stage routes-weconnect-stage" aria-label="WeConnect primary router">
+      <div className="routes-weconnect-summary">
+        <div className="routes-weconnect-title-row">
+          <div>
+            <p className="home-kicker">PRIMARY ROUTER</p>
+            <h1>
+              <PixelText text={displayRouteName(props.route)} className="routes-weconnect-title" />
+            </h1>
+          </div>
+          <StatusPill
+            active={props.route.enabled}
+            label={props.route.enabled ? "Enabled" : "Disabled"}
+          />
+        </div>
+        <p className="routes-weconnect-description">{props.route.description}</p>
+        <div className="routes-weconnect-meta">
+          <span>CONNECTOR</span>
+          <strong>{props.route.connectorId}</strong>
+        </div>
+      </div>
+
+      <div className="routes-weconnect-commands">
+        <h2 className="home-kicker">COMMANDS</h2>
+        <ul>
+          {rules.map((item) => (
+            <li key={item.rule}>
+              <code>{item.rule}</code>
+              <span>{item.description}</span>
+            </li>
+          ))}
+        </ul>
       </div>
     </section>
   );
@@ -91,14 +126,19 @@ export function RoutesPage(props: {
   onToggleCodexDelivery: () => void;
   onSelect: (routeId: string | null) => void;
 }) {
-  const selected = props.routes.find((route) => route.id === props.selectedRouteId) ?? null;
+  const weConnectRoute = props.routes.find(isWeConnectRoute) ?? null;
+  const concreteRoutes = props.routes.filter((route) => !isWeConnectRoute(route));
+  const selectedCandidate = props.routes.find((route) => route.id === props.selectedRouteId) ?? null;
+  const selected = selectedCandidate && !isWeConnectRoute(selectedCandidate)
+    ? selectedCandidate
+    : null;
 
   if (!selected) {
     return (
       <main className="page">
-        <RoutesStage />
+        <WeConnectStage route={weConnectRoute} />
         <section className="route-grid">
-          {props.routes.map((route) => (
+          {concreteRoutes.map((route) => (
             <RouteCard
               key={route.id}
               route={route}
