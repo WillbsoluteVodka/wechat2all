@@ -26,7 +26,7 @@ export function EmptyState(props: { title: string; body: string }) {
   );
 }
 
-function PixelScrollbar(props: {
+export function PixelScrollbar(props: {
   targetRef: RefObject<HTMLDivElement | null>;
   refreshKey: number;
 }) {

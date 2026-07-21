@@ -12,7 +12,7 @@ import { PixelIcon, PixelText, type PixelIconKind } from "./PixelArt";
 
 const PIXEL_REVEAL_MS = 2200;
 const STARTUP_PIXEL_SIZE = 7;
-const STARTUP_ICONS: PixelIconKind[] = ["wechat", "codex", "openai", "crab"];
+const STARTUP_ICONS: PixelIconKind[] = ["wechat", "openai", "crab"];
 
 function clamp01(value: number) {
   return Math.min(1, Math.max(0, value));

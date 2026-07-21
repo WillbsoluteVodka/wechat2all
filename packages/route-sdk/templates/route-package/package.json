@@ -1,0 +1,29 @@
+{
+  "name": "@your-name/weconnect-route-example",
+  "version": "1.0.0",
+  "description": "Example WeConnect community route",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist/",
+    "weconnect.route.json"
+  ],
+  "weconnect": {
+    "routeManifest": "./weconnect.route.json",
+    "routeEntrypoint": "."
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@wechat2all/route-sdk": "^0.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -3,22 +3,17 @@ import os from "node:os";
 import path from "node:path";
 
 import { normalizeAccountId } from "wechat2all";
-import { createClaudeRouteConnectorFromEnv } from "@wechat2all/claude-route";
-
 import {
   FileRuntimeStateStore,
   RuntimeMediaPipeline,
   WeChatRuntime,
   createAgentMemoryProviderFromEnv,
-  createCodexConnector,
   createDummyTTSProvider,
   createLLMProviderFromEnv,
   createMainAssistantConnector,
   createMainAssistantSessionReminderAction,
   createRouteAssistantConnector,
   createStateStoreMessageDeduper,
-  parseCodexReplyMode,
-  type CodexBridgeClient,
   type LLMProvider,
   type RuntimeActionResult,
   type RuntimeMessage,
@@ -26,13 +21,6 @@ import {
   type RuntimeSavedCredentials,
 } from "@wechat2all/runtime";
 
-import {
-  codexBackend,
-  createCodexBridgeFromEnv,
-  getCodexSetupCheckSnapshot,
-  refreshCodexSetupCheck,
-  startCodexSetupCheckAfterStartup,
-} from "./codex.js";
 import {
   createDashboardSnapshot,
   type DashboardRouteStats,
@@ -47,6 +35,10 @@ import {
   LocalConfigStore,
   LocalConfigValidationError,
 } from "./local-config.js";
+import {
+  createInstalledRouteModules,
+  type InstalledRouteModule,
+} from "./installed-routes.js";
 import {
   LlmHealthService,
   type LlmHealthSnapshot,
@@ -75,12 +67,54 @@ let PORT = routerAddress.port;
 let PROFILE_ID = process.env.WECHAT_RUNTIME_PROFILE ?? "default";
 const BASE_STATE_DIR = path.join(os.homedir(), ".wechat2all-runtime-bot");
 const stateStore = new FileRuntimeStateStore({ baseDir: BASE_STATE_DIR });
-let codexBridge: CodexBridgeClient | undefined;
 let server: http.Server | undefined;
 let localConfig: LocalConfigStore | undefined;
 let upochiConfig: UpochiConfigStore | undefined;
 let llmHealth: LlmHealthService | undefined;
 let sessionReminders: SessionReminderService | undefined;
+let installedRouteModules: InstalledRouteModule[] | undefined;
+let shuttingDown = false;
+
+function ensureInstalledRouteModules(): InstalledRouteModule[] {
+  if (!installedRouteModules) throw new Error("Route packages are not initialized.");
+  return installedRouteModules;
+}
+
+async function stopInstalledRouteModules(): Promise<void> {
+  for (const routeModule of [...(installedRouteModules ?? [])].reverse()) {
+    try {
+      await routeModule.lifecycle?.stop?.();
+    } catch (error) {
+      trace(
+        "warn",
+        "route-module",
+        `${routeModule.id} shutdown hook failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+}
+
+async function gracefulShutdown(exitCode = 0): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  const forceExit = setTimeout(() => process.exit(exitCode || 1), 5_000);
+  forceExit.unref();
+  try {
+    try {
+      runtime?.stopProfile(PROFILE_ID);
+    } catch {
+      // The profile may already be stopped.
+    }
+    sessionReminders?.close();
+    await stopInstalledRouteModules();
+    if (server?.listening) {
+      await new Promise<void>((resolve) => server?.close(() => resolve()));
+    }
+  } finally {
+    clearTimeout(forceExit);
+    process.exit(exitCode);
+  }
+}
 
 function finiteMetadataNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value)
@@ -93,12 +127,13 @@ function actionPerformanceSuffix(result: RuntimeActionResult): string {
   const timings = performance && typeof performance === "object"
     ? performance as Record<string, unknown>
     : {};
-  const values = [
-    ["download", finiteMetadataNumber(timings.attachmentDownloadMs)],
-    ["wait", finiteMetadataNumber(timings.attachmentWaitMs)],
-    ["codex", finiteMetadataNumber(timings.codexTurnMs)],
+  const values: Array<readonly [string, number | undefined]> = [
+    ...Object.entries(timings).map(([key, value]) => [
+      key.replace(/Ms$/, ""),
+      finiteMetadataNumber(value),
+    ] as const),
     ["wechat", finiteMetadataNumber(result.durationMs)],
-  ] as const;
+  ];
   const parts = values.flatMap(([label, durationMs]) =>
     durationMs === undefined ? [] : [`${label}=${durationMs}ms`]
   );
@@ -114,11 +149,6 @@ function refreshRouterAddress(): void {
 function refreshRuntimeSettings(): void {
   refreshRouterAddress();
   PROFILE_ID = process.env.WECHAT_RUNTIME_PROFILE ?? "default";
-}
-
-function getCodexBridge(): CodexBridgeClient {
-  codexBridge ??= createCodexBridgeFromEnv();
-  return codexBridge;
 }
 
 function envMinutesMs(name: string, fallbackMinutes: number): number {
@@ -181,7 +211,11 @@ function recordRouteHit(routeId: string): void {
 async function buildRuntime(profile: RuntimeProfileConfig): Promise<WeChatRuntime> {
   const savedRoutes = await stateStore.loadRoutes(PROFILE_ID);
   const savedUserRoutes = savedRoutes.filter(isUserManagedRoute);
-  const builtInRoutes = defaultRoutes(profile.id)
+  const routeModules = ensureInstalledRouteModules();
+  const builtInRoutes = defaultRoutes(
+    profile.id,
+    routeModules.map((routeModule) => routeModule.route),
+  )
     .map((route) => applySavedRouteOverrides(route, savedRoutes));
   const mainRoute = builtInRoutes.find((route) => route.id === "main-assistant-default");
   if (!mainRoute) throw new Error("Built-in main assistant route is missing.");
@@ -194,7 +228,6 @@ async function buildRuntime(profile: RuntimeProfileConfig): Promise<WeChatRuntim
     },
   });
   const llmTimeoutMs = envNumber("WECHAT2ALL_LLM_TIMEOUT_MS");
-
   const next = new WeChatRuntime({
     profiles: [profile],
     deduper: createStateStoreMessageDeduper(stateStore),
@@ -220,22 +253,7 @@ async function buildRuntime(profile: RuntimeProfileConfig): Promise<WeChatRuntim
       dedupeWindowMs: envNumber("WECHAT2ALL_ACTION_DEDUPE_WINDOW_MS") ?? 0,
     },
     connectors: [
-      createCodexConnector({
-        id: "codex-bridge",
-        client: getCodexBridge(),
-        replyMode: parseCodexReplyMode(process.env.WECHAT2ALL_CODEX_REPLY_MODE),
-        processingReminderMs: envNumber("WECHAT2ALL_CODEX_PROCESSING_REMINDER_MS"),
-      }),
-      createClaudeRouteConnectorFromEnv({
-        stateDir: path.join(stateStore.profileDir(PROFILE_ID), "claude-route"),
-        onError(error, context) {
-          trace(
-            "error",
-            "claude",
-            `${context.operation}/${context.message.conversationId}: ${error.message}`,
-          );
-        },
-      }),
+      ...routeModules.map((routeModule) => routeModule.connector),
       createUpochiConnector(),
       createMainAssistantConnector({
         id: "main-assistant",
@@ -417,10 +435,6 @@ async function startRuntimeMonitor(): Promise<void> {
   }).finally(() => {
     runtimeStarting = false;
   });
-}
-
-function logCodexBackend(): void {
-  trace("info", "codex", "Using gui-app-server backend.");
 }
 
 async function startQrLogin(): Promise<LoginState> {
@@ -640,12 +654,30 @@ async function handleRequest(
         ok: true,
         service: "wechat2all-router-daemon",
         profileId: PROFILE_ID,
-        codexBackend: codexBackend(),
+        routeBackends: Object.fromEntries(
+          ensureInstalledRouteModules().flatMap((routeModule) =>
+            routeModule.backend ? [[routeModule.id, routeModule.backend]] : []
+          ),
+        ),
       });
       return;
     }
     if (req.method === "GET" && url.pathname === "/snapshot") {
       sendJson(res, 200, await dashboardSnapshot());
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/route-packages") {
+      sendJson(res, 200, {
+        ok: true,
+        schemaVersion: 1,
+        packages: ensureInstalledRouteModules().map((routeModule) => ({
+          manifest: routeModule.manifest,
+          backend: routeModule.backend ?? null,
+          hasConfig: Boolean(routeModule.config),
+          hasSetupCheck: Boolean(routeModule.setupCheck),
+          hasLifecycle: Boolean(routeModule.lifecycle),
+        })),
+      });
       return;
     }
     if (req.method === "GET" && url.pathname === "/config") {
@@ -706,20 +738,24 @@ async function handleRequest(
       sendJson(res, 200, llmHealthResponse(result));
       return;
     }
-    if (req.method === "GET" && url.pathname === "/codex/setup-check") {
+    const routeSetupMatch = url.pathname.match(/^\/routes\/([^/]+)\/setup-check$/);
+    const setupRoute = routeSetupMatch
+      ? ensureInstalledRouteModules().find((routeModule) => routeModule.id === routeSetupMatch[1])
+      : undefined;
+    if (req.method === "GET" && setupRoute?.setupCheck) {
       sendJson(res, 200, {
         ok: true,
         schemaVersion: 1,
-        check: getCodexSetupCheckSnapshot(),
+        check: setupRoute.setupCheck.snapshot(),
       });
       return;
     }
-    if (req.method === "POST" && url.pathname === "/codex/setup-check") {
+    if (req.method === "POST" && setupRoute?.setupCheck) {
       await readJson(req);
       sendJson(res, 200, {
         ok: true,
         schemaVersion: 1,
-        check: await refreshCodexSetupCheck(),
+        check: await setupRoute.setupCheck.refresh(),
       });
       return;
     }
@@ -765,17 +801,7 @@ async function handleRequest(
         return;
       }
       sendJson(res, 200, { ok: true });
-      setImmediate(() => {
-        try {
-          runtime?.stopProfile(PROFILE_ID);
-        } catch {
-          // The profile may already be stopped.
-        }
-        sessionReminders?.close();
-        const forceExit = setTimeout(() => process.exit(0), 2_000);
-        forceExit.unref();
-        server?.close(() => process.exit(0));
-      });
+      setImmediate(() => void gracefulShutdown(0));
       return;
     }
 
@@ -799,7 +825,30 @@ async function handleRequest(
 async function main(): Promise<void> {
   loadLocalEnv(trace);
   refreshRuntimeSettings();
-  localConfig = new LocalConfigStore({ filePath: resolveLocalEnvPath() });
+  const routeModules = await createInstalledRouteModules(PROFILE_ID, process.env, {
+    storageRoot: path.join(stateStore.profileDir(PROFILE_ID), "routes"),
+    logger: {
+      debug(message, context) {
+        trace("debug", "route-package", `${message}${context ? ` ${JSON.stringify(context)}` : ""}`);
+      },
+      info(message, context) {
+        trace("info", "route-package", `${message}${context ? ` ${JSON.stringify(context)}` : ""}`);
+      },
+      warn(message, context) {
+        trace("warn", "route-package", `${message}${context ? ` ${JSON.stringify(context)}` : ""}`);
+      },
+      error(message, context) {
+        trace("error", "route-package", `${message}${context ? ` ${JSON.stringify(context)}` : ""}`);
+      },
+    },
+  });
+  installedRouteModules = routeModules;
+  localConfig = new LocalConfigStore({
+    filePath: resolveLocalEnvPath(),
+    extensions: routeModules.flatMap((routeModule) =>
+      routeModule.config ? [routeModule.config] : []
+    ),
+  });
   upochiConfig = new UpochiConfigStore();
   llmHealth = new LlmHealthService({
     timeoutMs: envNumber("WECHAT2ALL_LLM_HEALTH_TIMEOUT_MS"),
@@ -823,7 +872,13 @@ async function main(): Promise<void> {
   const savedCredentials = await stateStore.loadCredentials(PROFILE_ID);
   await initializeSessionReminders(savedCredentials);
   await ensureRuntime();
-  logCodexBackend();
+  for (const routeModule of routeModules) {
+    trace(
+      "info",
+      "route-module",
+      `Loaded ${routeModule.id}${routeModule.backend ? ` (${routeModule.backend})` : ""}.`,
+    );
+  }
   if (savedCredentials) {
     void startRuntimeMonitor();
   }
@@ -847,12 +902,26 @@ async function main(): Promise<void> {
   server.listen(PORT, HOST, () => {
     trace("info", "http", `Listening on http://${HOST}:${PORT}`);
     void requireLlmHealth().check();
-    const codexRouteInstalled = runtime?.listRoutes().some((route) =>
-      route.connectorId === "codex-bridge" && route.enabled !== false
+    const activeConnectorIds = new Set(
+      runtime?.listRoutes()
+        .filter((route) => route.enabled !== false)
+        .map((route) => route.connectorId) ?? [],
     );
-    if (codexRouteInstalled) startCodexSetupCheckAfterStartup();
+    for (const routeModule of routeModules) {
+      if (!activeConnectorIds.has(routeModule.connectorId)) continue;
+      void Promise.resolve(routeModule.lifecycle?.start?.()).catch((error: unknown) => {
+        trace(
+          "warn",
+          "route-module",
+          `${routeModule.id} startup hook failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    }
   });
 }
+
+process.once("SIGINT", () => void gracefulShutdown(0));
+process.once("SIGTERM", () => void gracefulShutdown(0));
 
 main().catch((error) => {
   console.error("[router-daemon] fatal", error);

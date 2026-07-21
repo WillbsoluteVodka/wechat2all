@@ -1,0 +1,38 @@
+{
+  "name": "@wechat2all/route-sdk",
+  "version": "0.1.0",
+  "description": "Versioned SDK and runtime validator for WeConnect community routes",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "types": "dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    },
+    "./schema/manifest-v1": "./schemas/route-manifest.v1.schema.json"
+  },
+  "files": [
+    "dist/",
+    "schemas/",
+    "templates/",
+    "PROTOCOL.md",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "check": "pnpm typecheck && pnpm test && pnpm build"
+  },
+  "peerDependencies": {
+    "@wechat2all/runtime": ">=0.1.0 <2"
+  },
+  "devDependencies": {
+    "@wechat2all/runtime": "workspace:*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

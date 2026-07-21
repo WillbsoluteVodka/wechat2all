@@ -1,12 +1,12 @@
-import type { CSSProperties } from "react";
+import { useRef, type CSSProperties } from "react";
 
 import type {
-  CodexSetupCheckResponse,
   DashboardSnapshot,
   LlmHealthResponse,
   QrLoginResponse,
+  RouteSetupCheckResponse,
 } from "../types";
-import { TerminalLog } from "../ui/Common";
+import { PixelScrollbar, TerminalLog } from "../ui/Common";
 import { displayRouteName } from "../ui/constants";
 import { HomeIntroCopy } from "../ui/HomeIntroCopy";
 import { PixelIcon, PixelText } from "../ui/PixelArt";
@@ -34,18 +34,22 @@ function HomeQrPanel(props: {
 export function HomePage(props: {
   data: DashboardSnapshot;
   llmHealth: LlmHealthResponse | null;
-  codexSetupCheck: CodexSetupCheckResponse | null;
+  routeSetupChecks: Record<string, RouteSetupCheckResponse | null>;
   qr: QrLoginResponse | null;
   qrImage: string | null;
   qrError: string | null;
   onOpenRoutes: () => void;
 }) {
+  const routeLaneListRef = useRef<HTMLDivElement>(null);
   const enabledRoutes = props.data.routes.filter((route) => route.enabled).length;
-  const visibleRoutes = props.data.routes.slice(0, 4);
-  const codexConfigured =
-    props.codexSetupCheck?.check.status === "ready"
-    && !props.codexSetupCheck.check.items.some((item) => item.status === "warn");
-
+  const routeMap = [
+    "WeConnect助手",
+    ...props.data.routes
+      .filter((route) => route.connectorId !== "main-assistant")
+      .slice(0, 3)
+      .map((route) => `|-- route: ${route.name}`),
+    "|-- route: custom ...",
+  ].join("\n");
   return (
     <main className="home-page">
       <section className="home-field" aria-label="WeConnect home">
@@ -66,11 +70,7 @@ export function HomePage(props: {
           <div className="home-intro">
             <HomeIntroCopy />
             <pre className="home-ascii-map" aria-label="WeConnect routing structure">
-{`WeConnect助手
-|-- route: codex
-|-- route: sales
-|-- route: calendar
-|-- route: custom ...`}
+              {routeMap}
             </pre>
           </div>
         </div>
@@ -95,43 +95,55 @@ export function HomePage(props: {
             <h2 className="home-kicker home-terminal-title">ROUTE LANES</h2>
             <strong>{enabledRoutes} armed</strong>
           </div>
-          {visibleRoutes.map((route, index) => {
-            const signalStrength = Math.max(
-              16,
-              Math.min(100, Math.abs(route.priority) / 10 + route.stats.messagesToday * 6),
-            );
-            const routeConfigured =
-              (route.connectorId === "main-assistant"
-                && props.llmHealth?.llm.status === "ready"
-                && props.llmHealth.llm.usable)
-              || (route.connectorId === "codex-bridge" && codexConfigured);
-            return (
-              <button
-                className={route.enabled ? "signal-lane is-enabled" : "signal-lane"}
-                key={route.id}
-                onClick={props.onOpenRoutes}
-                style={
-                  {
-                    "--lane-index": String(index),
-                    "--lane-signal": `${signalStrength}%`,
-                  } as CSSProperties
-                }
-              >
-                <span className="lane-pulse" aria-hidden="true" />
-                <strong>{displayRouteName(route)}</strong>
-                <span>{route.connectorId}</span>
-                <span
-                  className={routeConfigured
-                    ? "lane-config-status is-configured"
-                    : "lane-config-status is-not-configured"}
-                >
-                  <i aria-hidden="true" />
-                  {routeConfigured ? "CONFIGURED" : "NOT CONFIGURED"}
-                </span>
-                <small>{route.stats.messagesToday} HITS</small>
-              </button>
-            );
-          })}
+          <div className="home-route-lane-list-shell">
+            <div className="home-route-lane-list" ref={routeLaneListRef}>
+              {props.data.routes.map((route, index) => {
+                const signalStrength = Math.max(
+                  16,
+                  Math.min(100, Math.abs(route.priority) / 10 + route.stats.messagesToday * 6),
+                );
+                const routeConfigured =
+                  (route.connectorId === "main-assistant"
+                    && props.llmHealth?.llm.status === "ready"
+                    && props.llmHealth.llm.usable)
+                  || (route.management?.setupCheck === true
+                    && props.routeSetupChecks[route.id]?.check.status === "ready"
+                    && !props.routeSetupChecks[route.id]?.check.items.some(
+                      (item) => item.status === "missing",
+                    ));
+                return (
+                  <button
+                    className={route.enabled ? "signal-lane is-enabled" : "signal-lane"}
+                    key={route.id}
+                    onClick={props.onOpenRoutes}
+                    style={
+                      {
+                        "--lane-index": String(index),
+                        "--lane-signal": `${signalStrength}%`,
+                      } as CSSProperties
+                    }
+                  >
+                    <span className="lane-pulse" aria-hidden="true" />
+                    <strong>{displayRouteName(route)}</strong>
+                    <span>{route.connectorId}</span>
+                    <span
+                      className={routeConfigured
+                        ? "lane-config-status is-configured"
+                        : "lane-config-status is-not-configured"}
+                    >
+                      <i aria-hidden="true" />
+                      {routeConfigured ? "CONFIGURED" : "NOT CONFIGURED"}
+                    </span>
+                    <small>{route.stats.messagesToday} HITS</small>
+                  </button>
+                );
+              })}
+            </div>
+            <PixelScrollbar
+              targetRef={routeLaneListRef}
+              refreshKey={props.data.routes.length}
+            />
+          </div>
         </div>
       </section>
     </main>

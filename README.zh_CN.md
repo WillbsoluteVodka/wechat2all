@@ -13,6 +13,8 @@ chat，这个 chat 就像一个本地控制台。`大助手` 是 OS/router，每
 flowchart TD
   W["微信手机端 chat"] --> C["packages/client<br/>WeChat iLink SDK"]
   C --> R["packages/runtime<br/>消息、路由、动作、memory"]
+  S["packages/route-sdk<br/>WeConnect Route Protocol v1"] --> R
+  P["内置 + 社区 route packages"] --> S
   R --> D["packages/router-daemon<br/>本地进程 + HTTP API"]
   D --> UI["packages/desktop<br/>Tauri dashboard"]
   R --> CG["packages/codex-gui-bridge<br/>Codex GUI/app-server bridge"]
@@ -30,10 +32,18 @@ flowchart TD
 |---|---|---|---|
 | 协议 SDK | `packages/client` | WeChat iLink 登录、轮询、媒体上传/下载、发消息 API | 路由、LLM、memory、UI |
 | Runtime | `packages/runtime` | `WeixinMessage -> RuntimeMessage`、route matching、connectors、memory、动作执行 | HTTP server、QR dashboard、桌面 app |
+| Route SDK | `packages/route-sdk` | 带版本的 route manifest、factory、运行时校验、能力/权限声明、生命周期 | 社区商店托管、具体 route 业务逻辑 |
 | 本地 daemon | `packages/router-daemon` | 进程生命周期、profile 状态、QR 登录 API、dashboard HTTP API、内置 routes | UI 渲染、底层 iLink 协议 |
 | Desktop UI | `packages/desktop` | macOS Tauri dashboard、QR/login/status/routes/logs/settings 页面 | runtime 业务逻辑 |
 | Codex GUI bridge | `packages/codex-gui-bridge` | Codex app-server chat 列表、绑定、token usage、向绑定 GUI chat 发送 prompt | 微信路由或通用 MCP tools |
 | Claude route | `packages/claude-route` | Claude Agent SDK、session resume、vault/workspace tools、附件暂存 | QR 登录、iLink 协议、daemon 生命周期、desktop UI |
+
+Codex 和 Claude 现在都通过同一个 `WeConnect Route Protocol v1` 加载，社区
+package 也走完全相同的入口。第三方开发者只需导出 `routePackage`、随包发布
+`weconnect.route.json`，再通过 `WECHAT2ALL_ROUTE_PACKAGES` 安装加载，不需要修改
+daemon 源码。完整协议见
+[`packages/route-sdk/PROTOCOL.md`](./packages/route-sdk/PROTOCOL.md)，可直接复制的项目
+见 [`route-package` template](./packages/route-sdk/templates/route-package)。
 
 一个消息的例子：
 
@@ -61,9 +71,11 @@ flowchart TD
 
 - 一个真实微信扫码 profile 下挂多个逻辑 routes。
 - `大助手` 默认 route：普通 LLM 聊天、route 列表、rename、route 切换。
-- Codex route：支持 `/ls`、`/bind <序号>`、`/current`、`/token`、
+- Codex route：支持 `/ls`、`/bind <序号>`、`/current`、`/token`、`/recover`、
   `/autoopen 1|0`、`/alarm <HH:mm>`、`/cache`、`/cache clear`，以及把普通微信
   消息发送到绑定的 Codex GUI chat。
+- Codex app-server 连接故障后会自动重建；route watchdog 会释放卡住的请求，避免
+  后续微信消息必须通过重启 WeConnect 才能继续使用。
 - 微信发来的图片、普通文件、视频、语音可以缓存为本地附件；纯附件会等待同一用户
   的下一条文字要求，再作为一次 Codex 请求发送。多附件按原顺序并发下载。
 - Codex 生成的本地文字、图片、文件和支持格式的语音条可以发回微信。
@@ -71,6 +83,9 @@ flowchart TD
 - 独立 Claude Agent SDK route：可连接 Obsidian vault 或本地 workspace，支持
   `/status`、`/new`、per-sender session resume、图片/文件输入，以及把 workspace
   文件或图片发回微信。
+- 独立 Office route：复用 `WECHAT2ALL_LLM_*` 配置，通过受限参数调用 OfficeCLI，
+  支持自然语言创建或修改 Word、Excel、PowerPoint，并把结果文件发回微信；不依赖
+  Codex 或 Claude。通过 `/cd office` 进入。
 - 标准 runtime action：`send_text`、`send_media`、`send_voice`、`typing`、
   `noop`。
 - 对文本、媒体、语音、表情/贴纸类附件、普通文件做消息标准化。具体能力取决于
@@ -214,7 +229,7 @@ WECHAT2ALL_DESKTOP_RESTART=0 pnpm desktop
 WECHAT2ALL_DESKTOP_OPEN_CODEX=0 pnpm desktop
 ```
 
-使用可见的 Codex GUI delivery：
+Codex GUI delivery 现在是默认路径；如需显式配置：
 
 ```bash
 WECHAT2ALL_CODEX_DELIVERY=gui-automation \
@@ -231,17 +246,12 @@ WECHAT2ALL_ROUTER_PORT=39788 pnpm desktop
 
 普通 QR 登录和 dashboard 查看通常不需要额外 macOS 权限。
 
-如果使用 `WECHAT2ALL_CODEX_DELIVERY=gui-automation`，macOS 必须允许运行
-wechat2all 的 app/terminal 控制电脑：
+默认的 `WECHAT2ALL_CODEX_DELIVERY=gui-automation` 路径会打开准确绑定的 Codex
+chat，粘贴附件和文字并按 Return。app-server 负责观察完成的回复；只有 GUI 注入失败
+且没有产生新 turn 时，才由 app-server fallback 投递。
 
-1. 打开 System Settings。
-2. 进入 Privacy & Security -> Accessibility。
-3. 打开你用来启动 wechat2all 的 app。常见是 `Terminal`、`iTerm`、`Codex`，
-   有时还包括 `Codex Computer Use`。
-4. 确认 Codex desktop app 已安装并登录。
-
-GUI delivery 会打开 `codex://threads/<threadId>`，等待一下，向这个绑定 chat 粘贴
-prompt，按 Enter，然后轮询同一个 thread 的最终回复。
+正常路径会控制 GUI，因此需要给实际启动 wechat2all 的 app/terminal 开启 macOS
+Accessibility/Automation。`/new` 由 app-server 创建，首条消息完成后自动打开新 chat。
 
 ## 给 collaborator / Codex 的当前进度提示
 

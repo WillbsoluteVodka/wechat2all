@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Readable } from "node:stream";
 
+// The bridge package owns the actual macOS/app-server prerequisite probe.
 const CHECK_RELATIVE_PATH = path.join(
   "packages",
   "codex-gui-bridge",

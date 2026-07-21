@@ -62,6 +62,16 @@ function sendText(message: RuntimeMessage, text: string) {
   }];
 }
 
+function upochiBlock(title: string, lines: Array<string | undefined>): string {
+  return [
+    `\`\`\`${title.replace(/`/g, "'")}`,
+    ...lines
+      .filter((line): line is string => line !== undefined)
+      .map((line) => line.replace(/```/g, "'''")),
+    "```",
+  ].join("\n");
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -108,8 +118,8 @@ function formatTodoLine(todo: UpochiTodo): string[] {
 }
 
 function formatTodoList(todos: UpochiTodo[]): string {
-  if (todos.length === 0) return "现在没有 Todo。";
-  return [
+  if (todos.length === 0) return upochiBlock("Upochi-Todos", ["现在没有 Todo。"]);
+  return upochiBlock("Upochi-Todos", [
     `现在共有 ${todos.length} 个 Todo：`,
     "",
     ...todos.flatMap((todo, index) => [
@@ -117,7 +127,7 @@ function formatTodoList(todos: UpochiTodo[]): string {
       `   id: ${todo.id}`,
       "",
     ]),
-  ].join("\n").trimEnd();
+  ]).trimEnd();
 }
 
 function unwrapId(rawId: string): string {
@@ -130,15 +140,15 @@ function unwrapId(rawId: string): string {
 
 function operationErrorText(error: unknown, baseUrl: string): string {
   if (error instanceof UpochiApiError && error.status === 404) {
-    return "这个 Todo 已经不存在，可能已经被删除了。";
+    return upochiBlock("Upochi-Error", ["这个 Todo 已经不存在，可能已经被删除了。"]);
   }
   const detail = error instanceof Error ? error.message : String(error);
-  return [
+  return upochiBlock("Upochi-Error", [
     `Upochi 操作失败：${detail}`,
     "",
     "请确认 Upochi 已启动，并且本地 API 可以访问：",
     baseUrl,
-  ].join("\n");
+  ]);
 }
 
 export function createUpochiRouteDefinition(profileId: string): RuntimeRoute {
@@ -247,7 +257,7 @@ export function createUpochiConnector(
           message.profileId,
           message.conversationId,
         );
-        return sendText(message, "已退回大助手。");
+        return sendText(message, upochiBlock("Upochi-Returned", ["已退回大助手。"]));
       }
 
       if (text === "/check") {
@@ -269,7 +279,7 @@ export function createUpochiConnector(
       if (text === "/add" || text.startsWith("/add ")) {
         const title = text.slice("/add".length).trim();
         if (!title) {
-          return sendText(message, "用法：/add Todo 标题");
+          return sendText(message, upochiBlock("Upochi-Add", ["用法：/add Todo 标题"]));
         }
         try {
           await checkHealth();
@@ -280,7 +290,7 @@ export function createUpochiConnector(
           }, UPOCHI_ADD_REQUEST_TIMEOUT_MS);
           const todo = isRecord(payload) ? parseTodo(payload.todo) : null;
           if (!todo) throw new UpochiApiError("Upochi 返回的新 Todo 格式不正确。");
-          return sendText(message, ["已新增 Todo：", ...formatTodoLine(todo)].join("\n"));
+          return sendText(message, upochiBlock("Upochi-Add", ["已新增 Todo：", ...formatTodoLine(todo)]));
         } catch (error) {
           return sendText(message, operationErrorText(error, baseUrl));
         }
@@ -289,7 +299,7 @@ export function createUpochiConnector(
       if (text === "/remove" || text.startsWith("/remove ")) {
         const id = unwrapId(text.slice("/remove".length));
         if (!id) {
-          return sendText(message, "用法：/remove Todo 的 id");
+          return sendText(message, upochiBlock("Upochi-Remove", ["用法：/remove Todo 的 id"]));
         }
         try {
           await checkHealth();
@@ -299,9 +309,9 @@ export function createUpochiConnector(
           const todo = isRecord(payload) ? parseTodo(payload.todo) : null;
           return sendText(
             message,
-            todo
-              ? ["已删除 Todo：", ...formatTodoLine(todo)].join("\n")
-              : `已删除 Todo。\nid: ${id}`,
+            upochiBlock("Upochi-Remove", todo
+              ? ["已删除 Todo：", ...formatTodoLine(todo)]
+              : ["已删除 Todo。", `id: ${id}`]),
           );
         } catch (error) {
           return sendText(message, operationErrorText(error, baseUrl));

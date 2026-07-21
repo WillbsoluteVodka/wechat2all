@@ -3,7 +3,10 @@ import type {
   WeChatClient,
   WeixinMessage,
 } from "wechat2all";
-import type { RuntimeMediaPipeline } from "./media/pipeline.js";
+import type {
+  RuntimeCachedMedia,
+  RuntimeMediaCacheStats,
+} from "./media/pipeline.js";
 import type { RuntimeTTSProvider } from "./media/tts.js";
 
 export type RuntimePlatform = "wechat-ilink";
@@ -149,6 +152,16 @@ export interface RuntimeRouteManager {
   getConversationRoute(profileId: string, conversationId: string): string | undefined;
 }
 
+/** Public media capability exposed to independently packaged route connectors. */
+export interface RuntimeMediaService {
+  downloadMessageMedia(params: {
+    client: WeChatClient;
+    message: RuntimeMessage;
+  }): Promise<RuntimeCachedMedia[]>;
+  getCacheStats(profileId?: string): Promise<RuntimeMediaCacheStats>;
+  clearCache(profileId?: string): Promise<RuntimeMediaCacheStats>;
+}
+
 export interface RuntimeHandlerContext {
   profileId: string;
   connectorId: string;
@@ -157,7 +170,7 @@ export interface RuntimeHandlerContext {
   memoryScope: MemoryScope;
   route: RuntimeRoute;
   routes: RuntimeRouteManager;
-  media?: RuntimeMediaPipeline;
+  media?: RuntimeMediaService;
   tts?: RuntimeTTSProvider;
   dispatchActions?: (actions: RuntimeAction[]) => Promise<RuntimeActionResult[]>;
 }

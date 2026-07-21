@@ -142,24 +142,32 @@ function titleCaseAscii(value: string): string {
   return value.replace(/\b[a-z]/g, (char) => char.toUpperCase());
 }
 
-function mainHeader(title: string): string {
+function mainBlockTitle(title: string): string {
   const normalized = title.trim();
   const okMatch = normalized.match(/^ok:\s*(.+)$/i);
   const errorMatch = normalized.match(/^error:\s*(.+)$/i);
   const rawLabel = okMatch?.[1] ?? errorMatch?.[1] ?? normalized;
-  const display = errorMatch ? `Error: ${rawLabel}` : rawLabel;
-  return `◆ 大助手 - ${titleCaseAscii(display)}`;
+  const display = errorMatch ? `Error-${rawLabel}` : rawLabel;
+  const label = titleCaseAscii(display)
+    .replace(/\s+/g, "-")
+    .replace(/`/g, "'");
+  return label.toLowerCase() === "help" ? "WeConnect/Help" : `WeConnect-${label}`;
+}
+
+function mainBlock(title: string, lines: Array<string | undefined>): string {
+  const body = lines
+    .map(cleanMainLine)
+    .filter((line): line is string => line !== undefined)
+    .map((line) => line.replace(/```/g, "'''"));
+  return [
+    `\`\`\`${title.replace(/`/g, "'")}`,
+    ...body,
+    "```",
+  ].join("\n");
 }
 
 function mainPanel(title: string, lines: Array<string | undefined>): string {
-  const body = lines
-    .map(cleanMainLine)
-    .filter((line): line is string => line !== undefined);
-  return [
-    mainHeader(title),
-    "",
-    ...body,
-  ].join("\n");
+  return mainBlock(mainBlockTitle(title), lines);
 }
 
 function sessionDurationText(remainingMs: number): string {
@@ -191,14 +199,12 @@ export function createMainAssistantSessionReminderAction(params: {
     type: "send_text",
     conversationId: params.conversationId,
     contextToken: params.contextToken,
-    text: [
-      "◆ WeConnect - Session",
-      "",
+    text: mainBlock("WeConnect-Session", [
       "微信连接状态：在线",
       `Session 剩余时间：约 ${sessionDurationText(params.remainingMs)}`,
       `到期时间：${localDateTime(params.expiresAt)}`,
       "到期后需要重新扫描二维码连接。",
-    ].join("\n"),
+    ]),
     dedupeKey: `main-assistant:session-reminder:${params.scheduledAt}`,
     metadata: {
       source: "main-assistant",
@@ -226,13 +232,16 @@ function mainOk(title: string, lines: Array<string | undefined>): string {
 }
 
 function routeHelp(): string {
-  return mainPanel("help", [
-    "- /help 展示所有命令和功能",
-    "- /ls 展示当前所有可用 routes",
-    "- /rename <新名字> 重命名当前 route",
-    "- /cd <route> 进入某个 route",
-    "- /cd .. 从二级 route 返回大助手",
-  ]);
+  return [
+    mainBlock("WeConnect/Help", ["可用命令"]),
+    mainBlock("/help", ["展示所有命令和功能"]),
+    mainBlock("/ls", ["展示当前所有可用 routes"]),
+    mainBlock("/rename", ["/rename <新名字>：重命名当前 route"]),
+    mainBlock("/cd", [
+      "/cd <route>：进入某个 route",
+      "/cd ..：从二级 route 返回大助手",
+    ]),
+  ].join("\n");
 }
 
 function routeProfileMatches(profileId: string, route: RuntimeRoute): boolean {

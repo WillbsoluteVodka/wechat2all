@@ -63,12 +63,24 @@ function routeSessionKey(message: RuntimeMessage): string {
   return [message.profileId, message.conversationId, message.senderId].join("\u0000");
 }
 
-function panel(title: string, lines: Array<string | undefined>): string {
+function block(title: string, lines: Array<string | undefined>): string {
   return [
-    `◆ Claude - ${title}`,
-    "",
-    ...lines.filter((line): line is string => line !== undefined),
+    `\`\`\`${title.replace(/`/g, "'")}`,
+    ...lines
+      .filter((line): line is string => line !== undefined)
+      .map((line) => line.replace(/```/g, "'''")),
+    "```",
   ].join("\n");
+}
+
+function panel(title: string, lines: Array<string | undefined>): string {
+  const normalized = title.trim();
+  const isHelp = normalized.toLowerCase() === "help";
+  const label = normalized
+    .replace(/^Error:\s*/i, "Error-")
+    .replace(/\s+/g, "-")
+    .replace(/[:`]/g, "");
+  return block(isHelp ? "Claude/Help" : `Claude-${label}`, lines);
 }
 
 function textAction(message: RuntimeMessage, text: string): RuntimeAction[] {
@@ -80,19 +92,13 @@ function errorAction(message: RuntimeMessage, title: string, detail: string): Ru
 }
 
 function helpText(): string {
-  return panel("Help", [
-    "/status",
-    "  查看 Claude route 配置与当前 session",
-    "",
-    "/new",
-    "  清除当前 session，下一条消息从零开始",
-    "",
-    "任意普通文本、链接、图片或文件",
-    "  交给本地 Claude Agent SDK；附件会保存到 vault/Wechat_Saved",
-    "",
-    "/cd ..",
-    "  回到主 Router",
-  ]);
+  return [
+    block("Claude/Help", ["可用命令"]),
+    block("/status", ["查看 Claude route 配置与当前 session"]),
+    block("/new", ["清除当前 session，下一条消息从零开始"]),
+    block("Input", ["任意普通文本、链接、图片或文件会交给本地 Claude Agent SDK；附件会保存到 vault/Wechat_Saved"]),
+    block("/cd", ["/cd ..：回到主 Router"]),
+  ].join("\n");
 }
 
 function formatDuration(ms: number): string {

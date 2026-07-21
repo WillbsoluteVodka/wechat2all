@@ -26,6 +26,9 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.3.210
         version: 0.3.210(@anthropic-ai/sdk@0.111.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(zod@4.4.3)
+      '@wechat2all/route-sdk':
+        specifier: workspace:*
+        version: link:../route-sdk
       '@wechat2all/runtime':
         specifier: workspace:*
         version: link:../runtime
@@ -40,6 +43,21 @@ importers:
         version: 0.12.0
 
   packages/codex-gui-bridge: {}
+
+  packages/codex-route:
+    dependencies:
+      '@wechat2all/codex-gui-bridge':
+        specifier: workspace:*
+        version: link:../codex-gui-bridge
+      '@wechat2all/route-sdk':
+        specifier: workspace:*
+        version: link:../route-sdk
+      '@wechat2all/runtime':
+        specifier: workspace:*
+        version: link:../runtime
+      wechat2all:
+        specifier: workspace:*
+        version: link:../client
 
   packages/desktop:
     dependencies:
@@ -81,14 +99,35 @@ importers:
         specifier: ^7.0.0
         version: 7.3.6(@types/node@22.19.15)(tsx@4.21.0)
 
+  packages/office-route:
+    dependencies:
+      '@wechat2all/route-sdk':
+        specifier: workspace:*
+        version: link:../route-sdk
+      '@wechat2all/runtime':
+        specifier: workspace:*
+        version: link:../runtime
+
+  packages/route-sdk:
+    devDependencies:
+      '@wechat2all/runtime':
+        specifier: workspace:*
+        version: link:../runtime
+
   packages/router-daemon:
     dependencies:
       '@wechat2all/claude-route':
         specifier: workspace:*
         version: link:../claude-route
-      '@wechat2all/codex-gui-bridge':
+      '@wechat2all/codex-route':
         specifier: workspace:*
-        version: link:../codex-gui-bridge
+        version: link:../codex-route
+      '@wechat2all/office-route':
+        specifier: workspace:*
+        version: link:../office-route
+      '@wechat2all/route-sdk':
+        specifier: workspace:*
+        version: link:../route-sdk
       '@wechat2all/runtime':
         specifier: workspace:*
         version: link:../runtime

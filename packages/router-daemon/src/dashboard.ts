@@ -38,6 +38,30 @@ export async function createDashboardSnapshot(
     String(now.getMonth() + 1).padStart(2, "0"),
     String(now.getDate()).padStart(2, "0"),
   ].join("-");
+  const routeAgents = new Map<string, {
+    id: string;
+    name: string;
+    kind: string;
+    status: string;
+    routeCount: number;
+    description: string;
+  }>();
+  for (const route of dashboardRoutes) {
+    const value = route.metadata?.dashboardAgent;
+    if (!value || typeof value !== "object") continue;
+    const agent = value as Record<string, unknown>;
+    const previous = routeAgents.get(route.connectorId);
+    routeAgents.set(route.connectorId, {
+      id: route.connectorId,
+      name: typeof agent.name === "string" ? agent.name : routeName(route),
+      kind: typeof agent.kind === "string" ? agent.kind : "Route package",
+      status: typeof agent.status === "string" ? agent.status : "ready",
+      routeCount: (previous?.routeCount ?? 0) + 1,
+      description: typeof agent.description === "string"
+        ? agent.description
+        : routeDescription(route),
+    });
+  }
 
   return {
     profile: {
@@ -64,7 +88,17 @@ export async function createDashboardSnapshot(
         enabled: route.enabled ?? true,
         priority: route.priority ?? 0,
         connectorId: route.connectorId,
+        package:
+          route.metadata?.routePackage
+          && typeof route.metadata.routePackage === "object"
+            ? route.metadata.routePackage
+            : null,
         matchText: routeMatchText(route),
+        management:
+          route.metadata?.dashboardManagement
+          && typeof route.metadata.dashboardManagement === "object"
+            ? route.metadata.dashboardManagement
+            : null,
         stats: {
           messagesToday: currentStats?.messagesToday ?? 0,
           lastHitAt: currentStats?.lastHitAt ?? null,
@@ -88,37 +122,20 @@ export async function createDashboardSnapshot(
         routeCount: routes.filter((route) => route.connectorId === "route-assistant").length,
         description: "负责用户创建的 route-specific assistant。",
       },
-      {
-        id: "codex-bridge",
-        name: "Codex Bridge",
-        kind: "MCP bridge",
-        status: "ready",
-        routeCount: dashboardRoutes.filter((route) => route.connectorId === "codex-bridge").length,
-        description: "本地 Codex bridge 能力，后续由 router 管理入口。",
-      },
-      {
-        id: "claude-route",
-        name: "Claude Route",
-        kind: "Claude Agent SDK",
-        status: env.WECHAT2ALL_CLAUDE_WORKDIR ? "configured" : "needs-config",
-        routeCount: dashboardRoutes.filter((route) => route.connectorId === "claude-route").length,
-        description: "独立 Claude Agent SDK route，可连接 Obsidian vault 或本地工作区。",
-      },
+      ...routeAgents.values(),
       {
         id: "wechat2all-mcp",
         name: "wechat2all MCP Server",
         kind: "MCP",
         status: "planned",
         routeCount: 0,
-        description: "给 Codex/Claude/Cursor 等 agent 暴露微信发送和查询工具。",
+        description: "给本地 agent 暴露微信发送和查询工具。",
       },
     ],
     traces: opts.traces.slice().reverse(),
     settings: {
       llmProvider: env.WECHAT2ALL_LLM_PROVIDER ?? "openai-compatible",
       memoryProvider: env.WECHAT2ALL_MEMORY_PROVIDER ?? "local",
-      codexBackend: "gui-app-server",
-      codexDelivery: env.WECHAT2ALL_CODEX_DELIVERY ?? "app-server",
       autostartEnabled: false,
       routerEndpoint: opts.routerEndpoint,
     },

@@ -13,20 +13,23 @@ current state visible to the UI.
 - Dashboard snapshots: profile status, route list, agents, settings, traces.
 - Trace logging.
 - Hourly WeChat session-expiry reminders sent by the main WeConnect route.
-- Built-in route wiring, including the main assistant, `codex`, and `claude`.
-- Wiring the Codex route to the GUI app-server bridge.
-- Wiring the Claude route to the independent Claude Agent SDK package.
+- A composition root that validates and loads Route Protocol v1 packages.
 
 It should not own generic route behavior, memory policy, action semantics, or
 message normalization. Those belong to `packages/runtime`.
+
+Installed routes may expose `dashboardManagement` metadata for command help,
+setup checks, config controls, and manual permission notes. The desktop renders
+that data generically, so adding a route does not require route-specific Tauri
+commands or React state in the main application.
 
 ## Source Layout
 
 - `src/index.ts` - process lifecycle, runtime startup, QR login, and HTTP server wiring.
 - `src/env.ts` - `.env.local` loading and typed environment helpers.
 - `src/session-reminders.ts` - 24-hour session scheduling and local reminder target state.
-- `src/routes.ts` - built-in route definitions and dashboard route labels.
-- `src/codex.ts` - Codex backend selection and bridge construction.
+- `src/routes.ts` - core route definitions and dashboard route labels.
+- `src/installed-routes.ts` - built-in plus dynamically installed protocol packages.
 - `src/dashboard.ts` - dashboard snapshot projection for the Tauri UI.
 - `src/trace.ts` - in-memory trace buffer and console logging.
 
@@ -36,7 +39,7 @@ message normalization. Those belong to `packages/runtime`.
 - TypeScript.
 - `wechat2all` client SDK.
 - `@wechat2all/runtime`.
-- `@wechat2all/codex-gui-bridge` for the GUI app-server backend.
+- `@wechat2all/codex-route` for the independently packaged Codex route.
 - `@wechat2all/claude-route` for the headless Claude Agent SDK route.
 - Local filesystem state through runtime state stores.
 
@@ -52,13 +55,37 @@ Common endpoints:
 
 - `GET /health`
 - `GET /snapshot`
+- `GET /route-packages`
 - `GET /config`
 - `PATCH /config`
 - `GET /llm/health`
 - `POST /llm/health/check`
+- `GET /routes/:routeId/setup-check` when supported by an installed route
+- `POST /routes/:routeId/setup-check` when supported by an installed route
 - `POST /profiles/:profileId/qr-login`
 - `GET /profiles/:profileId/login-status`
 - settings/dashboard endpoints used by Tauri commands
+
+## Community Route Protocol
+
+The daemon loads Codex and Claude through `@wechat2all/route-sdk`, exactly like
+a third-party route. Add npm specifiers or built local entrypoints to
+`WECHAT2ALL_ROUTE_PACKAGES`; no daemon source edit is required:
+
+```text
+WECHAT2ALL_ROUTE_PACKAGES=@alice/weconnect-route-calendar,/absolute/path/to/dist/index.mjs
+```
+
+The host validates protocol/manifest/module versions, rejects duplicate route,
+connector, and config IDs, assigns private storage, and owns setup/config/UI and
+lifecycle integration. `GET /route-packages` returns the validated installed
+manifests and contribution flags. See `packages/route-sdk/PROTOCOL.md` and its
+copyable package template for the author contract.
+
+A third-party package that cannot be imported, validated, or instantiated is
+rejected and logged; it does not prevent the main app or other routes from
+starting. Built-in package failures remain fatal because they indicate a broken
+application build.
 
 ## Local Provider Configuration API
 
@@ -167,10 +194,12 @@ WECHAT2ALL_ROUTER_PORT=39788 \
 pnpm --filter @wechat2all/router-daemon dev
 ```
 
-## Codex Bridge
+## Installed Codex Route
 
-The built-in `codex` route talks to Codex app-server threads through
-`@wechat2all/codex-gui-bridge`.
+The host installs `@wechat2all/codex-route`. That package owns the connector,
+route definition, GUI bridge construction, setup checker, config extension,
+commands, reminders, and attachment behavior. The daemon sees only a generic
+route module contract.
 
 Inside WeChat:
 
@@ -193,8 +222,8 @@ Optional environment:
 
 ```text
 WECHAT2ALL_CODEX_THREAD_ID=<prebound-thread-id>
-WECHAT2ALL_CODEX_DELIVERY=app-server
-# WECHAT2ALL_CODEX_DELIVERY=gui-automation
+WECHAT2ALL_CODEX_DELIVERY=gui-automation
+# WECHAT2ALL_CODEX_DELIVERY=app-server
 WECHAT2ALL_CODEX_REPLY_MODE=final
 # WECHAT2ALL_CODEX_REPLY_MODE=silent
 # WECHAT2ALL_CODEX_REPLY_MODE=stream
@@ -205,6 +234,7 @@ WECHAT2ALL_CODEX_IN_PROGRESS_GRACE_MS=120000
 WECHAT2ALL_CODEX_COMPACTION_GRACE_MS=180000
 WECHAT2ALL_CODEX_GUI_POLL_INTERVAL_MS=1000
 WECHAT2ALL_CODEX_GUI_THREAD_OPEN_DELAY_MS=900
+WECHAT2ALL_CODEX_GUI_NEW_CHAT_DISCOVERY_MS=15000
 WECHAT2ALL_CODEX_LIST_LIMIT=20
 WECHAT2ALL_CODEX_GUI_BINDING_FILE=<optional-binding-state-file>
 WECHAT2ALL_MEDIA_DOWNLOAD_TIMEOUT_MS=60000
@@ -216,10 +246,10 @@ WECHAT2ALL_MEDIA_CACHE_MAX_BYTES=1073741824
 WECHAT2ALL_MEDIA_CACHE_PRUNE_INTERVAL_MS=60000
 ```
 
-`WECHAT2ALL_CODEX_DELIVERY=gui-automation` is the opt-in mode that opens the
-bound Codex desktop chat with `codex://threads/<threadId>`, pastes into that
-chat, and polls the same bound thread for the final answer. It requires macOS
-Accessibility permission for the app/terminal running wechat2all.
+`gui-automation` is the default. It opens the exact bound Codex desktop chat,
+pastes attachments/text, presses Return, and uses app-server to observe the
+reply. If GUI injection fails before a turn appears, delivery falls back to
+app-server. `/new` is created through app-server and opened after its first turn.
 
 Inbound WeChat media is cached under `~/.wechat2all-runtime-bot/media/<profile>`
 so runtime connectors can hand local file paths to Codex and other local agents.
@@ -234,8 +264,9 @@ desktop/daemon restarts restore the same chat automatically.
 
 ## Collaborator Notes
 
-- If you add a new built-in route, define the route here but put reusable
-  connector behavior in `packages/runtime`.
+- Put each distributable route in its own package. Add only its module factory to
+  `src/installed-routes.ts`; do not add route-specific behavior to runtime or the
+  main daemon entry point.
 - If the desktop cannot start, check whether port `39787` is already in use.
 - `pnpm desktop` enables the local-only `/dev/shutdown` endpoint while it owns
   the daemon, so an existing development stack can stop cleanly before restart.

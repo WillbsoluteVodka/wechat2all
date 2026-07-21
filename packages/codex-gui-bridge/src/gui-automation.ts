@@ -11,6 +11,8 @@ export interface CodexGuiAutomationOptions {
   bundleId?: string;
   activateDelayMs?: number;
   sendDelayMs?: number;
+  attachmentDelayMs?: number;
+  attachmentPaths?: string[];
   threadId?: string;
   threadOpenDelayMs?: number;
 }
@@ -24,12 +26,15 @@ on run argv
   set targetThreadId to item 5 of argv
   set threadOpenDelaySeconds to (item 6 of argv) as number
   set sendDelaySeconds to (item 7 of argv) as number
+  set attachmentDelaySeconds to (item 8 of argv) as number
+  set attachmentPaths to {}
+  if (count of argv) > 8 then set attachmentPaths to items 9 thru -1 of argv
   set oldClipboard to missing value
   set clipboardChanged to false
 
   try
     if targetThreadId is not "" then
-      open location ("codex://threads/" & targetThreadId)
+      do shell script "/usr/bin/open " & quoted form of ("codex://threads/" & targetThreadId)
       delay threadOpenDelaySeconds
     end if
 
@@ -49,12 +54,19 @@ on run argv
     try
       set oldClipboard to the clipboard as text
     end try
-    set the clipboard to promptText
-    set clipboardChanged to true
-
     tell application "System Events"
       tell process processName
-        keystroke "v" using command down
+        repeat with attachmentPath in attachmentPaths
+          set the clipboard to (POSIX file (contents of attachmentPath))
+          set clipboardChanged to true
+          keystroke "v" using command down
+          delay attachmentDelaySeconds
+        end repeat
+        if promptText is not "" then
+          set the clipboard to promptText
+          set clipboardChanged to true
+          keystroke "v" using command down
+        end if
         delay sendDelaySeconds
         key code 36
       end tell
@@ -75,33 +87,41 @@ on run argv
 end run
 `;
 
-export async function injectPromptIntoCodexGui(
-  text: string,
-  opts: CodexGuiAutomationOptions = {},
+const NEW_CHAT_SCRIPT = `
+on run argv
+  set appName to item 1 of argv
+  set processName to item 2 of argv
+  set activateDelaySeconds to (item 3 of argv) as number
+  set newChatDelaySeconds to (item 4 of argv) as number
+
+  tell application appName to activate
+  delay activateDelaySeconds
+
+  tell application "System Events"
+    if UI elements enabled is false then error "Accessibility is not available for GUI automation"
+    if not (exists process processName) then error processName & " is not running"
+    tell process processName
+      if (count of windows) is 0 then error processName & " has no accessible window"
+      set frontmost to true
+      if not (exists menu item "New Chat" of menu "File" of menu bar 1) then
+        error "New Chat menu item is unavailable"
+      end if
+      click menu item "New Chat" of menu "File" of menu bar 1
+      delay newChatDelaySeconds
+    end tell
+  end tell
+end run
+`;
+
+async function runOsascript(
+  script: string,
+  args: string[],
+  osascriptBin = "osascript",
 ): Promise<void> {
-  const target = resolveCodexGuiAppTarget(opts);
-  const activateDelaySeconds = String((opts.activateDelayMs ?? 450) / 1000);
-  const sendDelaySeconds = String((opts.sendDelayMs ?? 600) / 1000);
-  const threadId = opts.threadId?.trim() ?? "";
-  const threadOpenDelaySeconds = String((opts.threadOpenDelayMs ?? 900) / 1000);
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(
-      opts.osascriptBin ?? "osascript",
-      [
-        "-e",
-        SCRIPT,
-        text,
-        target.appName,
-        target.processName,
-        activateDelaySeconds,
-        threadId,
-        threadOpenDelaySeconds,
-        sendDelaySeconds,
-      ],
-      {
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
+    const child = spawn(osascriptBin, ["-e", script, ...args], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stderr = "";
     child.stderr.setEncoding("utf-8");
     child.stderr.on("data", (chunk: string) => {
@@ -113,12 +133,44 @@ export async function injectPromptIntoCodexGui(
         resolve();
         return;
       }
-      reject(
-        new Error(
-          `${opts.osascriptBin ?? "osascript"} failed: ` +
-            `code=${code ?? "null"} signal=${signal ?? "null"} ${stderr.trim()}`,
-        ),
-      );
+      reject(new Error(
+        `${osascriptBin} failed: code=${code ?? "null"} signal=${signal ?? "null"} ${stderr.trim()}`,
+      ));
     });
   });
+}
+
+export async function injectPromptIntoCodexGui(
+  text: string,
+  opts: CodexGuiAutomationOptions = {},
+): Promise<void> {
+  const target = resolveCodexGuiAppTarget(opts);
+  const activateDelaySeconds = String((opts.activateDelayMs ?? 450) / 1000);
+  const sendDelaySeconds = String((opts.sendDelayMs ?? 600) / 1000);
+  const attachmentDelaySeconds = String((opts.attachmentDelayMs ?? 700) / 1000);
+  const threadId = opts.threadId?.trim() ?? "";
+  const threadOpenDelaySeconds = String((opts.threadOpenDelayMs ?? 900) / 1000);
+  await runOsascript(SCRIPT, [
+    text,
+    target.appName,
+    target.processName,
+    activateDelaySeconds,
+    threadId,
+    threadOpenDelaySeconds,
+    sendDelaySeconds,
+    attachmentDelaySeconds,
+    ...(opts.attachmentPaths ?? []).map((filePath) => filePath.trim()).filter(Boolean),
+  ], opts.osascriptBin);
+}
+
+export async function startNewChatInCodexGui(
+  opts: CodexGuiAutomationOptions = {},
+): Promise<void> {
+  const target = resolveCodexGuiAppTarget(opts);
+  await runOsascript(NEW_CHAT_SCRIPT, [
+    target.appName,
+    target.processName,
+    String((opts.activateDelayMs ?? 450) / 1000),
+    String((opts.sendDelayMs ?? 600) / 1000),
+  ], opts.osascriptBin);
 }

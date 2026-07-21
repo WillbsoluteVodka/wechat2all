@@ -19,6 +19,7 @@ export interface CodexGuiChat {
   project?: string;
   projectPath?: string;
   status?: string;
+  createdAt?: number;
   updatedAt?: number;
   preview?: string;
   modelProvider?: string;
@@ -30,6 +31,10 @@ export interface CodexGuiBinding {
   threadId: string;
   title?: string;
   project?: string;
+  projectPath?: string;
+  pendingFirstMessage?: boolean;
+  pendingGuiNewChat?: boolean;
+  pendingGuiNewChatAt?: number;
   boundAt: number;
 }
 
@@ -75,6 +80,7 @@ export interface CodexGuiPromptInjectionContext {
   threadId?: string;
   threadTitle?: string;
   threadOpenDelayMs?: number;
+  attachmentPaths?: string[];
 }
 
 export type CodexGuiPromptInjector = (
@@ -83,6 +89,7 @@ export type CodexGuiPromptInjector = (
 ) => Promise<void>;
 
 export type CodexGuiThreadOpener = (threadId: string) => Promise<void>;
+export type CodexGuiNewChatStarter = () => Promise<void>;
 
 export interface CodexAppServerTransport {
   request<T>(method: string, params?: unknown, timeoutMs?: number): Promise<T>;
@@ -90,7 +97,17 @@ export interface CodexAppServerTransport {
   onNotification?(
     handler: (method: string, params: unknown) => void,
   ): () => void;
+  /** Invalidates the current app-server session without permanently disposing the transport. */
+  reset?(reason?: string): void;
+  /** Changes whenever the underlying app-server session is replaced or invalidated. */
+  getGeneration?(): number;
   close?(): void;
+}
+
+export interface CodexGuiRecoveryResult {
+  recovered: boolean;
+  threadId?: string;
+  detail: string;
 }
 
 export interface CodexDesktopThreadSnapshot {
@@ -131,13 +148,18 @@ export interface CodexGuiBridgeOptions {
   replyMode?: CodexGuiReplyMode;
   guiPromptInjector?: CodexGuiPromptInjector;
   guiThreadOpener?: CodexGuiThreadOpener;
+  guiNewChatStarter?: CodexGuiNewChatStarter;
   timeoutMs?: number;
   turnTimeoutMs?: number;
+  maxTurnWaitMs?: number;
   inProgressGraceMs?: number;
   compactionGraceMs?: number;
   guiPollIntervalMs?: number;
   guiThreadOpenDelayMs?: number;
   guiFallbackReconcileMs?: number;
+  /** How long GUI delivery may take to become observable through app-server. */
+  guiTurnObservationMs?: number;
+  guiNewChatDiscoveryMs?: number;
   listLimit?: number;
   clientName?: string;
   clientTitle?: string;

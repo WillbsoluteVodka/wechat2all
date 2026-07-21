@@ -11,9 +11,7 @@ const children = [];
 const ownedChildren = new Set();
 const daemonUrl =
   process.env.WECHAT2ALL_ROUTER_DAEMON_URL ?? "http://127.0.0.1:39787";
-const requestedCodexBackend = "gui-app-server";
 const restartExisting = process.env.WECHAT2ALL_DESKTOP_RESTART !== "0";
-const runCodexAutoOpenCheck = process.env.WECHAT2ALL_DESKTOP_OPEN_CODEX !== "0";
 const uiDevUrl = process.env.WECHAT2ALL_DESKTOP_DEV_URL ?? "http://127.0.0.1:5173";
 
 function mergeNoProxy(value) {
@@ -90,13 +88,7 @@ async function existingDaemon() {
   const health = await readJson(`${baseUrl}/health`);
   if (!health?.ok) return undefined;
 
-  const snapshot = await readJson(`${baseUrl}/snapshot`);
-  return {
-    health,
-    codexBackend:
-      snapshot?.settings?.codexBackend ??
-      health.codexBackend,
-  };
+  return health;
 }
 
 function portFromUrl(value) {
@@ -116,25 +108,6 @@ function execFileOutput(command, args) {
       });
     });
   });
-}
-
-async function ensureCodexGuiOpen() {
-  if (!runCodexAutoOpenCheck || process.platform !== "darwin") return;
-
-  const cliPath = path.join(
-    repoRoot,
-    "packages/codex-gui-bridge/src/index.ts",
-  );
-  const args = ["--import", "tsx", cliPath, "ensure-open", "--quiet"];
-
-  const result = await execFileOutput(process.execPath, args);
-  if (result.ok) return;
-
-  const detail =
-    result.stderr.trim() ||
-    result.error?.message ||
-    "unknown error";
-  console.warn(`[desktop-dev] Could not ensure Codex GUI is open: ${detail}`);
 }
 
 async function pidsListeningOnPort(port) {
@@ -316,19 +289,11 @@ async function main() {
   } else {
     const daemon = await existingDaemon();
     if (daemon) {
-      if (daemon.codexBackend && daemon.codexBackend !== requestedCodexBackend) {
-        throw new Error(
-          `router-daemon is already running at ${daemonUrl} with codex backend ` +
-            `${daemon.codexBackend}, but this desktop session requested ${requestedCodexBackend}. ` +
-            "Stop the existing daemon first, then restart desktop.",
-        );
-      }
       console.log(`[desktop-dev] Reusing existing router-daemon at ${daemonUrl}`);
     } else {
       run("router-daemon", ["--filter", "@wechat2all/router-daemon", "dev"]);
     }
   }
-  await ensureCodexGuiOpen();
   await waitForHealth();
   run("tauri", ["--filter", "@wechat2all/desktop", "dev:app"]);
 }

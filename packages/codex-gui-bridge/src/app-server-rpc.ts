@@ -72,6 +72,7 @@ export class CodexAppServerRpc implements CodexAppServerTransport {
   private stdoutBuffer = "";
   private stderrBuffer = "";
   private disposed = false;
+  private generation = 0;
 
   constructor(opts: CodexAppServerRpcOptions = {}) {
     this.command = opts.command ?? resolveCodexExecutable();
@@ -98,21 +99,19 @@ export class CodexAppServerRpc implements CodexAppServerTransport {
       this.stderrBuffer = (this.stderrBuffer + chunk).slice(-16_384);
     });
     child.on("error", (error) => {
-      if (this.child === child) this.child = undefined;
-      this.rejectAll(
+      this.invalidateChild(
+        child,
         new Error(`${this.command} ${this.args.join(" ")} spawn failed: ${error.message}`),
       );
     });
     child.on("exit", (code, signal) => {
-      if (this.child === child) this.child = undefined;
-      if (this.pending.size > 0) {
-        this.rejectAll(
-          new Error(
-            `${this.command} ${this.args.join(" ")} exited before responding: ` +
-              `code=${code ?? "null"} signal=${signal ?? "null"} ${this.stderrSummary()}`,
-          ),
-        );
-      }
+      this.invalidateChild(
+        child,
+        new Error(
+          `${this.command} ${this.args.join(" ")} exited: ` +
+            `code=${code ?? "null"} signal=${signal ?? "null"} ${this.stderrSummary()}`,
+        ),
+      );
     });
     return child;
   }
@@ -146,8 +145,11 @@ export class CodexAppServerRpc implements CodexAppServerTransport {
 
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`Timed out waiting for ${method}. ${this.stderrSummary()}`));
+        this.invalidateChild(
+          child,
+          new Error(`Timed out waiting for ${method}. ${this.stderrSummary()}`),
+          true,
+        );
       }, timeoutMs);
 
       this.pending.set(id, {
@@ -159,19 +161,21 @@ export class CodexAppServerRpc implements CodexAppServerTransport {
       try {
         child.stdin.write(`${JSON.stringify(message)}\n`, (error) => {
           if (!error) return;
-          clearTimeout(timer);
-          this.pending.delete(id);
-          if (this.child === child) this.child = undefined;
-          reject(new Error(
-            `Failed to write ${method} to Codex app-server: ${error.message}. ` +
-              this.stderrSummary(),
-          ));
+          this.invalidateChild(
+            child,
+            new Error(
+              `Failed to write ${method} to Codex app-server: ${error.message}. ` +
+                this.stderrSummary(),
+            ),
+            true,
+          );
         });
       } catch (error) {
-        clearTimeout(timer);
-        this.pending.delete(id);
-        if (this.child === child) this.child = undefined;
-        reject(error instanceof Error ? error : new Error(String(error)));
+        this.invalidateChild(
+          child,
+          error instanceof Error ? error : new Error(String(error)),
+          true,
+        );
       }
     });
   }
@@ -187,7 +191,13 @@ export class CodexAppServerRpc implements CodexAppServerTransport {
     try {
       child = this.ensureChild();
       child.stdin.write(`${JSON.stringify(message)}\n`, (error) => {
-        if (error && this.child === child) this.child = undefined;
+        if (error) {
+          this.invalidateChild(
+            child,
+            new Error(`Failed to write ${method} notification: ${error.message}`),
+            true,
+          );
+        }
       });
     } catch {
       // The next request will report a detailed transport error and retry.
@@ -201,12 +211,31 @@ export class CodexAppServerRpc implements CodexAppServerTransport {
     };
   }
 
+  getGeneration(): number {
+    return this.generation;
+  }
+
+  reset(reason = "Codex app-server transport was reset."): void {
+    if (this.disposed) return;
+    const error = new Error(reason);
+    const child = this.child;
+    if (child) this.invalidateChild(child, error, true);
+    else {
+      this.generation += 1;
+      this.rejectAll(error);
+    }
+  }
+
   close(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.child?.kill("SIGTERM");
-    this.child = undefined;
-    this.rejectAll(new Error("Codex app-server transport was closed."));
+    const child = this.child;
+    if (child) {
+      this.invalidateChild(child, new Error("Codex app-server transport was closed."), true);
+    } else {
+      this.generation += 1;
+      this.rejectAll(new Error("Codex app-server transport was closed."));
+    }
   }
 
   private handleStdout(chunk: string): void {
@@ -261,9 +290,14 @@ export class CodexAppServerRpc implements CodexAppServerTransport {
     this.pending.delete(numericId);
 
     if (message.error) {
-      pending.reject(
-        new Error(message.error.message ?? `RPC error ${message.error.code ?? "unknown"}`),
+      const error = new Error(
+        message.error.message ?? `RPC error ${message.error.code ?? "unknown"}`,
       );
+      pending.reject(error);
+      if (/not initialized|initialize first|session.*closed/i.test(error.message)) {
+        const child = this.child;
+        if (child) this.invalidateChild(child, error, true);
+      }
       return;
     }
     pending.resolve(message.result);
@@ -275,6 +309,21 @@ export class CodexAppServerRpc implements CodexAppServerTransport {
       this.pending.delete(id);
       pending.reject(error);
     }
+  }
+
+  private invalidateChild(
+    child: ChildProcessWithoutNullStreams,
+    error: Error,
+    terminate = false,
+  ): void {
+    if (this.child !== child) return;
+    this.child = undefined;
+    this.generation += 1;
+    if (terminate) {
+      child.stdin.destroy();
+      child.kill("SIGTERM");
+    }
+    this.rejectAll(error);
   }
 
   private stderrSummary(): string {

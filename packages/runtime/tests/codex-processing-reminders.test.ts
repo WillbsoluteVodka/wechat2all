@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import {
+const codexRouteTestModulePath = ["..", "..", "codex-route", "src", "index.js"].join("/");
+const {
   CODEX_PROCESSING_REMINDER_TEXTS,
   createCodexProcessingReminderPicker,
-} from "../src/connectors/codex-processing-reminders.js";
+} = await import(codexRouteTestModulePath) as {
+  CODEX_PROCESSING_REMINDER_TEXTS: readonly string[];
+  createCodexProcessingReminderPicker(random?: () => number): () => string;
+};
 
 test("codex processing reminder pool contains 20 unique messages", () => {
   assert.equal(CODEX_PROCESSING_REMINDER_TEXTS.length, 20);

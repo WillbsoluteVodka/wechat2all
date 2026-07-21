@@ -1,6 +1,6 @@
 import { useMemo, type CSSProperties } from "react";
 
-export type PixelIconKind = "wechat" | "wechatGray" | "codex" | "openai" | "crab";
+export type PixelIconKind = "wechat" | "wechatGray" | "openai" | "crab";
 type PixelTone =
   | "off"
   | "wechat"
@@ -10,13 +10,6 @@ type PixelTone =
   | "wechatGrayDark"
   | "wechatGrayLight"
   | "wechatGrayWhite"
-  | "codexFrame"
-  | "codexTile"
-  | "codexPurple"
-  | "codexPurpleLight"
-  | "codexBlue"
-  | "codexBlueLight"
-  | "codexBlueDark"
   | "openai"
   | "crab"
   | "white";
@@ -87,61 +80,6 @@ function buildWechatPixels(
   return pixels;
 }
 
-function buildCodexPixels() {
-  const pixels: PixelTone[] = Array.from({ length: 24 * 24 }, () => "off");
-
-  const left = 1;
-  const top = 1;
-  const right = 22;
-  const bottom = 22;
-  const radius = 4;
-
-  for (let y = top; y <= bottom; y += 1) {
-    for (let x = left; x <= right; x += 1) {
-      const cornerX = x < left + radius ? left + radius : x > right - radius ? right - radius : x;
-      const cornerY = y < top + radius ? top + radius : y > bottom - radius ? bottom - radius : y;
-      const inside = Math.hypot(x - cornerX, y - cornerY) <= radius;
-      if (!inside) continue;
-      const isEdge = x <= left + 1 || x >= right - 1 || y <= top + 1 || y >= bottom - 1;
-      setPixel(pixels, x, y, isEdge ? "codexFrame" : "codexTile");
-    }
-  }
-
-  const paintBlob = (cx: number, cy: number, rx: number, ry: number) => {
-    for (let y = 0; y < 24; y += 1) {
-      for (let x = 0; x < 24; x += 1) {
-        const dx = (x + 0.5 - cx) / rx;
-        const dy = (y + 0.5 - cy) / ry;
-        const distance = dx * dx + dy * dy;
-        if (distance > 1) continue;
-
-        const vertical = (y - 5) / 14;
-        const edge = distance > 0.72;
-        let tone: Exclude<PixelTone, "off"> = "codexBlue";
-        if (vertical < 0.2) tone = "codexPurpleLight";
-        else if (vertical < 0.42) tone = "codexPurple";
-        else if (vertical > 0.78) tone = "codexBlueDark";
-        else if (x > 14 && y < 14) tone = "codexBlueLight";
-
-        setPixel(pixels, x, y, edge && tone !== "codexPurpleLight" ? "codexBlueDark" : tone);
-      }
-    }
-  };
-
-  paintBlob(11.5, 8.8, 6.8, 4.5);
-  paintBlob(8.4, 12.3, 5.8, 6.1);
-  paintBlob(15.2, 12.2, 6.6, 6.1);
-  paintBlob(12.1, 15.8, 7.6, 4.9);
-
-  [
-    [7, 9], [8, 10], [9, 11], [8, 12], [7, 13],
-    [8, 9], [9, 10], [10, 11], [9, 12], [8, 13],
-    [13, 14], [14, 14], [15, 14], [16, 14],
-  ].forEach(([x, y]) => setPixel(pixels, x, y, "white"));
-
-  return pixels;
-}
-
 function buildBitmapPixels(
   rows: string[],
   tone: Exclude<PixelTone, "off">,
@@ -202,7 +140,6 @@ function buildCrabPixels() {
 function buildPixelIcon(kind: PixelIconKind) {
   if (kind === "wechat") return buildWechatPixels();
   if (kind === "wechatGray") return buildWechatPixels("gray");
-  if (kind === "codex") return buildCodexPixels();
   if (kind === "openai") return buildOpenAiPixels();
   return buildCrabPixels();
 }

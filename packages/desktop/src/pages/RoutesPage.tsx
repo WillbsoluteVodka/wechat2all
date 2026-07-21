@@ -2,37 +2,17 @@ import { useEffect, useState, type ChangeEvent, type KeyboardEvent } from "react
 
 import { getUpochiConfig, getUpochiHealth, patchUpochiConfig } from "../api";
 import type {
-  CodexSetupCheckItemStatus,
-  CodexSetupCheckResponse,
+  LocalConfigSnapshot,
+  RouteSetupCheckItemStatus,
+  RouteSetupCheckResponse,
   RouteSummary,
   UpochiConfigSnapshot,
   UpochiHealthResponse,
   UpochiLlmModel,
 } from "../types";
-import accessibilityPermissionsImage from "../assets/codex-permissions-accessibility.png";
-import automationPermissionsImage from "../assets/codex-permissions-automation.png";
-import screenRecordingPermissionsImage from "../assets/codex-permissions-screen-recording.png";
 import { StatusPill } from "../ui/Common";
 import { displayRouteName, routeRuleDetails } from "../ui/constants";
 import { PixelText } from "../ui/PixelArt";
-
-const CODEX_MANUAL_PERMISSION_GROUPS = [
-  {
-    title: "ACCESSIBILITY",
-    image: accessibilityPermissionsImage,
-    alt: "Accessibility permissions enabled for ChatGPT, Codex Computer Use, osascript, and Terminal",
-  },
-  {
-    title: "AUTOMATION",
-    image: automationPermissionsImage,
-    alt: "Automation permissions enabled under Terminal",
-  },
-  {
-    title: "SCREEN & SYSTEM AUDIO RECORDING",
-    image: screenRecordingPermissionsImage,
-    alt: "Screen and System Audio Recording enabled for ChatGPT",
-  },
-] as const;
 
 const UPOCHI_LLM_PRESETS: Record<UpochiLlmModel, { label: string; endpoint: string }> = {
   "deepseek-chat": {
@@ -356,16 +336,19 @@ function WeConnectStage(props: { route: RouteSummary | null }) {
 }
 
 export function RoutesPage(props: {
-  codexSetupCheck: CodexSetupCheckResponse | null;
-  codexSetupError: string | null;
-  codexSetupRefreshing: boolean;
-  codexDelivery: "app-server" | "gui-automation";
-  codexDeliveryRestartRequired: boolean;
-  codexDeliverySaving: boolean;
+  routeSetupChecks: Record<string, RouteSetupCheckResponse | null>;
+  routeSetupErrors: Record<string, string | null>;
+  routeSetupRefreshingId: string | null;
+  localConfig: LocalConfigSnapshot | null;
+  routeConfigSavingPath: string | null;
   routes: RouteSummary[];
   selectedRouteId: string | null;
-  onRefreshCodexSetupCheck: () => void;
-  onToggleCodexDelivery: () => void;
+  onRefreshRouteSetupCheck: (routeId: string) => void;
+  onSetRouteConfig: (
+    configKey: string,
+    field: string,
+    value: string,
+  ) => void;
   onSelect: (routeId: string | null) => void;
 }) {
   const weConnectRoute = props.routes.find(isWeConnectRoute) ?? null;
@@ -394,11 +377,14 @@ export function RoutesPage(props: {
   }
 
   const matchRules = routeRuleDetails(selected);
-  const isCodexRoute = selected.id === "codex" || selected.connectorId.includes("codex");
   const isUpochiRoute = selected.id === "upochi" || selected.connectorId.includes("upochi");
+  const management = selected.management;
+  const hasSetupCheck = management?.setupCheck === true;
+  const configControls = management?.configControls ?? [];
+  const manualPermissions = management?.manualPermissions ?? [];
   const genericConfigChecklist: Array<{
     label: string;
-    status: CodexSetupCheckItemStatus;
+    status: RouteSetupCheckItemStatus;
     detail: string;
   }> = [
     { label: "Route enabled", status: selected.enabled ? "pass" : "missing", detail: selected.enabled ? "ON" : "OFF" },
@@ -418,37 +404,46 @@ export function RoutesPage(props: {
       detail: `${matchRules.length} RULES`,
     },
   ];
-  const cachedCodexCheck = props.codexSetupCheck?.check;
-  const codexWarnings = cachedCodexCheck?.items.filter((item) => item.status === "warn") ?? [];
-  const codexConfigChecklist = props.codexSetupError
+  const cachedSetupCheck = props.routeSetupChecks[selected.id]?.check;
+  const setupConfigChecklist = props.routeSetupErrors[selected.id]
     ? [{
-        label: props.codexSetupError,
-        status: "missing" as CodexSetupCheckItemStatus,
+        label: props.routeSetupErrors[selected.id] ?? "Setup check failed",
+        status: "missing" as RouteSetupCheckItemStatus,
         detail: "action failed",
       }]
-    : cachedCodexCheck?.error
+    : cachedSetupCheck?.error
       ? [{
-          label: cachedCodexCheck.error,
-          status: "missing" as CodexSetupCheckItemStatus,
+          label: cachedSetupCheck.error,
+          status: "missing" as RouteSetupCheckItemStatus,
           detail: "check failed",
         }]
-      : codexWarnings.length
-        ? codexWarnings.map((item) => ({
-        label: item.message,
-        status: item.status,
-        detail: item.section
-          ? `${item.status} / ${item.section}`
-          : item.status,
-        }))
-        : cachedCodexCheck?.status === "ready"
+      : cachedSetupCheck?.items.length
+        ? cachedSetupCheck.items.map((item) => ({
+            label: item.message,
+            status: item.status,
+            detail: item.section
+              ? `${item.status} / ${item.section}`
+              : item.status,
+          }))
+        : cachedSetupCheck?.status === "checking"
           ? [{
-              label: "ALL CHECKS PASSED",
-              status: "pass" as CodexSetupCheckItemStatus,
-              detail: "NO WARNINGS",
+              label: "CHECKING ROUTE CONFIGURATION",
+              status: "info" as RouteSetupCheckItemStatus,
+              detail: "IN PROGRESS",
             }]
-          : [];
-  const configChecklist = isCodexRoute ? codexConfigChecklist : genericConfigChecklist;
-  const checklistMarker: Record<CodexSetupCheckItemStatus, string> = {
+          : cachedSetupCheck?.status === "ready"
+            ? [{
+                label: "ALL CHECKS PASSED",
+                status: "pass" as RouteSetupCheckItemStatus,
+                detail: "NO WARNINGS",
+              }]
+            : [{
+                label: "WAITING FOR ROUTE SETUP CHECK",
+                status: "info" as RouteSetupCheckItemStatus,
+                detail: "STARTING",
+              }];
+  const configChecklist = hasSetupCheck ? setupConfigChecklist : genericConfigChecklist;
+  const checklistMarker: Record<RouteSetupCheckItemStatus, string> = {
     pass: "[x]",
     missing: "[!]",
     warn: "[-]",
@@ -473,36 +468,56 @@ export function RoutesPage(props: {
     <section className="route-detail-section">
       <div className="route-detail-section-heading">
         <h2 className="home-kicker">CONFIG CHECKLIST</h2>
-        {isCodexRoute ? (
+        {hasSetupCheck || configControls.length ? (
           <div className="route-config-actions">
-            {props.codexDeliveryRestartRequired ? (
+            {props.localConfig?.restartRequired && configControls.length ? (
               <span className="route-delivery-restart">RESTART REQUIRED</span>
             ) : null}
-            <button
-              type="button"
-              className={props.codexDelivery === "gui-automation"
-                ? "secondary-button route-delivery-toggle is-gui"
-                : "secondary-button route-delivery-toggle"}
-              disabled={props.codexDeliverySaving}
-              onClick={props.onToggleCodexDelivery}
-              title={props.codexDelivery === "app-server"
-                ? "Switch Codex route to GUI Automation"
-                : "Switch Codex route to App Server"}
-            >
-              {props.codexDeliverySaving
-                ? "SAVING..."
-                : `MODE: ${props.codexDelivery === "app-server" ? "APP SERVER" : "GUI AUTOMATION"}`}
-            </button>
-            <button
-              type="button"
-              className="secondary-button route-config-refresh"
-              disabled={props.codexSetupRefreshing}
-              onClick={props.onRefreshCodexSetupCheck}
-            >
-              {props.codexSetupRefreshing
-                ? "Refreshing..."
-                : "Refresh"}
-            </button>
+            {configControls.map((control) => {
+              const configNamespace = props.localConfig?.[control.configKey];
+              const currentValue = configNamespace
+                && typeof configNamespace === "object"
+                && !Array.isArray(configNamespace)
+                ? (configNamespace as Record<string, unknown>)[control.field]
+                : undefined;
+              const currentIndex = control.values.findIndex(
+                (choice) => choice.value === currentValue,
+              );
+              const activeChoice = control.values[currentIndex >= 0 ? currentIndex : 0];
+              const nextChoice = control.values[(currentIndex + 1 + control.values.length)
+                % control.values.length];
+              const controlPath = `${control.configKey}.${control.field}`;
+              return (
+                <button
+                  key={controlPath}
+                  type="button"
+                  className="secondary-button route-delivery-toggle"
+                  disabled={props.routeConfigSavingPath === controlPath || !nextChoice}
+                  onClick={() => nextChoice && props.onSetRouteConfig(
+                    control.configKey,
+                    control.field,
+                    nextChoice.value,
+                  )}
+                  title={nextChoice?.title ?? `Switch ${control.label}`}
+                >
+                  {props.routeConfigSavingPath === controlPath
+                    ? "SAVING..."
+                    : `${control.label}: ${activeChoice?.label ?? String(currentValue ?? "NOT SET")}`}
+                </button>
+              );
+            })}
+            {hasSetupCheck ? (
+              <button
+                type="button"
+                className="secondary-button route-config-refresh"
+                disabled={props.routeSetupRefreshingId === selected.id}
+                onClick={() => props.onRefreshRouteSetupCheck(selected.id)}
+              >
+                {props.routeSetupRefreshingId === selected.id
+                  ? "Refreshing..."
+                  : "Refresh"}
+              </button>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -526,18 +541,15 @@ export function RoutesPage(props: {
         <span>USER VERIFICATION REQUIRED</span>
       </div>
       <p className="route-manual-permissions-intro">
-        macOS does not expose a reliable read-only status for these permissions. Open System Settings → Privacy &amp; Security, then verify each item manually in the section below.
+        This route declares permissions that cannot be verified reliably through a read-only API. Verify each item manually in System Settings → Privacy &amp; Security.
       </p>
       <div className="route-manual-permission-groups">
-        {CODEX_MANUAL_PERMISSION_GROUPS.map((group) => (
+        {manualPermissions.map((group) => (
           <section key={group.title} className="route-manual-permission-group">
             <h3>{group.title}</h3>
-            <img
-              className="route-manual-permission-image"
-              src={group.image}
-              alt={group.alt}
-              draggable={false}
-            />
+            <ul>
+              {group.items.map((item) => <li key={item}>{item}</li>)}
+            </ul>
           </section>
         ))}
       </div>
@@ -557,14 +569,14 @@ export function RoutesPage(props: {
           <p>{selected.description}</p>
         </header>
 
-        {isCodexRoute
+        {hasSetupCheck
           ? configChecklistSection
           : isUpochiRoute
             ? <UpochiLlmSettings />
             : matchRulesSection}
-        {isCodexRoute ? manualPermissionsSection : null}
+        {manualPermissions.length ? manualPermissionsSection : null}
         {isUpochiRoute ? <UpochiHealthChecklist /> : null}
-        {isCodexRoute || isUpochiRoute ? matchRulesSection : configChecklistSection}
+        {hasSetupCheck || isUpochiRoute ? matchRulesSection : configChecklistSection}
       </section>
     </main>
   );

@@ -135,15 +135,15 @@ test("commands are local and /cd .. returns to the main router", async () => {
   assert.match(sentText(await connector.handleMessage(
     message({ text: "/help" }),
     context(),
-  )), /Claude - Help/);
+  )), /^```Claude\/Help/);
   assert.match(sentText(await connector.handleMessage(
     message({ text: "/new" }),
     context(),
-  )), /New Session/);
+  )), /^```Claude-New-Session/);
   assert.match(sentText(await connector.handleMessage(
     message({ text: "/cd .." }),
     context({ clearRoute: () => { clearedRoute = true; } }),
-  )), /Returned/);
+  )), /^```Claude-Returned/);
   assert.equal(clearedRoute, true);
   assert.equal(runs, 0);
 });
@@ -291,7 +291,7 @@ test("missing workspace and video fail locally without invoking Claude", async (
     runner,
     sessions: new MemorySessionStore(),
   });
-  assert.match(sentText(await noWorkspace.handleMessage(message(), context())), /Workspace Missing/);
+  assert.match(sentText(await noWorkspace.handleMessage(message(), context())), /^```Claude-Error-Workspace-Missing/);
 
   const withWorkspace = createClaudeRouteConnector({
     id: "claude-route",
@@ -306,6 +306,6 @@ test("missing workspace and video fail locally without invoking Claude", async (
       kind: "video",
       raw: {} as RuntimeMessage["attachments"][number]["raw"],
     }],
-  }), context())), /Unsupported Video/);
+  }), context())), /^```Claude-Error-Unsupported-Video/);
   assert.equal(runs, 0);
 });

@@ -1,6 +1,4 @@
 import type { RuntimeRoute } from "@wechat2all/runtime";
-import { createClaudeRouteDefinition } from "@wechat2all/claude-route";
-
 import { createUpochiRouteDefinition } from "./upochi.js";
 
 export function isUserManagedRoute(route: RuntimeRoute): boolean {
@@ -32,28 +30,12 @@ export function applySavedRouteOverrides(
   };
 }
 
-export function defaultRoutes(profileId: string): RuntimeRoute[] {
+export function defaultRoutes(
+  profileId: string,
+  installedRoutes: RuntimeRoute[] = [],
+): RuntimeRoute[] {
   return [
-    {
-      id: "codex",
-      profileId,
-      connectorId: "codex-bridge",
-      priority: 900,
-      terminal: true,
-      match: {
-        kind: "text",
-        textCommands: [],
-      },
-      metadata: {
-        assistantName: "codex",
-        systemPrompt:
-          "Codex bridge：本地 Codex 连接能力，通过大助手 /cd codex 进入。",
-        description:
-          "Codex bridge：通过大助手 /cd codex 进入。app-server 通过本地后台接口连接 Codex，稳定且无需操作界面；gui-automation 是直接驱动 Codex 桌面界面的高级模式，需要额外开启 macOS 系统权限。",
-        builtIn: true,
-      },
-    },
-    createClaudeRouteDefinition(profileId),
+    ...installedRoutes,
     createUpochiRouteDefinition(profileId),
     {
       id: "main-assistant-default",

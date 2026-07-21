@@ -18,10 +18,33 @@ export interface RouteSummary {
   priority: number;
   connectorId: string;
   matchText: string[];
+  management?: RouteManagement | null;
   stats: {
     messagesToday: number;
     lastHitAt?: string | null;
   };
+}
+
+export interface RouteManagement {
+  setupCheck?: boolean;
+  configControls?: Array<{
+    configKey: string;
+    field: string;
+    label: string;
+    values: Array<{
+      value: string;
+      label: string;
+      title?: string;
+    }>;
+  }>;
+  manualPermissions?: Array<{
+    title: string;
+    items: string[];
+  }>;
+  commands?: Array<{
+    rule: string;
+    description: string;
+  }>;
 }
 
 export interface AgentSummary {
@@ -87,18 +110,14 @@ export interface ClaudeLocalConfig {
   executable: string | null;
 }
 
-export interface CodexLocalConfig {
-  delivery: "app-server" | "gui-automation";
-}
-
 export interface LocalConfigSnapshot {
   configPath: string;
   runtimeApplied: boolean;
   restartRequired: boolean;
   llm: LlmLocalConfig;
   memory: MemoryLocalConfig;
-  codex: CodexLocalConfig;
   claude: ClaudeLocalConfig;
+  [extensionKey: string]: unknown;
 }
 
 export interface LocalConfigPatch {
@@ -118,9 +137,6 @@ export interface LocalConfigPatch {
     timeoutMs?: number | null;
     localMaxSearchRows?: number | null;
   };
-  codex?: {
-    delivery?: "app-server" | "gui-automation" | null;
-  };
   claude?: {
     apiKey?: string | null;
     workdir?: string | null;
@@ -135,6 +151,7 @@ export interface LocalConfigPatch {
     allowCliAuth?: boolean | null;
     executable?: string | null;
   };
+  [extensionKey: string]: unknown;
 }
 
 export interface LocalConfigResponse {
@@ -218,16 +235,16 @@ export interface LlmHealthResponse {
   };
 }
 
-export type CodexSetupCheckItemStatus = "pass" | "missing" | "warn" | "unknown" | "info";
+export type RouteSetupCheckItemStatus = "pass" | "missing" | "warn" | "unknown" | "info";
 
-export interface CodexSetupCheckResponse {
+export interface RouteSetupCheckResponse {
   ok: true;
   schemaVersion: 1;
   check: {
     status: "idle" | "checking" | "ready" | "error";
     checkedAt: string | null;
     items: Array<{
-      status: CodexSetupCheckItemStatus;
+      status: RouteSetupCheckItemStatus;
       message: string;
       section: string | null;
     }>;

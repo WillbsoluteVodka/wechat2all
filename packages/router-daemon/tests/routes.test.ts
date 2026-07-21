@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createCodexRouteDefinition } from "@wechat2all/codex-route";
+import { createClaudeRouteDefinition } from "@wechat2all/claude-route";
+import { createOfficeRouteDefinition } from "@wechat2all/office-route";
 
 import {
   applySavedRouteOverrides,
@@ -7,11 +10,16 @@ import {
 } from "../src/routes.js";
 
 test("default routes expose isolated built-in apps before the main fallback", () => {
-  const routes = defaultRoutes("profile-1");
+  const routes = defaultRoutes("profile-1", [
+    createCodexRouteDefinition("profile-1"),
+    createClaudeRouteDefinition("profile-1"),
+    createOfficeRouteDefinition("profile-1"),
+  ]);
 
   assert.deepEqual(routes.map((route) => route.id), [
     "codex",
     "claude",
+    "office",
     "upochi",
     "main-assistant-default",
   ]);
@@ -32,8 +40,10 @@ test("default routes expose isolated built-in apps before the main fallback", ()
   assert.equal(routes.at(-1)?.connectorId, "main-assistant");
 });
 
-test("a saved user rename applies to the Claude route without replacing its connector", () => {
-  const claude = defaultRoutes("profile-1").find((route) => route.id === "claude");
+test("a saved user rename applies to an installed route without replacing its connector", () => {
+  const claude = defaultRoutes("profile-1", [
+    createClaudeRouteDefinition("profile-1"),
+  ]).find((route) => route.id === "claude");
   assert.ok(claude);
 
   const renamed = applySavedRouteOverrides(claude, [{

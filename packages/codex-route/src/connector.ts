@@ -8,10 +8,10 @@ import type {
   RuntimeAction,
   RuntimeConnector,
   RuntimeHandlerContext,
+  RuntimeMediaCacheStats,
   RuntimeMessage,
-} from "../types.js";
-import type { RuntimeMediaCacheStats } from "../media/pipeline.js";
-import { createCodexProcessingReminderPicker } from "./codex-processing-reminders.js";
+} from "@wechat2all/runtime";
+import { createCodexProcessingReminderPicker } from "./processing-reminders.js";
 
 export type CodexBridgeStatusState =
   | "idle"
@@ -42,6 +42,10 @@ export interface CodexBridgeBinding {
   threadId: string;
   title?: string;
   project?: string;
+  projectPath?: string;
+  pendingFirstMessage?: boolean;
+  pendingGuiNewChat?: boolean;
+  pendingGuiNewChatAt?: number;
   boundAt?: number;
 }
 
@@ -94,12 +98,13 @@ export interface CodexBridgeSendPromptResult {
   error?: string;
 }
 
-export type CodexReplyMode = "final" | "silent" | "stream";
-
-export interface CodexAutoOpenState {
-  enabled: boolean;
-  updatedAt?: number;
+export interface CodexBridgeRecoveryResult {
+  recovered: boolean;
+  threadId?: string;
+  detail: string;
 }
+
+export type CodexReplyMode = "final" | "silent" | "stream";
 
 export interface CodexAlarmState {
   enabled: boolean;
@@ -115,16 +120,16 @@ export interface CodexBridgeClient {
   listThreads?(): Promise<CodexBridgeThread[]>;
   listChats?(): Promise<CodexBridgeThread[]>;
   bindThread?(threadId: string): Promise<CodexBridgeBinding>;
+  startThread?(): Promise<CodexBridgeBinding>;
   getCurrentBinding?(): Promise<CodexBridgeBinding | null>;
   getTokenUsage?(): Promise<CodexTokenUsage>;
-  getAutoOpen?(): Promise<CodexAutoOpenState>;
-  setAutoOpen?(enabled: boolean): Promise<CodexAutoOpenState>;
   getAlarm?(): Promise<CodexAlarmState>;
   setAlarm?(timeText: string): Promise<CodexAlarmState>;
   clearAlarm?(): Promise<CodexAlarmState>;
   sendPrompt?(prompt: CodexBridgePrompt): Promise<CodexBridgeSendPromptResult>;
   setDefaultTarget?(target: CodexBridgeTarget): Promise<void>;
   getDefaultTarget?(): Promise<CodexBridgeTarget | null>;
+  recover?(reason?: string): Promise<CodexBridgeRecoveryResult>;
 }
 
 export interface CodexTokenWindow {
@@ -157,6 +162,8 @@ export interface CodexConnectorOptions {
   imagePendingTtlMs?: number;
   imageMaxCount?: number;
   processingReminderMs?: number;
+  /** Hard ceiling for one queued route operation, so one stuck request cannot block the route. */
+  operationTimeoutMs?: number;
 }
 
 interface PendingImageState {
@@ -177,6 +184,11 @@ const DEFAULT_IMAGE_PROMPT_REMINDER_MS = 15_000;
 const DEFAULT_IMAGE_PENDING_TTL_MS = 30 * 60_000;
 const DEFAULT_IMAGE_MAX_COUNT = 9;
 const DEFAULT_PROCESSING_REMINDER_MS = 2 * 60_000;
+// The bridge can legitimately observe long-running Codex turns for up to
+// 30 minutes. Keep the route watchdog slightly above that window so it does not
+// discard a valid late final answer while still releasing a genuinely stuck
+// conversation queue.
+const DEFAULT_OPERATION_TIMEOUT_MS = 35 * 60_000;
 const ATTACHMENT_PROMPT_REMINDER_TEXT = "请问想对这些附件做什么操作？";
 
 function messageText(message: RuntimeMessage): string {
@@ -195,6 +207,10 @@ function stripPrefix(text: string, prefixes: string[]): string {
 
 function isStatusCommand(text: string): boolean {
   return text.trim() === "/status";
+}
+
+function isRecoveryCommand(text: string): boolean {
+  return /^\/(?:recover|reset|repair)$/i.test(text.trim());
 }
 
 function isThreadListCommand(text: string): boolean {
@@ -227,16 +243,6 @@ function parseModeCommand(text: string): CodexReplyMode | "show" | null {
   return parseCodexReplyMode(rawMode) ?? null;
 }
 
-function parseAutoOpenCommand(text: string): boolean | "show" | null {
-  const match = text.trim().match(/^\/autoopen(?:\s+(.+))?$/i);
-  if (!match) return null;
-  const raw = match[1]?.trim().toLowerCase();
-  if (!raw) return "show";
-  if (["1", "true", "on", "yes"].includes(raw)) return true;
-  if (["0", "false", "off", "no"].includes(raw)) return false;
-  return null;
-}
-
 function parseAlarmCommand(text: string): string | "show" | "off" | null {
   const match = text.trim().match(/^\/alarm(?:\s+(.+))?$/i);
   if (!match) return null;
@@ -263,6 +269,17 @@ function parseBindThreadId(text: string): string | null {
   const match = text.match(/^bind(?:\s+|=)(.+)$/i);
   const threadId = match?.[1]?.trim();
   return threadId || null;
+}
+
+interface NewChatCommand {
+  firstMessage?: string;
+}
+
+function parseNewChatCommand(text: string): NewChatCommand | null {
+  const match = text.trim().match(/^\/(?:new|newchat)(?:\s+([\s\S]+))?$/i);
+  if (!match) return null;
+  const firstMessage = match[1]?.trim();
+  return firstMessage ? { firstMessage } : {};
 }
 
 function isBindIndex(value: string): boolean {
@@ -370,15 +387,77 @@ function enqueueConversationTask<T>(
   queues: Map<string, Promise<void>>,
   key: string,
   task: () => Promise<T>,
+  timeoutMs = DEFAULT_OPERATION_TIMEOUT_MS,
 ): Promise<T> {
   const previous = queues.get(key) ?? Promise.resolve();
-  const current = previous.catch(() => undefined).then(task);
+  const execution = previous.catch(() => undefined).then(task);
+  const current = timeoutMs > 0
+    ? withTimeout(
+        execution,
+        timeoutMs,
+        `Codex route operation exceeded ${timeoutMs}ms and was released by the watchdog.`,
+      )
+    : execution;
   const settled = current.then(() => undefined, () => undefined);
   queues.set(key, settled);
   void settled.finally(() => {
     if (queues.get(key) === settled) queues.delete(key);
   });
   return current;
+}
+
+function withTimeout<T>(task: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error(message));
+    }, timeoutMs);
+    timer.unref?.();
+    void task.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function attemptBridgeRecovery(
+  client: CodexBridgeClient,
+  reason: string,
+): Promise<CodexBridgeRecoveryResult | undefined> {
+  if (!client.recover) return undefined;
+  try {
+    return await withTimeout(
+      client.recover(reason),
+      15_000,
+      "Codex bridge recovery timed out after 15000ms.",
+    );
+  } catch (error) {
+    return {
+      recovered: false,
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function recoveryLines(
+  recovery: CodexBridgeRecoveryResult | undefined,
+): Array<string | undefined> {
+  if (!recovery) return ["当前 backend 不支持自动恢复；请稍后再试。"];
+  return recovery.recovered
+    ? ["已自动重建 Codex bridge；请重新发送刚才的请求。", recovery.detail]
+    : ["自动恢复暂未成功，但 route 已解除阻塞，后续请求仍会继续重试。", recovery.detail];
 }
 
 function existingPromptAttachments(
@@ -439,7 +518,22 @@ function statusSummaryText(summary: string): string {
   return normalized;
 }
 
-function formatStatus(status: CodexBridgeStatus): string {
+function codexBlock(title: string, lines: Array<string | undefined>): string {
+  const body = lines
+    .map(cleanCodexLine)
+    .filter((line): line is string => line !== undefined)
+    .map((line) => line.replace(/```/g, "'''"));
+  return [
+    `\`\`\`${title.replace(/`/g, "'")}`,
+    ...body,
+    "```",
+  ].join("\n");
+}
+
+function formatStatus(
+  status: CodexBridgeStatus,
+  binding: CodexBridgeBinding | null,
+): string {
   const label: Record<CodexBridgeStatusState, string> = {
     idle: "空闲",
     working: "正在工作",
@@ -447,33 +541,37 @@ function formatStatus(status: CodexBridgeStatus): string {
     blocked: "被阻塞",
     unknown: "未知 / 未连接",
   };
-  const hasBinding = Boolean(status.currentThreadId || status.currentProject);
+  const hasBinding = Boolean(binding || status.currentThreadId || status.currentProject);
   const summary = status.summary ? statusSummaryText(status.summary) : undefined;
   const isUnbound = !hasBinding && summary === "还没有绑定 Codex chat。";
 
   if (isUnbound) {
-    return codexPanel([
-      "codex / status",
-      "",
-      "- 当前没有绑定 Codex chat",
-      "- /ls 查看可绑定的 chat",
-      "- /bind <序号> 绑定一个 chat",
+    return codexBlock("Codex-Status", [
+      "- 当前没有绑定 Codex CHAT",
+      "- /ls 查看可绑定的 CHAT",
+      "- /bind <序号> 绑定一个 CHAT",
     ]);
   }
 
-  const headline = status.state === "working"
-    ? "Codex 正在处理任务"
-    : `Codex ${label[status.state] ?? status.state}`;
-
-  return codexPanel([
-    "codex / status",
-    "",
-    `- ${headline}`,
-    status.currentThreadId ? `- 当前 chat: ${status.currentThreadId}` : undefined,
-    status.currentProject ? `- 项目: ${status.currentProject}` : undefined,
-    summary ? `- 说明: ${summary}` : undefined,
-    `- 更新时间: ${formatTime(status.updatedAt)}`,
+  return codexBlock("Codex-Status", [
+    `- 状态：${label[status.state] ?? status.state}`,
+    `- CHAT: ${binding?.title ?? "未知"}`,
+    `- 项目: ${binding?.project ?? status.currentProject ?? "未知"}`,
   ]);
+}
+
+function formatRecovery(result: CodexBridgeRecoveryResult): string {
+  return result.recovered
+    ? codexOk("recovered", [
+        "Codex bridge 已重新启动并完成初始化。",
+        result.threadId ? `当前 chat: ${result.threadId}` : undefined,
+        result.detail,
+      ])
+    : codexError("recovery incomplete", [
+        "恢复操作已释放 route 内部状态，但 app-server 目前仍不可用。",
+        "无需重启 WeConnect；稍后再次发送 /recover 或普通消息即可重试。",
+        result.detail,
+      ]);
 }
 
 function formatThreads(threads: CodexBridgeThread[]): string {
@@ -493,42 +591,57 @@ function formatThreads(threads: CodexBridgeThread[]): string {
     groupedThreads.set(label, group);
   });
 
-  const projectLines = Array.from(groupedThreads.entries()).flatMap(([project, items]) => [
-    `- ${project}`,
-    ...items.flatMap(({ thread, index }) => [
-      `  ${index + 1}. ${compactTitle(thread.title ?? thread.id)}`,
-      "",
-    ]),
-  ]);
-  if (projectLines.at(-1) === "") projectLines.pop();
+  const projectSections = Array.from(groupedThreads.entries()).flatMap(
+    ([project, items]) => {
+      const itemLines = items.flatMap(({ thread, index }) => [
+        `${index + 1}. ${compactTitle(thread.title ?? thread.id).replace(/```/g, "'''")}`,
+        "",
+      ]);
+      if (itemLines.at(-1) === "") itemLines.pop();
+      return [
+        `\`\`\`${project.replace(/`/g, "'")}`,
+        ...itemLines,
+        "```",
+      ];
+    },
+  );
 
-  return codexPanel([
-    "chats",
-    "",
+  return [
+    "```Codex-Chats",
     `最近 ${visibleThreads.length} 个可绑定 chat`,
-    "",
-    ...projectLines,
-  ]);
+    "```",
+    ...projectSections,
+  ].join("\n");
 }
 
 function formatBinding(binding: CodexBridgeBinding | null): string {
   if (!binding) {
-    return codexPanel([
-      "codex / binding",
-      "",
+    return codexBlock("Codex-Binding", [
       "- 当前没有绑定 Codex chat",
       "- /ls 查看可绑定的 chat",
       "- /bind <序号> 绑定一个 chat",
     ]);
   }
-  return codexPanel([
-    "codex / binding",
-    "",
-    "- 当前已绑定 Codex chat",
-    binding.title ? `- chat: ${binding.title}` : undefined,
+  return codexBlock("Codex-Binding", [
+    "- 当前已绑定 Codex CHAT",
+    binding.title ? `- CHAT: ${binding.title}` : undefined,
+    binding.project ? `- 项目: ${binding.project}` : undefined,
+  ]);
+}
+
+function formatNewChat(binding: CodexBridgeBinding): string {
+  if (binding.pendingGuiNewChat) {
+    return codexOk("new chat", [
+      "已通过 Codex GUI 打开一个新的 Chat。",
+      "- 发送下一条消息后完成创建并自动绑定",
+      binding.project ? `- 项目: ${binding.project}` : undefined,
+    ]);
+  }
+  return codexOk("new chat", [
+    "已在当前项目准备新的 Codex chat。",
+    "- 发送下一条消息后完成创建，并自动在 Codex GUI 打开",
     binding.project ? `- 项目: ${binding.project}` : undefined,
     `- id: ${binding.threadId}`,
-    binding.boundAt ? `- 绑定时间: ${formatTime(binding.boundAt)}` : undefined,
   ]);
 }
 
@@ -538,27 +651,10 @@ function formatReplyMode(mode: CodexReplyMode): string {
     silent: "等待任务完成后只通知完成，不返回正文。",
     stream: "返回这个 turn 里的所有 Codex 文本片段。",
   };
-  return codexPanel([
-    "codex / mode",
-    "",
+  return codexBlock("Codex-Mode", [
     `- 当前模式: ${mode}`,
     `- 说明: ${description[mode]}`,
     "- 可选模式: final / silent / stream",
-  ]);
-}
-
-function formatAutoOpen(state: CodexAutoOpenState): string {
-  return codexPanel([
-    "codex / autoopen",
-    "",
-    `- 当前状态: ${state.enabled ? "1 / enabled" : "0 / disabled"}`,
-    state.updatedAt ? `- 更新时间: ${formatTime(state.updatedAt)}` : undefined,
-    "",
-    "/autoopen 1",
-    "  启动 wechat2all 时自动打开 Codex GUI",
-    "",
-    "/autoopen 0",
-    "  启动 wechat2all 时不自动打开 Codex GUI",
   ]);
 }
 
@@ -591,46 +687,39 @@ function formatAlarm(state: CodexAlarmState): string {
 }
 
 function helpText(replyMode: CodexReplyMode): string {
-  return codexPanel([
-    "codex / help",
-    "",
-    "/status",
-    "  查询 Codex 当前状态",
-    "",
-    "/token",
-    "  查询 Codex usage 剩余额度",
-    "",
-    "/ls",
-    "  查看可绑定的 Codex chats",
-    "",
-    "/bind <序号>",
-    "  绑定 /ls 里对应编号的 Codex chat",
-    "  也支持完整 thread id",
-    "",
-    "/current",
-    "  查看当前绑定",
-    "",
-    "/mode final|silent|stream",
-    `  设置微信返回模式，当前：${replyMode}`,
-    "",
-    "/autoopen 1|0",
-    "  设置启动 wechat2all 时是否自动打开 Codex GUI",
-    "",
-    "/alarm <HH:mm>",
-    "  设置 24 小时制时间，到点向绑定的 Codex chat 发送 dummy 你好",
-    "",
-    "/cache",
-    "  查看本地附件 cache 的路径、文件数和大小",
-    "",
-    "/cache clear",
-    "  清理当前 profile 的附件 cache",
-    "",
-    "任意普通文本",
-    "  发送到已绑定的 Codex chat",
-    "",
-    "/cd ..",
-    "  回到主 Router",
-  ]);
+  return [
+    codexBlock("Codex/Help", ["可用命令"]),
+    codexBlock("/status", ["查询 Codex 当前状态"]),
+    codexBlock("/recover", ["立即释放卡住的任务并重建 Codex app-server 连接"]),
+    codexBlock("/token", ["查询 Codex usage 剩余额度"]),
+    codexBlock("/ls", ["查看可绑定的 Codex chats"]),
+    codexBlock("/bind", [
+      "/bind <序号>：绑定 /ls 里对应编号的 Codex chat",
+      "/bind <thread id>：使用完整 thread id 绑定",
+    ]),
+    codexBlock("/current", ["查看当前绑定"]),
+    codexBlock("/new", [
+      "/new：在当前项目准备新的 Codex chat",
+      "/new <首条消息>：创建 chat 并立即发送首条消息",
+    ]),
+    codexBlock("/mode", [
+      `/mode：查看当前模式（当前：${replyMode}）`,
+      "/mode final：只返回 Codex 最终回复",
+      "/mode silent：完成后只通知，不返回正文",
+      "/mode stream：返回这个 turn 里的所有 Codex 文本片段",
+    ]),
+    codexBlock("/alarm", [
+      "/alarm：查看当前提醒设置",
+      "/alarm HH:mm：设置 24 小时制提醒，例如 /alarm 09:30",
+      "/alarm off：关闭定时提醒",
+    ]),
+    codexBlock("/cache", [
+      "/cache：查看本地附件 cache 的路径、文件数和大小",
+      "/cache clear：清理当前 profile 的附件 cache",
+    ]),
+    codexBlock("普通文本", ["发送到已绑定的 Codex chat"]),
+    codexBlock("/cd", ["/cd ..：回到主 Router"]),
+  ].join("\n");
 }
 
 async function rememberTarget(
@@ -940,9 +1029,9 @@ async function resolveBindTarget(
 
   if (!threads.length) {
     return {
-      error: codexError("bind index unavailable", [
+      error: codexBlock("Codex-Binding", [
         `没有找到编号 ${bindTarget}。`,
-        "先发送 /ls 查看可绑定的 chats，然后使用 /bind 1。",
+        "先发送 /ls 查看可绑定的 CHAT，然后使用 /bind 1。",
       ]),
     };
   }
@@ -950,7 +1039,7 @@ async function resolveBindTarget(
   const thread = threads[index - 1];
   if (!thread) {
     return {
-      error: codexError("bind index unavailable", [
+      error: codexBlock("Codex-Binding", [
         `没有找到编号 ${bindTarget}。`,
         `当前可选范围：1-${threads.length}`,
         "发送 /ls 刷新列表，然后重新绑定。",
@@ -965,9 +1054,7 @@ function formatTokenUsageForWechat(usage: CodexTokenUsage): string {
   const primary = usage.windows.find((window) => window.label === "5h") ??
     usage.windows[0] ?? null;
 
-  return codexPanel([
-    "codex / token",
-    "",
+  return codexBlock("Codex-Token", [
     `- ${primary?.label ?? "5h"}: ${primary?.remainingText ?? "unknown"} ${primary?.resetText ?? "unknown"}`,
     `- ${usage.resetCreditsText ?? "reset credits unavailable"}`,
   ]);
@@ -986,9 +1073,7 @@ function formatBytes(bytes: number): string {
 }
 
 function formatCacheStats(stats: RuntimeMediaCacheStats): string {
-  return codexPanel([
-    "codex / cache",
-    "",
+  return codexBlock("Codex-Cache", [
     "- 本地附件 cache",
     stats.cacheDir ? `- 路径: ${stats.cacheDir}` : "- 路径: 未配置",
     stats.profileId ? `- profile: ${stats.profileId}` : undefined,
@@ -1003,11 +1088,11 @@ function formatCacheStats(stats: RuntimeMediaCacheStats): string {
 }
 
 function formatCacheCleared(stats: RuntimeMediaCacheStats): string {
-  return codexOk("cache cleared", [
-    "已清理当前 profile 的附件 cache。",
-    stats.cacheDir ? `路径: ${stats.cacheDir}` : undefined,
-    `清理文件数: ${stats.fileCount}`,
-    `释放空间: ${formatBytes(stats.totalBytes)}`,
+  return codexBlock("Codex-Cache-Clear", [
+    "- 已清理当前 profile 的附件 cache",
+    stats.cacheDir ? `- 路径: ${stats.cacheDir}` : undefined,
+    `- 清理文件数: ${stats.fileCount}`,
+    `- 释放空间: ${formatBytes(stats.totalBytes)}`,
   ]);
 }
 
@@ -1023,6 +1108,7 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
   const imagePendingTtlMs = opts.imagePendingTtlMs ?? DEFAULT_IMAGE_PENDING_TTL_MS;
   const imageMaxCount = opts.imageMaxCount ?? DEFAULT_IMAGE_MAX_COUNT;
   const processingReminderMs = opts.processingReminderMs ?? DEFAULT_PROCESSING_REMINDER_MS;
+  const operationTimeoutMs = opts.operationTimeoutMs ?? DEFAULT_OPERATION_TIMEOUT_MS;
   return {
     id: opts.id,
     name: opts.name ?? "Codex Bridge",
@@ -1043,12 +1129,34 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
       }
 
       const immediateText = stripPrefix(messageText(message), prefixes);
+      if (isRecoveryCommand(immediateText)) {
+        const queueKey = conversationQueueKey(message);
+        conversationQueues.delete(queueKey);
+        const recovery = await attemptBridgeRecovery(opts.client, "remote /recover command") ?? {
+          recovered: false,
+          detail: "当前 Codex backend 不支持 recover。",
+        };
+        return textAction(message, formatRecovery(recovery));
+      }
       if (isStatusCommand(immediateText)) {
-        await rememberTarget(opts.client, message);
-        return textAction(message, formatStatus(await opts.client.getStatus()));
+        try {
+          await rememberTarget(opts.client, message);
+          const status = await opts.client.getStatus();
+          const binding = opts.client.getCurrentBinding
+            ? await opts.client.getCurrentBinding()
+            : null;
+          return textAction(message, formatStatus(status, binding));
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          const recovery = await attemptBridgeRecovery(opts.client, `status failed: ${detail}`);
+          return textAction(message, codexBlock("Codex-Status", [
+            detail,
+            ...recoveryLines(recovery),
+          ]));
+        }
       }
 
-      return enqueueConversationTask(
+      return enqueueConversationTask<RuntimeAction[]>(
         conversationQueues,
         conversationQueueKey(message),
         async () => {
@@ -1060,7 +1168,7 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
         if (!tokenUsageReader) {
           return textAction(
             message,
-            codexError("token unavailable", [
+            codexBlock("Codex-Token", [
               "当前 Codex backend 不支持 /token。",
               "请使用 gui-app-server backend，或给 Codex connector 传入 tokenUsageReader。",
             ]),
@@ -1070,7 +1178,11 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
           return textAction(message, formatTokenUsageForWechat(await tokenUsageReader()));
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
-          return textAction(message, codexError("token read failed", [detail]));
+          const recovery = await attemptBridgeRecovery(opts.client, `token read failed: ${detail}`);
+          return textAction(message, codexBlock("Codex-Token", [
+            detail,
+            ...recoveryLines(recovery),
+          ]));
         }
       }
 
@@ -1080,16 +1192,20 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
 
       const cacheCommand = parseCacheCommand(text);
       if (cacheCommand !== null) {
+        const cacheTitle = cacheCommand === "clear" ? "Codex-Cache-Clear" : "Codex-Cache";
         if (!context.media) {
           return textAction(
             message,
-            codexError("cache unavailable", [
+            codexBlock(cacheTitle, [
               "当前 runtime 没有配置 media cache。",
             ]),
           );
         }
         if (cacheCommand === "invalid") {
-          return textAction(message, codexUsage("/cache [clear]", "查看或清理本地附件 cache。"));
+          return textAction(message, codexBlock("Codex-Cache", [
+            "用法：/cache 或 /cache clear",
+            "查看或清理本地附件 cache。",
+          ]));
         }
         try {
           if (cacheCommand === "clear") {
@@ -1103,7 +1219,7 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
           ));
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
-          return textAction(message, codexError("cache failed", [detail]));
+          return textAction(message, codexBlock(cacheTitle, [detail]));
         }
       }
 
@@ -1111,28 +1227,6 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
       if (nextReplyMode) {
         if (nextReplyMode !== "show") replyMode = nextReplyMode;
         return textAction(message, formatReplyMode(replyMode));
-      }
-
-      const nextAutoOpen = parseAutoOpenCommand(text);
-      if (nextAutoOpen !== null) {
-        if (!opts.client.getAutoOpen || !opts.client.setAutoOpen) {
-          return textAction(
-            message,
-            codexError("autoopen unavailable", [
-              "当前 Codex backend 不支持 /autoopen。",
-              "请检查 router-daemon 是否正在使用 codex-gui-bridge。",
-            ]),
-          );
-        }
-        try {
-          const state = nextAutoOpen === "show"
-            ? await opts.client.getAutoOpen()
-            : await opts.client.setAutoOpen(nextAutoOpen);
-          return textAction(message, formatAutoOpen(state));
-        } catch (error) {
-          const detail = error instanceof Error ? error.message : String(error);
-          return textAction(message, codexError("autoopen failed", [detail]));
-        }
       }
 
       const nextAlarm = parseAlarmCommand(text);
@@ -1159,6 +1253,34 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
         }
       }
 
+      const newChatCommand = parseNewChatCommand(text);
+      let promptText = text;
+      if (newChatCommand) {
+        if (!opts.client.startThread) {
+          return textAction(
+            message,
+            codexError("new chat unavailable", [
+              "当前 Codex backend 不支持 /new。",
+              "请检查 router-daemon 是否正在使用最新版 codex-gui-bridge。",
+            ]),
+          );
+        }
+        try {
+          const binding = await opts.client.startThread();
+          if (!newChatCommand.firstMessage) {
+            return textAction(message, formatNewChat(binding));
+          }
+          promptText = newChatCommand.firstMessage;
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          const recovery = await attemptBridgeRecovery(opts.client, `new chat failed: ${detail}`);
+          return textAction(message, codexError("new chat failed", [
+            detail,
+            ...recoveryLines(recovery),
+          ]));
+        }
+      }
+
       if (isThreadListCommand(command)) {
         const threads = await readBindableThreads(opts.client);
         cachedBindableThreads.set(bindCacheKey(message), visibleBindableThreads(threads));
@@ -1177,7 +1299,7 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
         if (!opts.client.bindThread) {
           return textAction(
             message,
-            codexError("bind unavailable", [
+            codexBlock("Codex-Binding", [
               "当前 Codex backend 不支持 /bind。",
               "请检查 router-daemon 是否正在使用 codex-gui-bridge。",
             ]),
@@ -1197,11 +1319,15 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
           );
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
-          return textAction(message, codexError("bind failed", [detail]));
+          const recovery = await attemptBridgeRecovery(opts.client, `bind failed: ${detail}`);
+          return textAction(message, codexBlock("Codex-Binding", [
+            detail,
+            ...recoveryLines(recovery),
+          ]));
         }
       }
 
-      if (text.startsWith("/")) {
+      if (!newChatCommand && text.startsWith("/")) {
         return [{ type: "noop", reason: `unknown codex route command: ${text}` }];
       }
 
@@ -1222,7 +1348,7 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
       }
 
       const imageKey = pendingImageKey(message);
-      const pendingForText = text
+      const pendingForText = promptText
         ? freshPendingImageState(pendingImages, imageKey, imagePendingTtlMs)
         : undefined;
       const attachmentWaitMs = pendingForText
@@ -1253,7 +1379,7 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
         imagePendingTtlMs,
       );
 
-      if (!text && promptAttachments.length > 0) {
+      if (!promptText && promptAttachments.length > 0) {
         const state = currentPending ?? {
           attachments: [],
           sourceMessageId: message.id,
@@ -1308,8 +1434,8 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
         );
       }
 
-      const promptText = promptTextForMessage(text);
-      if (!promptText && promptAttachments.length === 0) {
+      const normalizedPromptText = promptTextForMessage(promptText);
+      if (!normalizedPromptText && promptAttachments.length === 0) {
         return withCodexTiming(
           textAction(
             message,
@@ -1328,7 +1454,7 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
         profileId: message.profileId,
         conversationId: message.conversationId,
         senderId: message.senderId,
-        text: promptText,
+        text: normalizedPromptText,
         attachments: mergedAttachments.length ? mergedAttachments : undefined,
         sourceMessageId: message.id,
         contextToken: message.replyToken?.contextToken,
@@ -1352,10 +1478,17 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
           sourceMessageId: message.id,
         });
         const detail = error instanceof Error ? error.message : String(error);
+        const recovery = await attemptBridgeRecovery(
+          opts.client,
+          `prompt delivery failed: ${detail}`,
+        );
         return withCodexTiming(
           textAction(
             message,
-            codexError("codex gui failed", [detail]),
+            codexError("codex delivery failed", [
+              detail,
+              ...recoveryLines(recovery),
+            ]),
           ),
           {
             attachmentDownloadMs,
@@ -1437,7 +1570,15 @@ export function createCodexConnector(opts: CodexConnectorOptions): RuntimeConnec
         timing,
       );
         },
-      );
+        operationTimeoutMs,
+      ).catch(async (error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        const recovery = await attemptBridgeRecovery(opts.client, `route operation failed: ${detail}`);
+        return textAction(message, codexError("route recovered after failure", [
+          detail,
+          ...recoveryLines(recovery),
+        ]));
+      });
     },
   };
 }

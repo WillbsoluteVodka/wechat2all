@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import type { RouteConfigExtensionV1 } from "@wechat2all/route-sdk";
+
 const MANAGED_COMMENT = "# Managed by the wechat2all local config API";
 const MAX_STRING_LENGTH = 8_192;
 
@@ -18,7 +20,6 @@ const FIELD_ENV_NAMES = {
   "memory.baseUrl": "WECHAT2ALL_MEM0_BASE_URL",
   "memory.timeoutMs": "WECHAT2ALL_MEM0_TIMEOUT_MS",
   "memory.localMaxSearchRows": "WECHAT2ALL_MEMORY_LOCAL_MAX_SEARCH_ROWS",
-  "codex.delivery": "WECHAT2ALL_CODEX_DELIVERY",
   "claude.apiKey": "ANTHROPIC_API_KEY",
   "claude.workdir": "WECHAT2ALL_CLAUDE_WORKDIR",
   "claude.promptFile": "WECHAT2ALL_CLAUDE_PROMPT_FILE",
@@ -33,8 +34,11 @@ const FIELD_ENV_NAMES = {
   "claude.executable": "WECHAT2ALL_CLAUDE_EXECUTABLE",
 } as const;
 
-export type ConfigField = keyof typeof FIELD_ENV_NAMES;
+type CoreConfigField = keyof typeof FIELD_ENV_NAMES;
+export type ConfigField = string;
 type EnvUpdate = string | null;
+
+export type LocalConfigExtension = RouteConfigExtensionV1;
 
 export interface SecretStatus {
   configured: boolean;
@@ -74,18 +78,14 @@ export interface ClaudeConfigSnapshot {
   executable: string | null;
 }
 
-export interface CodexConfigSnapshot {
-  delivery: "app-server" | "gui-automation";
-}
-
 export interface LocalConfigSnapshot {
   configPath: string;
   runtimeApplied: boolean;
   restartRequired: boolean;
   llm: LlmConfigSnapshot;
   memory: MemoryConfigSnapshot;
-  codex: CodexConfigSnapshot;
   claude: ClaudeConfigSnapshot;
+  [extensionKey: string]: unknown;
 }
 
 export interface LocalConfigUpdateResult {
@@ -97,6 +97,7 @@ export interface LocalConfigUpdateResult {
 export interface LocalConfigStoreOptions {
   filePath: string;
   env?: NodeJS.ProcessEnv;
+  extensions?: LocalConfigExtension[];
 }
 
 export class LocalConfigValidationError extends Error {
@@ -221,15 +222,22 @@ function optionalBoolean(value: unknown, label: string): EnvUpdate | undefined {
 
 function setUpdate(
   updates: Map<string, EnvUpdate>,
-  field: ConfigField,
+  field: CoreConfigField,
   value: EnvUpdate | undefined,
 ): void {
   if (value !== undefined) updates.set(FIELD_ENV_NAMES[field], value);
 }
 
-function parsePatch(value: unknown): Map<string, EnvUpdate> {
+function parsePatch(
+  value: unknown,
+  extensions: readonly LocalConfigExtension[],
+): Map<string, EnvUpdate> {
   const root = asObject(value, "config");
-  assertAllowedKeys(root, ["llm", "memory", "codex", "claude"], "config");
+  assertAllowedKeys(
+    root,
+    ["llm", "memory", "claude", ...extensions.map((extension) => extension.key)],
+    "config",
+  );
   const updates = new Map<string, EnvUpdate>();
 
   if (root.llm !== undefined) {
@@ -295,16 +303,6 @@ function parsePatch(value: unknown): Map<string, EnvUpdate> {
       memory.localMaxSearchRows,
       "memory.localMaxSearchRows",
       { min: 1, max: 1_000_000, integer: true },
-    ));
-  }
-
-  if (root.codex !== undefined) {
-    const codex = asObject(root.codex, "codex");
-    assertAllowedKeys(codex, ["delivery"], "codex");
-    setUpdate(updates, "codex.delivery", optionalEnum(
-      codex.delivery,
-      "codex.delivery",
-      ["app-server", "gui-automation"],
     ));
   }
 
@@ -377,6 +375,27 @@ function parsePatch(value: unknown): Map<string, EnvUpdate> {
       claude.executable,
       "claude.executable",
     ));
+  }
+
+  for (const extension of extensions) {
+    if (root[extension.key] === undefined) continue;
+    let parsed: Record<string, EnvUpdate | undefined>;
+    try {
+      parsed = extension.parsePatch(root[extension.key]);
+    } catch (error) {
+      throw new LocalConfigValidationError(
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    for (const [field, value] of Object.entries(parsed)) {
+      const envName = extension.fields[field];
+      if (!envName) {
+        throw new Error(
+          `Config extension ${extension.key} returned unknown field: ${field}`,
+        );
+      }
+      if (value !== undefined) updates.set(envName, value);
+    }
   }
 
   return updates;
@@ -455,11 +474,19 @@ function maskSecret(value: string | undefined): SecretStatus {
   };
 }
 
-function fieldForEnvName(envName: string): ConfigField {
+function fieldForEnvName(
+  envName: string,
+  extensions: readonly LocalConfigExtension[],
+): ConfigField {
   const entry = Object.entries(FIELD_ENV_NAMES)
     .find(([, candidate]) => candidate === envName);
-  if (!entry) throw new Error(`Unknown managed environment field: ${envName}`);
-  return entry[0] as ConfigField;
+  if (entry) return entry[0];
+  for (const extension of extensions) {
+    const extensionField = Object.entries(extension.fields)
+      .find(([, candidate]) => candidate === envName)?.[0];
+    if (extensionField) return `${extension.key}.${extensionField}`;
+  }
+  throw new Error(`Unknown managed environment field: ${envName}`);
 }
 
 async function readFileOrEmpty(filePath: string): Promise<string> {
@@ -487,12 +514,27 @@ async function atomicWritePrivate(filePath: string, content: string): Promise<vo
 export class LocalConfigStore {
   readonly filePath: string;
   private readonly env: NodeJS.ProcessEnv;
+  private readonly extensions: LocalConfigExtension[];
   private operation: Promise<void> = Promise.resolve();
   private restartRequired = false;
 
   constructor(opts: LocalConfigStoreOptions) {
     this.filePath = path.resolve(opts.filePath);
     this.env = opts.env ?? process.env;
+    this.extensions = [...(opts.extensions ?? [])];
+    const duplicateExtension = this.extensions.find((extension, index) =>
+      this.extensions.findIndex((candidate) => candidate.key === extension.key) !== index
+    );
+    if (duplicateExtension) {
+      throw new Error(`Duplicate local config extension: ${duplicateExtension.key}`);
+    }
+    const reservedExtension = this.extensions.find((extension) =>
+      ["configPath", "runtimeApplied", "restartRequired", "llm", "memory", "claude"]
+        .includes(extension.key)
+    );
+    if (reservedExtension) {
+      throw new Error(`Local config extension uses reserved key: ${reservedExtension.key}`);
+    }
   }
 
   async snapshot(): Promise<LocalConfigSnapshot> {
@@ -501,7 +543,7 @@ export class LocalConfigStore {
   }
 
   async update(value: unknown): Promise<LocalConfigUpdateResult> {
-    const updates = parsePatch(value);
+    const updates = parsePatch(value, this.extensions);
     const next = this.operation.then(() => this.applyUpdates(updates));
     this.operation = next.then(() => undefined, () => undefined);
     return next;
@@ -518,6 +560,9 @@ export class LocalConfigStore {
     const llmModel = env.WECHAT2ALL_LLM_MODEL;
     const llmProvider = env.WECHAT2ALL_LLM_PROVIDER ??
       (llmApiKey && llmModel ? "openai-compatible" : "mock");
+    const extensionSnapshots = Object.fromEntries(
+      this.extensions.map((extension) => [extension.key, extension.snapshot(env)]),
+    );
 
     return {
       configPath: this.filePath,
@@ -539,11 +584,6 @@ export class LocalConfigStore {
         timeoutMs: numberOr(env.WECHAT2ALL_MEM0_TIMEOUT_MS, 15_000),
         localMaxSearchRows: nullableNumber(env.WECHAT2ALL_MEMORY_LOCAL_MAX_SEARCH_ROWS),
       },
-      codex: {
-        delivery: env.WECHAT2ALL_CODEX_DELIVERY === "gui-automation"
-          ? "gui-automation"
-          : "app-server",
-      },
       claude: {
         apiKey: maskSecret(env.ANTHROPIC_API_KEY),
         workdir: env.WECHAT2ALL_CLAUDE_WORKDIR ?? env.WECHAT2ALL_CLAUDE_VAULT ?? null,
@@ -558,6 +598,7 @@ export class LocalConfigStore {
         allowCliAuth: booleanOr(env.WECHAT2ALL_CLAUDE_ALLOW_CLI_AUTH, false),
         executable: env.WECHAT2ALL_CLAUDE_EXECUTABLE ?? null,
       },
+      ...extensionSnapshots,
     };
   }
 
@@ -579,7 +620,9 @@ export class LocalConfigStore {
 
     return {
       changed: changedEntries.length > 0,
-      changedFields: changedEntries.map(([envName]) => fieldForEnvName(envName)),
+      changedFields: changedEntries.map(([envName]) =>
+        fieldForEnvName(envName, this.extensions)
+      ),
       config: await this.readSnapshot(),
     };
   }

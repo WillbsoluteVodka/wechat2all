@@ -11,11 +11,13 @@
     "test": "node --import tsx --test tests/*.test.ts",
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
-    "check": "pnpm typecheck && pnpm build"
+    "check": "pnpm typecheck && pnpm test && pnpm build"
   },
   "dependencies": {
     "@wechat2all/claude-route": "workspace:*",
-    "@wechat2all/codex-gui-bridge": "workspace:*",
+    "@wechat2all/codex-route": "workspace:*",
+    "@wechat2all/office-route": "workspace:*",
+    "@wechat2all/route-sdk": "workspace:*",
     "@wechat2all/runtime": "workspace:*",
     "wechat2all": "workspace:*"
   },

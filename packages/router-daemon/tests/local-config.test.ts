@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { codexRouteConfigExtension } from "@wechat2all/codex-route";
 
 import {
   LocalConfigStore,
@@ -13,6 +14,24 @@ async function tempEnvPath(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-config-"));
   return path.join(dir, ".env.local");
 }
+
+function localConfigStore(filePath: string): LocalConfigStore {
+  return new LocalConfigStore({
+    filePath,
+    env: {},
+    extensions: [codexRouteConfigExtension],
+  });
+}
+
+test("core config store has no Codex schema until the route extension is installed", async () => {
+  const store = new LocalConfigStore({ filePath: await tempEnvPath(), env: {} });
+
+  assert.equal("codex" in await store.snapshot(), false);
+  await assert.rejects(
+    store.update({ codex: { delivery: "gui-automation" } }),
+    /unsupported field/,
+  );
+});
 
 test("config snapshot masks secrets instead of returning API keys", async () => {
   const filePath = await tempEnvPath();
@@ -25,7 +44,7 @@ test("config snapshot masks secrets instead of returning API keys", async () => 
     "WECHAT2ALL_CLAUDE_WORKDIR=/Users/example/Notes",
     "",
   ].join("\n"));
-  const store = new LocalConfigStore({ filePath, env: {} });
+  const store = localConfigStore(filePath);
 
   const snapshot = await store.snapshot();
 
@@ -45,6 +64,10 @@ test("config snapshot masks secrets instead of returning API keys", async () => 
   assert.equal(JSON.stringify(snapshot).includes("example-secret"), false);
   assert.equal(snapshot.runtimeApplied, true);
   assert.equal(snapshot.restartRequired, false);
+  assert.equal(
+    (snapshot.codex as { delivery: string }).delivery,
+    "gui-automation",
+  );
 });
 
 test("config update preserves unrelated env content and writes a private file", async () => {
@@ -56,7 +79,7 @@ test("config update preserves unrelated env content and writes a private file", 
     "WECHAT2ALL_MEM0_API_KEY=remove-me",
     "",
   ].join("\n"));
-  const store = new LocalConfigStore({ filePath, env: {} });
+  const store = localConfigStore(filePath);
 
   const result = await store.update({
     llm: {
@@ -108,7 +131,10 @@ test("config update preserves unrelated env content and writes a private file", 
     masked: "sk-...2468",
   });
   assert.equal(result.config.claude.allowCliAuth, false);
-  assert.equal(result.config.codex.delivery, "gui-automation");
+  assert.equal(
+    (result.config.codex as { delivery: string }).delivery,
+    "gui-automation",
+  );
 });
 
 test("omitted config fields remain unchanged and a no-op update needs no restart", async () => {
@@ -118,7 +144,7 @@ test("omitted config fields remain unchanged and a no-op update needs no restart
     "WECHAT2ALL_LLM_MODEL=deepseek-chat",
     "",
   ].join("\n"));
-  const store = new LocalConfigStore({ filePath, env: {} });
+  const store = localConfigStore(filePath);
 
   const result = await store.update({
     llm: {
@@ -134,7 +160,7 @@ test("omitted config fields remain unchanged and a no-op update needs no restart
 });
 
 test("config validation rejects arbitrary env fields and unsafe values", async () => {
-  const store = new LocalConfigStore({ filePath: await tempEnvPath(), env: {} });
+  const store = localConfigStore(await tempEnvPath());
 
   await assert.rejects(
     store.update({ llm: { apiKey: "secret\nINJECTED=value" } }),

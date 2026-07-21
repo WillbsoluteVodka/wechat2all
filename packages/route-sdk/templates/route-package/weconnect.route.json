@@ -1,0 +1,16 @@
+{
+  "protocol": "weconnect.route",
+  "protocolVersion": 1,
+  "id": "example",
+  "packageName": "@your-name/weconnect-route-example",
+  "displayName": "Example",
+  "version": "1.0.0",
+  "description": "Example WeConnect community route.",
+  "license": "MIT",
+  "engines": {
+    "weconnect": ">=0.1.0 <2",
+    "node": ">=20"
+  },
+  "capabilities": ["text-input", "text-output"],
+  "permissions": []
+}

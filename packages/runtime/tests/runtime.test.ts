@@ -14,7 +14,6 @@ import {
   cliError,
   cliPanel,
   createAgentConnector,
-  createCodexConnector,
   createDummyTTSProvider,
   createMcpConnector,
   createStateStoreMessageDeduper,
@@ -38,9 +37,73 @@ import type {
   RuntimeMessage,
   RuntimeRoute,
 } from "../src/index.js";
-import { CODEX_PROCESSING_REMINDER_TEXTS } from
-  "../src/connectors/codex-processing-reminders.js";
 
+// Cross-package compatibility coverage without making runtime depend on a route package.
+const codexRouteTestModulePath = ["..", "..", "codex-route", "src", "index.js"].join("/");
+interface TestCodexPrompt {
+  id: string;
+  createdAt: number;
+  profileId: string;
+  conversationId: string;
+  senderId: string;
+  text: string;
+  attachments?: Array<{
+    kind: "image" | "file";
+    filePath: string;
+    fileName?: string;
+    mimeType?: string;
+    size?: number;
+  }>;
+  sourceMessageId: string;
+  contextToken?: string;
+  routeId?: string;
+  replyMode?: "final" | "silent" | "stream";
+}
+interface TestCodexTarget {
+  profileId: string;
+  conversationId: string;
+  senderId?: string;
+  contextToken?: string;
+  updatedAt: number;
+}
+interface TestCodexConnectorOptions {
+  id: string;
+  name?: string;
+  client: {
+    getStatus(): Promise<any>;
+    listThreads?(): Promise<any[]>;
+    listChats?(): Promise<any[]>;
+    bindThread?(threadId: string): Promise<any>;
+    startThread?(): Promise<any>;
+    getCurrentBinding?(): Promise<any>;
+    getTokenUsage?(): Promise<any>;
+    getAutoOpen?(): Promise<any>;
+    setAutoOpen?(enabled: boolean): Promise<any>;
+    getAlarm?(): Promise<any>;
+    setAlarm?(timeText: string): Promise<any>;
+    clearAlarm?(): Promise<any>;
+    sendPrompt?(prompt: TestCodexPrompt): Promise<any>;
+    setDefaultTarget?(target: TestCodexTarget): Promise<void>;
+    getDefaultTarget?(): Promise<TestCodexTarget | null>;
+  };
+  commandPrefixes?: string[];
+  tokenUsageReader?: () => Promise<any>;
+  replyMode?: "final" | "silent" | "stream";
+  imagePromptReminderMs?: number;
+  imagePendingTtlMs?: number;
+  imageMaxCount?: number;
+  processingReminderMs?: number;
+}
+const codexRouteTestModule = await import(codexRouteTestModulePath) as {
+  CODEX_PROCESSING_REMINDER_TEXTS: readonly string[];
+  createCodexConnector(
+    options: TestCodexConnectorOptions,
+  ): import("../src/index.js").RuntimeConnector;
+};
+const {
+  CODEX_PROCESSING_REMINDER_TEXTS,
+  createCodexConnector,
+} = codexRouteTestModule;
 import { MessageItemType, MessageType } from "wechat2all";
 import type { WeChatClient } from "wechat2all";
 
@@ -628,7 +691,7 @@ test("runtime dispatches proactive main-assistant actions through its action que
   assert.equal(results[0].ok, true);
   assert.equal(sent[0].to, "owner-1");
   assert.equal(sent[0].contextToken, "ctx-owner");
-  assert.match(sent[0].text, /^◆ WeConnect - Session/);
+  assert.match(sent[0].text, /^```WeConnect-Session/);
   assert.match(sent[0].text, /Session 剩余时间：约 23 小时/);
   assert.equal(action.metadata?.source, "main-assistant");
   assert.equal(action.metadata?.routeId, "main-assistant-default");
@@ -1069,7 +1132,7 @@ test("main assistant replies gracefully when the LLM provider fails", async () =
   });
 
   assert.equal(errors[0], "fetch failed");
-  assert.match(sent[0], /^◆ 大助手 - Error: Llm Unavailable/);
+  assert.match(sent[0], /^```WeConnect-Error-Llm-Unavailable/);
   assert.match(sent[0], /连不上 LLM/);
 });
 
@@ -1202,13 +1265,12 @@ test("codex connector reports status and remembers the WeChat target", async () 
     routes: new RuntimeRouteRegistry(),
   });
 
-  assert.match((actions[0] as { text: string }).text, /正在处理任务/);
+  assert.match((actions[0] as { text: string }).text, /状态：正在工作/);
   assert.match(
     (actions[0] as { text: string }).text,
-    /^◆ Codex - Status\n\n- Codex 正在处理任务/,
+    /^```Codex-Status\n- 状态：正在工作/,
   );
-  assert.match((actions[0] as { text: string }).text, /- 说明: running tests/);
-  assert.match((actions[0] as { text: string }).text, /- 更新时间: /);
+  assert.match((actions[0] as { text: string }).text, /- 项目: wechat2all/);
   assert.deepEqual(target, {
     profileId: "main",
     conversationId: "user-1",
@@ -1277,7 +1339,7 @@ test("codex connector returns token usage for /token", async () => {
 
   assert.equal(actions[0].type, "send_text");
   assert.equal(actions[0].conversationId, "user-1");
-  assert.match((actions[0] as { text: string }).text, /◆ Codex - Token/);
+  assert.match((actions[0] as { text: string }).text, /^```Codex-Token/);
   assert.match((actions[0] as { text: string }).text, /- 5h: 97% 11:35 PM/);
   assert.doesNotMatch((actions[0] as { text: string }).text, /Weekly/);
   assert.match((actions[0] as { text: string }).text, /- 1 reset available/);
@@ -1323,9 +1385,9 @@ test("codex connector lists bindable chats with /ls", async () => {
     routes: new RuntimeRouteRegistry(),
   });
 
-  assert.match((actions[0] as { text: string }).text, /◆ Codex - Chats/);
-  assert.match((actions[0] as { text: string }).text, /- wechat2all/);
-  assert.match((actions[0] as { text: string }).text, /  1\. Build bridge/);
+  assert.match((actions[0] as { text: string }).text, /^```Codex-Chats/);
+  assert.match((actions[0] as { text: string }).text, /```wechat2all/);
+  assert.match((actions[0] as { text: string }).text, /1\. Build bridge/);
   assert.doesNotMatch((actions[0] as { text: string }).text, /id:/);
   assert.doesNotMatch((actions[0] as { text: string }).text, /\/bind 1/);
 });
@@ -1413,7 +1475,9 @@ test("codex connector binds a GUI thread by /ls index and sends ordinary text to
     id: "m2",
     text: "/bind 2",
   }, context);
-  assert.match((bindActions[0] as { text: string }).text, /- id: thread-2/);
+  assert.match((bindActions[0] as { text: string }).text, /^```Codex-Binding/);
+  assert.match((bindActions[0] as { text: string }).text, /- CHAT: Bridge chat/);
+  assert.doesNotMatch((bindActions[0] as { text: string }).text, /thread-2|绑定时间/);
 
   const sendActions = await connector.handleMessage({
     ...baseMessage,
@@ -1423,6 +1487,147 @@ test("codex connector binds a GUI thread by /ls index and sends ordinary text to
 
   assert.deepEqual((sentPrompt as { text: string }).text, "continue please");
   assert.equal((sendActions[0] as { text: string }).text, "continued");
+});
+
+test("codex connector creates and binds a blank chat with /new", async () => {
+  let startCount = 0;
+  let sendCount = 0;
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async startThread() {
+        startCount += 1;
+        return {
+          threadId: "thread-new",
+          project: "wechat2all",
+          projectPath: "/tmp/wechat2all",
+          pendingFirstMessage: true,
+          boundAt: 42,
+        };
+      },
+      async sendPrompt(prompt) {
+        sendCount += 1;
+        return { id: prompt.id, threadId: "thread-new" };
+      },
+    },
+  });
+
+  const actions = await connector.handleMessage({
+    id: "m-new",
+    platform: "wechat-ilink",
+    profileId: "main",
+    conversationId: "user-1",
+    senderId: "user-1",
+    timestamp: 1,
+    kind: "text",
+    text: "/new",
+    attachments: [],
+    raw: {},
+  }, codexTestContext());
+
+  assert.equal(startCount, 1);
+  assert.equal(sendCount, 0);
+  assert.match((actions[0] as { text: string }).text, /◆ Codex - New Chat/);
+  assert.match((actions[0] as { text: string }).text, /下一条消息后完成创建/);
+  assert.match((actions[0] as { text: string }).text, /已在当前项目准备新的 Codex chat/);
+  assert.match((actions[0] as { text: string }).text, /- 项目: wechat2all/);
+  assert.match((actions[0] as { text: string }).text, /- id: thread-new/);
+});
+
+test("codex connector reports a pending GUI /new without exposing the old chat id", async () => {
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async startThread() {
+        return {
+          threadId: "thread-old",
+          project: "wechat2all",
+          projectPath: "/tmp/wechat2all",
+          pendingGuiNewChat: true,
+          pendingGuiNewChatAt: 42,
+          boundAt: 1,
+        };
+      },
+    },
+  });
+
+  const actions = await connector.handleMessage({
+    id: "m-new-gui",
+    platform: "wechat-ilink",
+    profileId: "main",
+    conversationId: "user-1",
+    senderId: "user-1",
+    timestamp: 1,
+    kind: "text",
+    text: "/new",
+    attachments: [],
+    raw: {},
+  }, codexTestContext());
+
+  const text = (actions[0] as { text: string }).text;
+  assert.match(text, /已通过 Codex GUI 打开一个新的 Chat/);
+  assert.match(text, /下一条消息后完成创建并自动绑定/);
+  assert.doesNotMatch(text, /thread-old/);
+});
+
+test("codex connector sends /new trailing text as the first message", async () => {
+  const events: string[] = [];
+  let sentPrompt: { text?: string } | undefined;
+  const binding = {
+    threadId: "thread-new",
+    project: "wechat2all",
+    projectPath: "/tmp/wechat2all",
+    boundAt: 42,
+  };
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async startThread() {
+        events.push("start");
+        return binding;
+      },
+      async getCurrentBinding() {
+        return binding;
+      },
+      async sendPrompt(prompt) {
+        events.push("send");
+        sentPrompt = prompt;
+        return {
+          id: prompt.id,
+          threadId: binding.threadId,
+          turnId: "turn-new",
+          status: "completed",
+          finalText: "new chat answer",
+        };
+      },
+    },
+  });
+
+  const actions = await connector.handleMessage({
+    id: "m-new-first",
+    platform: "wechat-ilink",
+    profileId: "main",
+    conversationId: "user-1",
+    senderId: "user-1",
+    timestamp: 1,
+    kind: "text",
+    text: "/new 帮我检查登录模块",
+    attachments: [],
+    raw: {},
+  }, codexTestContext());
+
+  assert.deepEqual(events, ["start", "send"]);
+  assert.equal(sentPrompt?.text, "帮我检查登录模块");
+  assert.equal((actions[0] as { text: string }).text, "new chat answer");
 });
 
 test("codex connector reports progress periodically and keeps waiting for the final reply", async () => {
@@ -1782,7 +1987,7 @@ test("codex connector commands do not consume pending images", async () => {
 
   await connector.handleMessage(codexImageMessage({ id: "m-image" }), context);
   const statusActions = await connector.handleMessage(codexTextMessage("/status", "m-status"), context);
-  assert.match((statusActions[0] as { text: string }).text, /◆ Codex - Status/);
+  assert.match((statusActions[0] as { text: string }).text, /^```Codex-Status/);
   assert.equal(sentPrompt, undefined);
 
   const textActions = await connector.handleMessage(
@@ -1835,14 +2040,14 @@ test("codex connector reports and clears local media cache", async () => {
 
   await connector.handleMessage(codexImageMessage({ id: "m-image" }), context);
   const statusActions = await connector.handleMessage(codexTextMessage("/cache", "m-cache"), context);
-  assert.match((statusActions[0] as { text: string }).text, /◆ Codex - Cache/);
+  assert.match((statusActions[0] as { text: string }).text, /^```Codex-Cache/);
   assert.match((statusActions[0] as { text: string }).text, /文件数: 1/);
 
   const clearActions = await connector.handleMessage(
     codexTextMessage("/cache clear", "m-cache-clear"),
     context,
   );
-  assert.match((clearActions[0] as { text: string }).text, /◆ Codex - Cache Cleared/);
+  assert.match((clearActions[0] as { text: string }).text, /^```Codex-Cache-Clear/);
   assert.match((clearActions[0] as { text: string }).text, /清理文件数: 1/);
 
   await connector.handleMessage(codexTextMessage("图片还在吗", "m-text"), context);
@@ -2769,23 +2974,12 @@ test("codex connector stream mode strips output file references and sends media"
   ]);
 });
 
-test("codex connector toggles Codex GUI auto-open", async () => {
-  let enabled = false;
+test("codex connector no longer exposes Codex GUI auto-open", async () => {
   const connector = createCodexConnector({
     id: "codex-bridge",
     client: {
       async getStatus() {
         return { state: "idle" };
-      },
-      async getAutoOpen() {
-        return { enabled };
-      },
-      async setAutoOpen(nextEnabled) {
-        enabled = nextEnabled;
-        return {
-          enabled,
-          updatedAt: 42,
-        };
       },
     },
   });
@@ -2811,18 +3005,11 @@ test("codex connector toggles Codex GUI auto-open", async () => {
     raw: {},
   };
 
-  const enabledActions = await connector.handleMessage(baseMessage, context);
-  assert.equal(enabled, true);
-  assert.match((enabledActions[0] as { text: string }).text, /◆ Codex - Autoopen/);
-  assert.match((enabledActions[0] as { text: string }).text, /- 当前状态: 1 \/ enabled/);
-
-  const disabledActions = await connector.handleMessage({
-    ...baseMessage,
-    id: "m2",
-    text: "/autoopen 0",
-  }, context);
-  assert.equal(enabled, false);
-  assert.match((disabledActions[0] as { text: string }).text, /- 当前状态: 0 \/ disabled/);
+  const actions = await connector.handleMessage(baseMessage, context);
+  assert.deepEqual(actions, [{
+    type: "noop",
+    reason: "unknown codex route command: /autoopen 1",
+  }]);
 });
 
 test("codex connector configures the Codex GUI alarm", async () => {
@@ -2957,7 +3144,7 @@ test("codex connector queues prompts per conversation", async () => {
     id: "m-status",
     text: "/status",
   }, context);
-  assert.match((statusActions[0] as { text: string }).text, /正在处理任务/);
+  assert.match((statusActions[0] as { text: string }).text, /状态：正在工作/);
 
   const second = connector.handleMessage({
     ...baseMessage,
@@ -3516,7 +3703,7 @@ test("main assistant renames current route and cd enters a route session", async
     item_list: [{ type: MessageItemType.TEXT, text_item: { text: "/rename 总控台" } }],
   });
 
-  assert.match(sent[0], /^◆ 大助手 - Route Renamed/);
+  assert.match(sent[0], /^```WeConnect-Route-Renamed/);
   assert.match(sent[0], /- 已重命名为: 总控台/);
   assert.equal(
     runtime.listRoutes().find((route) => route.id === "main-assistant-default")
@@ -3541,7 +3728,7 @@ test("main assistant renames current route and cd enters a route session", async
     item_list: [{ type: MessageItemType.TEXT, text_item: { text: "/cd codex" } }],
   });
 
-  assert.match(sent[1], /^◆ 大助手 - Route Entered/);
+  assert.match(sent[1], /^```WeConnect-Route-Entered/);
   assert.match(sent[1], /- 已进入 route: codex/);
   assert.match(sent[1], /当前对话会停留在这个 route 内/);
   assert.equal(runtime.getConversationRoute("main", "user-1"), "codex");

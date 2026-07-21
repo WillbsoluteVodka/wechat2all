@@ -167,7 +167,7 @@ fn sample_snapshot() -> DashboardSnapshot {
                 kind: "MCP".into(),
                 status: "planned".into(),
                 route_count: 0,
-                description: "给 Codex/Claude/Cursor 等 agent 暴露微信发送和查询工具。".into(),
+                description: "给本地 agent 暴露微信发送和查询工具。".into(),
             },
         ],
         traces: vec![
@@ -234,21 +234,25 @@ async fn daemon_json_response(
 }
 
 #[tauri::command]
-async fn get_dashboard_snapshot() -> DashboardSnapshot {
+async fn get_dashboard_snapshot() -> serde_json::Value {
     let daemon_url = trim_trailing_slash(&env_or_default(
         "WECHAT2ALL_ROUTER_DAEMON_URL",
         DEFAULT_DAEMON_URL,
     ));
     let url = format!("{daemon_url}/snapshot");
+    let fallback = || {
+        serde_json::to_value(sample_snapshot())
+            .expect("the built-in dashboard fallback must be serializable")
+    };
     let client = match daemon_http_client() {
         Ok(client) => client,
-        Err(_) => return sample_snapshot(),
+        Err(_) => return fallback(),
     };
     match client.get(&url).send().await {
-        Ok(response) if response.status().is_success() => {
-            response.json::<DashboardSnapshot>().await.unwrap_or_else(|_| sample_snapshot())
-        }
-        _ => sample_snapshot(),
+        Ok(response) => daemon_json_response("Router daemon dashboard request", response)
+            .await
+            .unwrap_or_else(|_| fallback()),
+        Err(_) => fallback(),
     }
 }
 
@@ -313,34 +317,48 @@ async fn get_llm_health() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-async fn get_codex_setup_check() -> Result<serde_json::Value, String> {
+async fn get_route_setup_check(route_id: String) -> Result<serde_json::Value, String> {
+    if route_id.is_empty()
+        || !route_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err("Route id contains unsupported characters".into());
+    }
     let daemon_url = trim_trailing_slash(&env_or_default(
         "WECHAT2ALL_ROUTER_DAEMON_URL",
         DEFAULT_DAEMON_URL,
     ));
-    let url = format!("{daemon_url}/codex/setup-check");
+    let url = format!("{daemon_url}/routes/{route_id}/setup-check");
     let response = daemon_http_client()?
         .get(&url)
         .send()
         .await
         .map_err(|err| format!("Router daemon is not reachable at {daemon_url}: {err}"))?;
-    daemon_json_response("Router daemon Codex setup check request", response).await
+    daemon_json_response("Router daemon route setup check request", response).await
 }
 
 #[tauri::command]
-async fn refresh_codex_setup_check() -> Result<serde_json::Value, String> {
+async fn refresh_route_setup_check(route_id: String) -> Result<serde_json::Value, String> {
+    if route_id.is_empty()
+        || !route_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err("Route id contains unsupported characters".into());
+    }
     let daemon_url = trim_trailing_slash(&env_or_default(
         "WECHAT2ALL_ROUTER_DAEMON_URL",
         DEFAULT_DAEMON_URL,
     ));
-    let url = format!("{daemon_url}/codex/setup-check");
+    let url = format!("{daemon_url}/routes/{route_id}/setup-check");
     let response = daemon_http_client()?
         .post(&url)
         .json(&serde_json::json!({}))
         .send()
         .await
         .map_err(|err| format!("Router daemon is not reachable at {daemon_url}: {err}"))?;
-    daemon_json_response("Router daemon Codex setup check refresh", response).await
+    daemon_json_response("Router daemon route setup check refresh", response).await
 }
 
 #[tauri::command]
@@ -458,8 +476,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_dashboard_snapshot,
             get_llm_health,
-            get_codex_setup_check,
-            refresh_codex_setup_check,
+            get_route_setup_check,
+            refresh_route_setup_check,
             get_local_config,
             patch_local_config,
             get_upochi_config,

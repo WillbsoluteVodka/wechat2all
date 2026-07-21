@@ -43,6 +43,12 @@ export async function readCodexGuiBinding(
       threadId,
       title: typeof parsed.title === "string" ? parsed.title : undefined,
       project: typeof parsed.project === "string" ? parsed.project : undefined,
+      projectPath: typeof parsed.projectPath === "string" ? parsed.projectPath : undefined,
+      ...(parsed.pendingFirstMessage === true ? { pendingFirstMessage: true } : {}),
+      ...(parsed.pendingGuiNewChat === true ? { pendingGuiNewChat: true } : {}),
+      ...(typeof parsed.pendingGuiNewChatAt === "number"
+        ? { pendingGuiNewChatAt: parsed.pendingGuiNewChatAt }
+        : {}),
       boundAt: typeof parsed.boundAt === "number" ? parsed.boundAt : Date.now(),
     };
   } catch (error) {

@@ -5,3 +5,4 @@ export * from "./prompt.js";
 export * from "./agent.js";
 export * from "./connector.js";
 export * from "./route.js";
+export * from "./package.js";

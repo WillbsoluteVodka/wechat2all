@@ -46,29 +46,6 @@ const WECONNECT_ROUTE_RULES: RouteRuleDetail[] = [
   { rule: "/cd ..", description: "从二级 route 返回大助手" },
 ];
 
-const CODEX_ROUTE_RULES: RouteRuleDetail[] = [
-  { rule: "/status", description: "查询 Codex 当前状态" },
-  { rule: "/token", description: "查询 Codex usage 剩余额度" },
-  { rule: "/ls", description: "查看可绑定的 Codex chats" },
-  {
-    rule: "/bind <序号>",
-    description: "绑定 /ls 里对应编号的 Codex chat，也支持完整 thread id",
-  },
-  { rule: "/current", description: "查看当前绑定" },
-  {
-    rule: "/mode final|silent|stream",
-    description: "设置微信返回模式，当前：final",
-  },
-  {
-    rule: "/alarm <HH:mm>",
-    description: "设置 24 小时制时间，到点向绑定的 Codex chat 发送 dummy 你好",
-  },
-  { rule: "/cache", description: "查看本地附件 cache 的路径、文件数和大小" },
-  { rule: "/cache clear", description: "清理当前 profile 的附件 cache" },
-  { rule: "任意普通文本", description: "发送到已绑定的 Codex chat" },
-  { rule: "/cd ..", description: "回到主 Router" },
-];
-
 const UPOCHI_ROUTE_RULES: RouteRuleDetail[] = [
   { rule: "/check", description: "查看 Upochi 中的所有 Todo" },
   { rule: "/add <标题>", description: "在 Upochi 中新增 Todo" },
@@ -94,9 +71,7 @@ export function routeRuleDetails(route: RouteSummary): RouteRuleDetail[] {
   if (route.id === "main-assistant-default" || route.name === "大助手") {
     return WECONNECT_ROUTE_RULES;
   }
-  if (route.id === "codex" || route.connectorId.includes("codex")) {
-    return CODEX_ROUTE_RULES;
-  }
+  if (route.management?.commands?.length) return route.management.commands;
   if (route.id === "upochi" || route.connectorId.includes("upochi")) {
     return UPOCHI_ROUTE_RULES;
   }

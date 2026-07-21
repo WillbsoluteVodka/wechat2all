@@ -1,3 +1,4 @@
+/** Human-sounding progress messages owned by the Codex route. */
 export const CODEX_PROCESSING_REMINDER_TEXTS = [
   "我还在处理，稍等我一下。",
   "这边还在跑，我继续等结果。",

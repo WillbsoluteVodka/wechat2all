@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import type {
-  CodexSetupCheckResponse,
   DashboardSnapshot,
   LocalConfigPatch,
   LocalConfigResponse,
@@ -10,6 +9,7 @@ import type {
   LlmHealthResponse,
   LoginStatus,
   QrLoginResponse,
+  RouteSetupCheckResponse,
   UpochiConfigPatch,
   UpochiConfigResponse,
   UpochiConfigSnapshot,
@@ -46,16 +46,6 @@ const fallbackSnapshot: DashboardSnapshot = {
       priority: -100,
       connectorId: "main-assistant",
       matchText: ["fallback", "/help", "/ls", "/rename", "/cd"],
-      stats: { messagesToday: 0, lastHitAt: null },
-    },
-    {
-      id: "codex",
-      name: "codex",
-      description: "Codex bridge：通过大助手 /cd codex 进入。app-server 通过本地后台接口连接 Codex，稳定且无需操作界面；gui-automation 是直接驱动 Codex 桌面界面的高级模式，需要额外开启 macOS 系统权限。",
-      enabled: true,
-      priority: 900,
-      connectorId: "codex-bridge",
-      matchText: [],
       stats: { messagesToday: 0, lastHitAt: null },
     },
     {
@@ -109,14 +99,6 @@ const fallbackSnapshot: DashboardSnapshot = {
       description: "负责默认对话、route 分发和固定 slash 命令。",
     },
     {
-      id: "codex-bridge",
-      name: "Codex Bridge",
-      kind: "MCP bridge",
-      status: "ready",
-      routeCount: 1,
-      description: "本地 Codex bridge 能力，后续由 router 管理入口。",
-    },
-    {
       id: "claude-route",
       name: "Claude Route",
       kind: "Claude Agent SDK",
@@ -130,7 +112,7 @@ const fallbackSnapshot: DashboardSnapshot = {
       kind: "MCP",
       status: "planned",
       routeCount: 0,
-      description: "给 Codex/Claude/Cursor 等 agent 暴露微信发送和查询工具。",
+      description: "给本地 agent 暴露微信发送和查询工具。",
     },
   ],
   traces: [
@@ -170,9 +152,6 @@ let fallbackLocalConfig: LocalConfigSnapshot = {
     baseUrl: "https://api.mem0.ai",
     timeoutMs: 15_000,
     localMaxSearchRows: 2_000,
-  },
-  codex: {
-    delivery: "app-server",
   },
   claude: {
     apiKey: { configured: false, masked: null },
@@ -244,30 +223,28 @@ export async function getLlmHealth(): Promise<LlmHealthResponse> {
   return invoke<LlmHealthResponse>("get_llm_health");
 }
 
-const fallbackCodexSetupCheck: CodexSetupCheckResponse = {
+const fallbackRouteSetupCheck: RouteSetupCheckResponse = {
   ok: true,
   schemaVersion: 1,
   check: {
     status: "ready",
     checkedAt: new Date().toISOString(),
     items: [
-      { status: "pass", message: "ChatGPT/Codex desktop installed", section: "Common" },
-      { status: "missing", message: "Codex task binding not found", section: "Common" },
-      { status: "warn", message: "GUI automation is not selected", section: "GUI automation" },
+      { status: "info", message: "Setup checks are unavailable in browser preview.", section: "Preview" },
     ],
     exitCode: 1,
     error: null,
   },
 };
 
-export async function getCodexSetupCheck(): Promise<CodexSetupCheckResponse> {
-  if (!isTauri()) return fallbackCodexSetupCheck;
-  return invoke<CodexSetupCheckResponse>("get_codex_setup_check");
+export async function getRouteSetupCheck(routeId: string): Promise<RouteSetupCheckResponse> {
+  if (!isTauri()) return fallbackRouteSetupCheck;
+  return invoke<RouteSetupCheckResponse>("get_route_setup_check", { routeId });
 }
 
-export async function refreshCodexSetupCheck(): Promise<CodexSetupCheckResponse> {
-  if (!isTauri()) return fallbackCodexSetupCheck;
-  return invoke<CodexSetupCheckResponse>("refresh_codex_setup_check");
+export async function refreshRouteSetupCheck(routeId: string): Promise<RouteSetupCheckResponse> {
+  if (!isTauri()) return fallbackRouteSetupCheck;
+  return invoke<RouteSetupCheckResponse>("refresh_route_setup_check", { routeId });
 }
 
 export async function requestQrLogin(profileId: string): Promise<QrLoginResponse> {
@@ -315,10 +292,24 @@ export async function patchLocalConfig(
   if (!isTauri()) {
     const llmPatch = payload.llm;
     const memoryPatch = payload.memory;
-    const codexPatch = payload.codex;
     const claudePatch = payload.claude;
+    const extensionPatch = Object.fromEntries(
+      Object.entries(payload)
+        .filter(([key, value]) => !["llm", "memory", "claude"].includes(key)
+          && value && typeof value === "object" && !Array.isArray(value))
+        .map(([key, value]) => [
+          key,
+          {
+            ...(fallbackLocalConfig[key] && typeof fallbackLocalConfig[key] === "object"
+              ? fallbackLocalConfig[key] as Record<string, unknown>
+              : {}),
+            ...value as Record<string, unknown>,
+          },
+        ]),
+    );
     fallbackLocalConfig = {
       ...fallbackLocalConfig,
+      ...extensionPatch,
       runtimeApplied: false,
       restartRequired: true,
       llm: {
@@ -341,12 +332,6 @@ export async function patchLocalConfig(
           memoryPatch?.localMaxSearchRows,
           fallbackLocalConfig.memory.localMaxSearchRows,
         ),
-      },
-      codex: {
-        delivery: nextValue(
-          codexPatch?.delivery,
-          fallbackLocalConfig.codex.delivery,
-        ) ?? "app-server",
       },
       claude: {
         ...fallbackLocalConfig.claude,

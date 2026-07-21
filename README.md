@@ -14,6 +14,8 @@ local services.
 flowchart TD
   W["WeChat mobile chat"] --> C["packages/client<br/>WeChat iLink SDK"]
   C --> R["packages/runtime<br/>messages, routes, actions, memory"]
+  S["packages/route-sdk<br/>WeConnect Route Protocol v1"] --> R
+  P["built-in + community route packages"] --> S
   R --> D["packages/router-daemon<br/>local process + HTTP API"]
   D --> UI["packages/desktop<br/>Tauri dashboard"]
   R --> CG["packages/codex-gui-bridge<br/>Codex GUI/app-server bridge"]
@@ -30,10 +32,18 @@ Each package owns one layer and should stay independently understandable.
 |---|---|---|---|
 | Protocol SDK | `packages/client` | WeChat iLink login, polling, media upload/download, send APIs | Route selection, LLMs, memory, UI |
 | Runtime | `packages/runtime` | `WeixinMessage -> RuntimeMessage`, route matching, connectors, memory, action execution | HTTP server, QR dashboard, desktop app |
+| Route SDK | `packages/route-sdk` | Versioned route package manifest, factory, validation, capabilities, permissions, lifecycle | Marketplace hosting, executing route business logic |
 | Local daemon | `packages/router-daemon` | Process lifecycle, profile state, QR login API, dashboard HTTP API, built-in routes | UI rendering, low-level iLink protocol |
 | Desktop UI | `packages/desktop` | macOS Tauri dashboard, QR/login/status/routes/logs/settings screens | Runtime business logic |
 | Codex GUI bridge | `packages/codex-gui-bridge` | Codex app-server chat listing, binding, token usage, prompt delivery | WeChat routing or generic MCP tools |
 | Claude route | `packages/claude-route` | Claude Agent SDK runs, session resume, vault/workspace tools, attachment staging | QR login, iLink protocol, daemon lifecycle, desktop UI |
+
+Codex and Claude are loaded through the same `WeConnect Route Protocol v1` used
+by community packages. A third-party package exports `routePackage`, ships a
+static `weconnect.route.json`, and can be loaded through
+`WECHAT2ALL_ROUTE_PACKAGES` without editing daemon source. See
+[`packages/route-sdk/PROTOCOL.md`](./packages/route-sdk/PROTOCOL.md) and the
+[`route-package` template](./packages/route-sdk/templates/route-package).
 
 Example flow:
 
@@ -63,9 +73,11 @@ returns with `/cd ..`.
 - One physical WeChat scan/profile with multiple logical routes.
 - Main assistant route (`大助手`) for general LLM chat, route listing, renaming,
   and route switching.
-- Codex route with `/ls`, `/bind <序号>`, `/current`, `/token`, `/autoopen 1|0`,
+- Codex route with `/ls`, `/bind <序号>`, `/current`, `/token`, `/recover`, `/autoopen 1|0`,
   `/alarm <HH:mm>`, `/cache`, `/cache clear`, and prompt delivery into a bound
   Codex GUI chat.
+- Codex app-server sessions self-restart after transport failures, and the
+  route watchdog prevents one stuck request from blocking later WeChat input.
 - The selected Codex chat binding persists across daemon/desktop restarts.
 - Independent Claude Agent SDK route for an Obsidian vault or local workspace,
   with `/status`, `/new`, per-sender session resume, image/file inputs, and
@@ -224,7 +236,7 @@ To skip the Codex GUI auto-open check entirely:
 WECHAT2ALL_DESKTOP_OPEN_CODEX=0 pnpm desktop
 ```
 
-Use visible Codex GUI delivery:
+Codex GUI delivery is the default. To set it explicitly:
 
 ```bash
 WECHAT2ALL_CODEX_DELIVERY=gui-automation \
@@ -243,18 +255,13 @@ WECHAT2ALL_ROUTER_PORT=39788 pnpm desktop
 For normal QR login and dashboard viewing, no special macOS permission should be
 needed beyond network access.
 
-For Codex GUI delivery with `WECHAT2ALL_CODEX_DELIVERY=gui-automation`, macOS
-must allow the process running wechat2all to control the computer:
+The default `WECHAT2ALL_CODEX_DELIVERY=gui-automation` path opens the exact bound
+Codex chat, pastes attachments and prompt text, and presses Return. App-server
+observes the completed turn and is used for delivery only if GUI injection fails.
 
-1. Open System Settings.
-2. Go to Privacy & Security -> Accessibility.
-3. Enable the app or terminal you use to start wechat2all. Common entries:
-   `Terminal`, `iTerm`, `Codex`, and sometimes `Codex Computer Use`.
-4. Keep the Codex desktop app installed and logged in.
-
-The GUI delivery path opens `codex://threads/<threadId>`, waits briefly, pastes
-the prompt into that bound chat, presses Enter, then polls the same thread for a
-final answer.
+Because the normal path controls the GUI, macOS Accessibility/Automation must be
+enabled for the app or terminal that starts wechat2all. `/new` is created by
+app-server and opened after its first completed turn.
 
 ## Current Progress For Collaborators
 

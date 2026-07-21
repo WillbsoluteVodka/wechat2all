@@ -179,7 +179,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 DELIVERY="$(config_value WECHAT2ALL_CODEX_DELIVERY)"
-[[ -n "$DELIVERY" ]] || DELIVERY="app-server"
+[[ -n "$DELIVERY" ]] || DELIVERY="gui-automation"
 REPLY_MODE="$(config_value WECHAT2ALL_CODEX_REPLY_MODE)"
 [[ -n "$REPLY_MODE" ]] || REPLY_MODE="final"
 

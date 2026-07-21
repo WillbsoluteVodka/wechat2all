@@ -9,14 +9,14 @@ import {
 import QRCode from "qrcode";
 
 import {
-  getCodexSetupCheck,
   getDashboardSnapshot,
   getLocalConfig,
   getLlmHealth,
   getLoginStatus,
   requestQrLogin,
   patchLocalConfig,
-  refreshCodexSetupCheck,
+  getRouteSetupCheck,
+  refreshRouteSetupCheck,
   unlinkWechatSession,
 } from "./api";
 import { AgentsPage, TracePage } from "./pages/ConstructionPages";
@@ -24,12 +24,13 @@ import { ConfigPage } from "./pages/ConfigPage";
 import { HomePage } from "./pages/HomePage";
 import { RoutesPage } from "./pages/RoutesPage";
 import type {
-  CodexSetupCheckResponse,
   DashboardSnapshot,
+  LocalConfigSnapshot,
   LlmHealthResponse,
   LoginStatus,
   PageKey,
   QrLoginResponse,
+  RouteSetupCheckResponse,
 } from "./types";
 import { CoreConsole, PixelClickBurstLayer, WindowDragRegion } from "./ui/AppChrome";
 import { EmptyState } from "./ui/Common";
@@ -41,12 +42,11 @@ export function App() {
   const [activePage, setActivePage] = useState<PageKey>("home");
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [llmHealth, setLlmHealth] = useState<LlmHealthResponse | null>(null);
-  const [codexSetupCheck, setCodexSetupCheck] = useState<CodexSetupCheckResponse | null>(null);
-  const [codexSetupRefreshing, setCodexSetupRefreshing] = useState(false);
-  const [codexSetupError, setCodexSetupError] = useState<string | null>(null);
-  const [codexDelivery, setCodexDelivery] = useState<"app-server" | "gui-automation">("app-server");
-  const [codexDeliverySaving, setCodexDeliverySaving] = useState(false);
-  const [codexDeliveryRestartRequired, setCodexDeliveryRestartRequired] = useState(false);
+  const [routeSetupChecks, setRouteSetupChecks] = useState<Record<string, RouteSetupCheckResponse | null>>({});
+  const [routeSetupErrors, setRouteSetupErrors] = useState<Record<string, string | null>>({});
+  const [routeSetupRefreshingId, setRouteSetupRefreshingId] = useState<string | null>(null);
+  const [localConfig, setLocalConfig] = useState<LocalConfigSnapshot | null>(null);
+  const [routeConfigSavingPath, setRouteConfigSavingPath] = useState<string | null>(null);
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
   const [qr, setQr] = useState<QrLoginResponse | null>(null);
   const [loginStatus, setLoginStatus] = useState<LoginStatus | null>(null);
@@ -77,13 +77,11 @@ export function App() {
     Promise.all([
       getDashboardSnapshot(),
       getLlmHealth().catch(() => null),
-      getCodexSetupCheck().catch(() => null),
     ])
-      .then(([data, health, codexCheck]) => {
+      .then(([data, health]) => {
         if (!cancelled) {
           setSnapshot(data);
           setLlmHealth(health);
-          setCodexSetupCheck(codexCheck);
         }
       })
       .catch((err: unknown) => {
@@ -134,41 +132,55 @@ export function App() {
     };
   }, [activePage, startupOverlayVisible]);
 
+  const setupCheckRouteIds = useMemo(
+    () => snapshot?.routes
+      .filter((route) => route.management?.setupCheck)
+      .map((route) => route.id) ?? [],
+    [snapshot?.routes],
+  );
+  const setupCheckRouteKey = setupCheckRouteIds.join("\0");
+
   useEffect(() => {
     if (
       startupOverlayVisible
       || (activePage !== "home" && activePage !== "routes")
     ) return undefined;
     let cancelled = false;
-    const refreshCachedCheck = async () => {
-      try {
-        const [result, config] = await Promise.all([
-          getCodexSetupCheck(),
-          activePage === "routes"
-            ? getLocalConfig().catch(() => null)
-            : Promise.resolve(null),
-        ]);
-        if (!cancelled) {
-          setCodexSetupCheck(result);
-          if (config) {
-            setCodexDelivery(config.codex?.delivery ?? "app-server");
-            setCodexDeliveryRestartRequired(config.restartRequired);
+    const refreshManagedRouteState = async () => {
+      const [checks, config] = await Promise.all([
+        Promise.all(setupCheckRouteIds.map(async (routeId) => {
+          try {
+            return [routeId, await getRouteSetupCheck(routeId), null] as const;
+          } catch (reason) {
+            return [
+              routeId,
+              null,
+              reason instanceof Error ? reason.message : String(reason),
+            ] as const;
           }
-          setCodexSetupError(null);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setCodexSetupError(error instanceof Error ? error.message : String(error));
-        }
-      }
+        })),
+        activePage === "routes"
+          ? getLocalConfig().catch(() => null)
+          : Promise.resolve(null),
+      ]);
+      if (cancelled) return;
+      setRouteSetupChecks((previous) => ({
+        ...previous,
+        ...Object.fromEntries(checks.map(([routeId, check]) => [routeId, check])),
+      }));
+      setRouteSetupErrors((previous) => ({
+        ...previous,
+        ...Object.fromEntries(checks.map(([routeId, , error]) => [routeId, error])),
+      }));
+      if (config) setLocalConfig(config);
     };
-    void refreshCachedCheck();
-    const timer = window.setInterval(() => void refreshCachedCheck(), 2000);
+    void refreshManagedRouteState();
+    const timer = window.setInterval(() => void refreshManagedRouteState(), 2000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [activePage, startupOverlayVisible]);
+  }, [activePage, setupCheckRouteKey, startupOverlayVisible]);
 
   useEffect(() => {
     if (!snapshot || !qr) return undefined;
@@ -287,32 +299,39 @@ export function App() {
     }
   }
 
-  async function onRefreshCodexSetupCheck() {
-    if (codexSetupRefreshing) return;
-    setCodexSetupRefreshing(true);
-    setCodexSetupError(null);
+  async function onRefreshRouteSetupCheck(routeId: string) {
+    if (routeSetupRefreshingId) return;
+    setRouteSetupRefreshingId(routeId);
+    setRouteSetupErrors((previous) => ({ ...previous, [routeId]: null }));
     try {
-      setCodexSetupCheck(await refreshCodexSetupCheck());
+      const result = await refreshRouteSetupCheck(routeId);
+      setRouteSetupChecks((previous) => ({ ...previous, [routeId]: result }));
     } catch (error) {
-      setCodexSetupError(error instanceof Error ? error.message : String(error));
+      setRouteSetupErrors((previous) => ({
+        ...previous,
+        [routeId]: error instanceof Error ? error.message : String(error),
+      }));
     } finally {
-      setCodexSetupRefreshing(false);
+      setRouteSetupRefreshingId(null);
     }
   }
 
-  async function onToggleCodexDelivery() {
-    if (codexDeliverySaving) return;
-    const delivery = codexDelivery === "app-server" ? "gui-automation" : "app-server";
-    setCodexDeliverySaving(true);
-    setCodexSetupError(null);
+  async function onSetRouteConfig(configKey: string, field: string, value: string) {
+    const controlPath = `${configKey}.${field}`;
+    if (routeConfigSavingPath) return;
+    setRouteConfigSavingPath(controlPath);
     try {
-      const result = await patchLocalConfig({ codex: { delivery } });
-      setCodexDelivery(result.config.codex?.delivery ?? delivery);
-      setCodexDeliveryRestartRequired(result.config.restartRequired);
+      const result = await patchLocalConfig({
+        [configKey]: { [field]: value },
+      });
+      setLocalConfig(result.config);
     } catch (error) {
-      setCodexSetupError(error instanceof Error ? error.message : String(error));
+      setRouteSetupErrors((previous) => ({
+        ...previous,
+        [selectedRouteId ?? configKey]: error instanceof Error ? error.message : String(error),
+      }));
     } finally {
-      setCodexDeliverySaving(false);
+      setRouteConfigSavingPath(null);
     }
   }
 
@@ -332,7 +351,7 @@ export function App() {
             <HomePage
               data={snapshot}
               llmHealth={llmHealth}
-              codexSetupCheck={codexSetupCheck}
+              routeSetupChecks={routeSetupChecks}
               qr={qr}
               qrImage={qrImage}
               qrError={qrError}
@@ -352,16 +371,19 @@ export function App() {
           ) : null}
           {activePage === "routes" ? (
             <RoutesPage
-              codexSetupCheck={codexSetupCheck}
-              codexSetupError={codexSetupError}
-              codexSetupRefreshing={codexSetupRefreshing}
-              codexDelivery={codexDelivery}
-              codexDeliveryRestartRequired={codexDeliveryRestartRequired}
-              codexDeliverySaving={codexDeliverySaving}
+              routeSetupChecks={routeSetupChecks}
+              routeSetupErrors={routeSetupErrors}
+              routeSetupRefreshingId={routeSetupRefreshingId}
+              localConfig={localConfig}
+              routeConfigSavingPath={routeConfigSavingPath}
               routes={snapshot.routes}
               selectedRouteId={selectedRouteId}
-              onRefreshCodexSetupCheck={() => void onRefreshCodexSetupCheck()}
-              onToggleCodexDelivery={() => void onToggleCodexDelivery()}
+              onRefreshRouteSetupCheck={(routeId) => void onRefreshRouteSetupCheck(routeId)}
+              onSetRouteConfig={(configKey, field, value) => void onSetRouteConfig(
+                configKey,
+                field,
+                value,
+              )}
               onSelect={setSelectedRouteId}
             />
           ) : null}

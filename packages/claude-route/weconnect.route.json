@@ -1,0 +1,39 @@
+{
+  "$schema": "../route-sdk/schemas/route-manifest.v1.schema.json",
+  "protocol": "weconnect.route",
+  "protocolVersion": 1,
+  "id": "claude",
+  "packageName": "@wechat2all/claude-route",
+  "displayName": "Claude",
+  "version": "0.1.0",
+  "description": "Claude Agent SDK route for a local workspace or Obsidian vault.",
+  "license": "MIT",
+  "engines": {
+    "weconnect": ">=0.1.0 <2",
+    "node": ">=20"
+  },
+  "capabilities": [
+    "text-input",
+    "media-input",
+    "text-output",
+    "media-output"
+  ],
+  "permissions": [
+    {
+      "name": "network",
+      "reason": "Call the configured Anthropic API through the Claude Agent SDK."
+    },
+    {
+      "name": "filesystem:read",
+      "reason": "Read the user-configured workspace and input attachments."
+    },
+    {
+      "name": "filesystem:write",
+      "reason": "Persist session state and write files requested by the user."
+    },
+    {
+      "name": "process:spawn",
+      "reason": "Run the Claude Agent SDK executable and its approved tools."
+    }
+  ]
+}

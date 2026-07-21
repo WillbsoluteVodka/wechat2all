@@ -1,0 +1,40 @@
+{
+  "$schema": "../route-sdk/schemas/route-manifest.v1.schema.json",
+  "protocol": "weconnect.route",
+  "protocolVersion": 1,
+  "id": "office",
+  "packageName": "@wechat2all/office-route",
+  "displayName": "Office",
+  "version": "0.1.0",
+  "description": "Independent LLM-powered Word, Excel, and PowerPoint route using OfficeCLI.",
+  "license": "MIT",
+  "engines": {
+    "weconnect": ">=0.1.0 <2",
+    "node": ">=20"
+  },
+  "capabilities": [
+    "text-input",
+    "media-input",
+    "text-output",
+    "media-output",
+    "setup-check"
+  ],
+  "permissions": [
+    {
+      "name": "network",
+      "reason": "Use the WeConnect LLM provider configured by WECHAT2ALL_LLM_* variables."
+    },
+    {
+      "name": "filesystem:read",
+      "reason": "Read user-provided Office documents and assets inside the private route workspace."
+    },
+    {
+      "name": "filesystem:write",
+      "reason": "Create and edit Office documents inside the private route workspace."
+    },
+    {
+      "name": "process:spawn",
+      "reason": "Run the OfficeCLI binary with validated arguments and no shell."
+    }
+  ]
+}

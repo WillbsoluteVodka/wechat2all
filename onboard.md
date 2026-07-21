@@ -283,7 +283,7 @@ WECHAT2ALL_CODEX_GUI_PROCESS_NAME=ChatGPT
 
 ### 4.2 配置 Codex delivery
 
-如果希望微信消息能出现在可见的 Codex GUI chat 中，在 `.env.local` 添加：
+Codex route 默认使用 GUI automation。可在 `.env.local` 显式写入：
 
 ```dotenv
 WECHAT2ALL_CODEX_DELIVERY=gui-automation
@@ -292,8 +292,9 @@ WECHAT2ALL_CODEX_TURN_TIMEOUT_MS=180000
 WECHAT2ALL_CODEX_PROCESSING_REMINDER_MS=120000
 ```
 
-`gui-automation` 会打开绑定的 chat、粘贴文字并按 Return；图片和结果读取仍会使用
-Codex app-server 能力。
+`gui-automation` 会打开准确绑定的 chat，粘贴图片/文件路径和文字，然后按 Return。
+app-server 负责观察回复；只有 GUI 注入失败且没有检测到新 turn 时，才由 app-server
+fallback 投递。`/new` 由 app-server 创建，并在首条消息完成后打开新 chat。
 
 如果只需要协议调用、不要求输入立即显示在 GUI，可以使用：
 
@@ -301,40 +302,25 @@ Codex app-server 能力。
 WECHAT2ALL_CODEX_DELIVERY=app-server
 ```
 
-`app-server` 通常不需要 Accessibility 权限，但外部 turn 不保证立刻渲染到当前打开的
-GUI 窗口。
+`app-server` 模式不会主动操作 GUI；`gui-automation` 模式需要 Accessibility 和
+Automation 权限。
 
 不要把 `desktop-ipc` 设置成默认 delivery。项目只将 Codex Desktop IPC 用于只读的
 实时 `/status`；普通消息发送仍使用当前稳定的 delivery 路径。
 
 ### 4.3 macOS Privacy & Security
 
-只有 `gui-automation` 需要控制 GUI。macOS 权限应该授予**实际运行
-`pnpm desktop` 的 app**：
+`gui-automation` 会通过 System Events 控制 ChatGPT/Codex，因此权限要授予**实际
+启动 `pnpm desktop` 的 app**：
 
-- 从 Terminal 启动：授权 `Terminal`。
-- 从 iTerm 启动：授权 `iTerm`。
-- 从 Codex 内置 terminal 启动：可能需要授权 `ChatGPT` / `Codex`，以及系统列出的
-  对应 helper。
+1. 在 `System Settings -> Privacy & Security -> Accessibility` 开启实际启动宿主，
+   例如 Terminal、iTerm 或 ChatGPT/Codex。
+2. 在 `System Settings -> Privacy & Security -> Automation` 中，允许同一个宿主控制
+   `System Events` 和 ChatGPT/Codex（以系统实际列出的名字为准）。
+3. 完全退出并重新打开获得权限的宿主，再运行 `pnpm desktop`。
 
-设置步骤：
-
-1. 打开 `System Settings`。
-2. 进入 `Privacy & Security -> Accessibility`。
-3. 找到实际启动 `pnpm desktop` 的 Terminal/iTerm/ChatGPT，并打开开关。
-4. 如果列表中没有，点击 `+` 手动添加对应 app。
-5. 进入 `Privacy & Security -> Automation`。
-6. 如果系统列出了启动 app 对 `System Events` 或 `ChatGPT` 的控制权限，全部打开。
-7. 如果 ChatGPT 访问 repo 时出现文件夹权限提示，允许访问 repo 所在的 Desktop、
-   Documents 或其他父目录。
-8. 完全退出并重新打开获得权限的 Terminal/iTerm，然后重新运行 `pnpm desktop`。
-
-不需要为了 onboarding 开启 Full Disk Access。只授予系统实际提示且上述功能需要的
-权限。
-
-macOS 通常会在第一次 GUI 注入时才弹出 Automation/Accessibility 提示。因此，设置
-完 `.env.local` 后应实际发送一次 Codex 消息，再回到 System Settings 检查新出现的
-开关。
+如果 ChatGPT 访问 repo 时出现文件夹权限提示，允许访问 repo 所在目录即可；不需要
+为了 onboarding 开启 Full Disk Access。
 
 ### 4.4 绑定 Codex chat
 

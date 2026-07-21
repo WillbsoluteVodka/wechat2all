@@ -3806,34 +3806,6 @@ nav {
   background: #e1e8e3;
 }
 
-.pixel-icon .tone-codexFrame {
-  background: #4b4d52;
-}
-
-.pixel-icon .tone-codexTile {
-  background: #1e2024;
-}
-
-.pixel-icon .tone-codexPurple {
-  background: #8d85ff;
-}
-
-.pixel-icon .tone-codexPurpleLight {
-  background: #b5a2ff;
-}
-
-.pixel-icon .tone-codexBlue {
-  background: #586cff;
-}
-
-.pixel-icon .tone-codexBlueLight {
-  background: #75a7ff;
-}
-
-.pixel-icon .tone-codexBlueDark {
-  background: #233ee5;
-}
-
 .pixel-icon .tone-openai {
   background: #dfe6e3;
 }
@@ -4198,9 +4170,10 @@ nav {
 .home-field {
   --home-primary-panel-height: 420px;
   display: grid;
+  height: max(620px, calc(100vh - 172px));
   min-height: calc(100vh - 172px);
   grid-template-columns: minmax(320px, 0.8fr) minmax(300px, 0.55fr);
-  grid-template-rows: var(--home-primary-panel-height) auto;
+  grid-template-rows: var(--home-primary-panel-height) minmax(0, 1fr);
   gap: 16px;
   overflow: visible;
 }
@@ -4787,6 +4760,37 @@ nav {
   grid-column: 1 / -1;
   margin: 0;
   padding: 22px;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.home-route-lane-list-shell {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.home-route-lane-list {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 18px;
+  scrollbar-width: none;
+}
+
+.home-route-lane-list .signal-lane {
+  width: 100%;
+}
+
+.home-route-lane-list::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+  -webkit-appearance: none;
 }
 
 .lane-heading {

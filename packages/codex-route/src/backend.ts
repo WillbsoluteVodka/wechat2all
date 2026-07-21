@@ -1,10 +1,13 @@
-import { createCodexGuiBridgeClientFromEnv } from "@wechat2all/codex-gui-bridge";
-import type { CodexBridgeClient } from "@wechat2all/runtime";
+import {
+  createCodexGuiBridgeClientFromEnv,
+  ensureCodexGuiOpen,
+} from "@wechat2all/codex-gui-bridge";
+import type { CodexBridgeClient } from "./connector.js";
 
 import {
   runCodexSetupCheck,
   type CodexSetupCheckItem,
-} from "./codex-setup-check.js";
+} from "./setup-check.js";
 
 let setupCheckStarted = false;
 let setupCheckInFlight: Promise<CodexSetupCheckSnapshot> | undefined;
@@ -100,4 +103,14 @@ export function createCodexBridgeFromEnv(opts: {
     env,
     enableAlarmScheduler: true,
   });
+}
+
+export async function startCodexRouteAfterHostStartup(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  await ensureCodexGuiOpen({ env, quiet: true }).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[codex-route] could not auto-open Codex GUI: ${message}`);
+  });
+  startCodexSetupCheckAfterStartup(env);
 }

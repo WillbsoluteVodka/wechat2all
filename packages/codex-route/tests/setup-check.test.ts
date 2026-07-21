@@ -8,7 +8,7 @@ import {
   resolveCodexSetupCheckPath,
   runCodexSetupCheck,
   type CodexSetupCheckLogger,
-} from "../src/codex-setup-check.js";
+} from "../src/setup-check.js";
 
 async function fakeChecker(source: string): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-setup-check-"));

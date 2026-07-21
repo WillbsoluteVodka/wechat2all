@@ -2,7 +2,7 @@
   "name": "@wechat2all/codex-gui-bridge",
   "version": "0.1.0",
   "private": true,
-  "description": "Protocol-first bridge from wechat2all Codex route to Codex app-server threads",
+  "description": "GUI-first Codex route bridge with app-server observation and fallback",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.mjs",

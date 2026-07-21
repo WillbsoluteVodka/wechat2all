@@ -9,7 +9,6 @@ import {
   CodexGuiAppServerBridge,
   type CodexAppServerTransport,
   type CodexDesktopIpcTransport,
-  type CodexDesktopThreadSnapshot,
 } from "../src/index.js";
 
 const TINY_PNG_BASE64 =
@@ -36,9 +35,24 @@ class FakeTransport implements CodexAppServerTransport {
   readonly guiInjectedTextByThread = new Map<string, string>();
   readonly guiTurnReadCounts = new Map<string, number>();
   readonly appServerTurnsByThread = new Map<string, Array<Record<string, unknown>>>();
+  readonly unmaterializedThreadIds = new Set<string>();
+  guiNewThreadId?: string;
   threadStatus: { type: string; activeFlags?: unknown[] } = { type: "idle" };
   activeTurn?: Record<string, unknown>;
+  turnStartTurn: Record<string, unknown> = { id: "turn-1" };
+  threadStartError?: Error;
   turnStartError?: Error;
+  generation = 0;
+  resetCalls = 0;
+
+  getGeneration(): number {
+    return this.generation;
+  }
+
+  reset(): void {
+    this.resetCalls += 1;
+    this.generation += 1;
+  }
 
   async request<T>(method: string, params?: unknown): Promise<T> {
     this.calls.push({ method, params });
@@ -52,18 +66,41 @@ class FakeTransport implements CodexAppServerTransport {
         } as T;
       case "thread/list":
         return {
-          data: [{
-            id: "thread-1",
-            name: "Bridge work",
-            preview: "first message",
-            cwd: "/tmp/wechat2all",
-            status: this.threadStatus,
-            recencyAt: 1_785_000_000,
-            modelProvider: "openai",
-          }],
+          data: [
+            ...(this.guiNewThreadId
+              ? [{
+                  id: this.guiNewThreadId,
+                  name: "GUI new chat",
+                  preview: "first GUI message",
+                  cwd: "/tmp/wechat2all",
+                  status: this.threadStatus,
+                  createdAt: 1_785_000_002,
+                  recencyAt: 1_785_000_002,
+                  modelProvider: "openai",
+                }]
+              : []),
+            {
+              id: "thread-1",
+              name: "Bridge work",
+              preview: "first message",
+              cwd: "/tmp/wechat2all",
+              status: this.threadStatus,
+              recencyAt: 1_785_000_000,
+              modelProvider: "openai",
+            },
+          ],
         } as T;
       case "thread/read":
         const readParams = params as { threadId: string; includeTurns?: boolean };
+        if (
+          readParams.includeTurns &&
+          this.unmaterializedThreadIds.has(readParams.threadId)
+        ) {
+          throw new Error(
+            `thread ${readParams.threadId} is not materialized yet; ` +
+              "includeTurns is unavailable before first user message",
+          );
+        }
         return {
           thread: {
             id: readParams.threadId,
@@ -85,6 +122,11 @@ class FakeTransport implements CodexAppServerTransport {
           },
         } as T;
       case "thread/resume":
+        if (this.unmaterializedThreadIds.has((params as { threadId: string }).threadId)) {
+          throw new Error(
+            `thread ${(params as { threadId: string }).threadId} is not materialized yet`,
+          );
+        }
         return {
           thread: {
             id: (params as { threadId: string }).threadId,
@@ -94,9 +136,27 @@ class FakeTransport implements CodexAppServerTransport {
             turns: this.activeTurn ? [this.activeTurn] : undefined,
           },
         } as T;
+      case "thread/start":
+        if (this.threadStartError) throw this.threadStartError;
+        this.unmaterializedThreadIds.add("thread-new");
+        return {
+          thread: {
+            id: "thread-new",
+            name: null,
+            preview: "",
+            cwd: (params as { cwd?: string }).cwd,
+            status: { type: "idle" },
+            createdAt: 1_785_000_001,
+            updatedAt: 1_785_000_001,
+            recencyAt: 1_785_000_001,
+            modelProvider: "openai",
+          },
+          cwd: (params as { cwd?: string }).cwd,
+        } as T;
       case "turn/start":
         if (this.turnStartError) throw this.turnStartError;
-        return { turn: { id: "turn-1" } } as T;
+        this.unmaterializedThreadIds.delete((params as { threadId: string }).threadId);
+        return { turn: this.turnStartTurn } as T;
       case "turn/steer":
         return { turnId: (params as { expectedTurnId: string }).expectedTurnId } as T;
       case "account/rateLimits/read":
@@ -218,23 +278,6 @@ class FakeDesktopIpcTransport implements CodexDesktopIpcTransport {
   }
 }
 
-class FakeLiveStatusDesktopIpcTransport implements CodexDesktopIpcTransport {
-  constructor(
-    private readonly snapshot?: CodexDesktopThreadSnapshot,
-    private readonly snapshotError?: Error,
-  ) {}
-
-  async request<T>(): Promise<T> {
-    throw new Error("unexpected desktop IPC request");
-  }
-
-  async readThreadSnapshot(): Promise<CodexDesktopThreadSnapshot> {
-    if (this.snapshotError) throw this.snapshotError;
-    if (!this.snapshot) throw new Error("missing fake snapshot");
-    return this.snapshot;
-  }
-}
-
 test("lists chats and binds a thread through app-server protocol", async () => {
   const transport = new FakeTransport();
   const bridge = new CodexGuiAppServerBridge({ transport });
@@ -249,6 +292,33 @@ test("lists chats and binds a thread through app-server protocol", async () => {
   assert.equal(binding.project, "wechat2all");
   assert.equal(transport.calls[0].method, "initialize");
   assert.deepEqual(transport.notifications, [{ method: "initialized", params: {} }]);
+});
+
+test("reinitializes app-server after the transport session changes", async () => {
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({ transport });
+
+  await bridge.bindThread("thread-1");
+  assert.equal(transport.calls.filter((call) => call.method === "initialize").length, 1);
+
+  transport.reset();
+  await bridge.listChats();
+
+  assert.equal(transport.calls.filter((call) => call.method === "initialize").length, 2);
+});
+
+test("manual recovery resets app-server without losing the bound chat", async () => {
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({ transport });
+  await bridge.bindThread("thread-1");
+
+  const recovery = await bridge.recover("test fault");
+
+  assert.equal(recovery.recovered, true);
+  assert.equal(recovery.threadId, "thread-1");
+  assert.equal(transport.resetCalls, 1);
+  assert.equal((await bridge.getCurrentBinding())?.threadId, "thread-1");
+  assert.equal(transport.calls.filter((call) => call.method === "initialize").length, 2);
 });
 
 test("persists a bound thread and restores it in a new bridge instance", async () => {
@@ -274,8 +344,319 @@ test("persists a bound thread and restores it in a new bridge instance", async (
   second.close();
 });
 
-test("reports working from the latest in-progress turn when thread status is idle", async () => {
+test("initializes app-server before /new uses a restored project path", async () => {
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-init-new-"));
+  const bindingConfigPath = path.join(stateDir, "private", "binding.json");
+  const first = new CodexGuiAppServerBridge({
+    transport: new FakeTransport(),
+    bindingConfigPath,
+  });
+  await first.bindThread("thread-1");
+  first.close();
+
   const transport = new FakeTransport();
+  const second = new CodexGuiAppServerBridge({ transport, bindingConfigPath });
+  await second.startThread();
+
+  assert.deepEqual(
+    transport.calls.slice(0, 2).map((call) => call.method),
+    ["initialize", "thread/start"],
+  );
+  second.close();
+});
+
+test("starts a fresh thread in the bound chat project and binds it", async () => {
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({ transport });
+
+  await bridge.bindThread("thread-1");
+  const binding = await bridge.startThread();
+
+  assert.equal(binding.threadId, "thread-new");
+  assert.equal(binding.project, "wechat2all");
+  assert.equal(binding.projectPath, "/tmp/wechat2all");
+  assert.equal(binding.pendingFirstMessage, true);
+  assert.deepEqual(
+    transport.calls.find((call) => call.method === "thread/start")?.params,
+    {
+      cwd: "/tmp/wechat2all",
+      serviceName: "wechat2all-codex-gui-bridge",
+    },
+  );
+  assert.deepEqual(await bridge.getCurrentBinding(), binding);
+});
+
+test("restores a pending fresh thread without trying GUI history first", async () => {
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-new-chat-"));
+  const bindingConfigPath = path.join(stateDir, "private", "binding.json");
+  const first = new CodexGuiAppServerBridge({
+    transport: new FakeTransport(),
+    bindingConfigPath,
+  });
+  await first.bindThread("thread-1");
+  await first.startThread();
+  first.close();
+
+  const transport = new FakeTransport();
+  let guiInjectionCount = 0;
+  const second = new CodexGuiAppServerBridge({
+    transport,
+    bindingConfigPath,
+    deliveryMode: "gui-automation",
+    guiPromptInjector: async () => {
+      guiInjectionCount += 1;
+    },
+  });
+  const pending = second.sendPrompt({
+    id: "wechat-restored-first-message",
+    text: "first message after restart",
+  });
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-new",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      items: [],
+    },
+  });
+
+  assert.equal((await pending).status, "completed");
+  assert.equal(guiInjectionCount, 0);
+  const turnStartIndex = transport.calls.findIndex((call) => call.method === "turn/start");
+  const historyReadIndex = transport.calls.findIndex((call) =>
+      call.method === "thread/read" &&
+      (call.params as { includeTurns?: boolean })?.includeTurns === true
+  );
+  assert.notEqual(turnStartIndex, -1);
+  assert.equal(historyReadIndex === -1 || turnStartIndex < historyReadIndex, true);
+  assert.equal(
+    transport.calls.some((call) => call.method === "thread/resume"),
+    false,
+  );
+  assert.equal((await second.getCurrentBinding())?.pendingFirstMessage, undefined);
+  const persisted = JSON.parse(await fs.readFile(bindingConfigPath, "utf-8")) as
+    Record<string, unknown>;
+  assert.equal("pendingFirstMessage" in persisted, false);
+  second.close();
+});
+
+test("does not change the binding when starting a fresh thread fails", async () => {
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({ transport });
+  const originalBinding = await bridge.bindThread("thread-1");
+  transport.threadStartError = new Error("thread start failed");
+
+  await assert.rejects(bridge.startThread(), /thread start failed/);
+
+  assert.deepEqual(await bridge.getCurrentBinding(), originalBinding);
+});
+
+test("creates a new app-server thread without requiring GUI availability", async () => {
+  const transport = new FakeTransport();
+  let newChatMenuClicks = 0;
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    deliveryMode: "gui-automation",
+    guiThreadOpener: async () => {
+      throw new Error("Codex URL open failed");
+    },
+    guiNewChatStarter: async () => {
+      newChatMenuClicks += 1;
+    },
+  });
+  await bridge.bindThread("thread-1");
+
+  const binding = await bridge.startThread();
+
+  assert.equal(newChatMenuClicks, 0);
+  assert.equal(binding.threadId, "thread-new");
+  assert.equal(binding.pendingFirstMessage, true);
+  assert.equal(
+    transport.calls.filter((call) => call.method === "thread/start").length,
+    1,
+  );
+});
+
+test("requires an existing binding before starting a fresh thread", async () => {
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({ transport });
+
+  await assert.rejects(bridge.startThread(), /not bound/i);
+  assert.equal(
+    transport.calls.some((call) => call.method === "thread\/start"),
+    false,
+  );
+});
+
+test("creates a fresh app-server chat and opens it in GUI after the first prompt", async () => {
+  const transport = new FakeTransport();
+  let guiInjectionCount = 0;
+  let guiNewChatCount = 0;
+  let openedThreadId: string | undefined;
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    deliveryMode: "gui-automation",
+    guiNewChatStarter: async () => {
+      guiNewChatCount += 1;
+    },
+    guiThreadOpener: async (threadId) => {
+      openedThreadId = threadId;
+    },
+    guiPromptInjector: async () => {
+      guiInjectionCount += 1;
+    },
+  });
+
+  await bridge.bindThread("thread-1");
+  const newBinding = await bridge.startThread();
+  assert.equal(newBinding.pendingFirstMessage, true);
+  assert.equal(newBinding.threadId, "thread-new");
+  const pending = bridge.sendPrompt({
+    id: "wechat-new-chat-first-message",
+    text: "first message",
+  });
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-new",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      items: [{
+        type: "agentMessage",
+        id: "assistant-new-chat-1",
+        text: "New chat completed.",
+        phase: "final_answer",
+      }],
+    },
+  });
+  const result = await pending;
+
+  assert.equal(guiNewChatCount, 0);
+  assert.equal(openedThreadId, "thread-new");
+  assert.equal(guiInjectionCount, 0);
+  assert.equal(result.threadId, "thread-new");
+  assert.equal(result.finalText, "New chat completed.");
+  assert.equal((await bridge.getCurrentBinding())?.threadId, "thread-new");
+  assert.equal((await bridge.getCurrentBinding())?.pendingGuiNewChat, undefined);
+  assert.equal((await bridge.getCurrentBinding())?.pendingFirstMessage, undefined);
+  assert.equal(
+    transport.calls.some((call) => call.method === "thread/start"),
+    true,
+  );
+  assert.equal(
+    transport.calls.some((call) => call.method === "turn/start"),
+    true,
+  );
+});
+
+test("restores a pending app-server new chat and opens it after completion", async () => {
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-gui-new-"));
+  const bindingConfigPath = path.join(stateDir, "binding.json");
+  const first = new CodexGuiAppServerBridge({
+    transport: new FakeTransport(),
+    bindingConfigPath,
+    deliveryMode: "gui-automation",
+    guiThreadOpener: async () => undefined,
+    guiNewChatStarter: async () => undefined,
+    guiThreadOpenDelayMs: 1,
+  });
+  await first.bindThread("thread-1");
+  await first.startThread();
+  first.close();
+
+  const transport = new FakeTransport();
+  let restoredOpenCount = 0;
+  let restoredNewChatCount = 0;
+  const second = new CodexGuiAppServerBridge({
+    transport,
+    bindingConfigPath,
+    deliveryMode: "gui-automation",
+    guiThreadOpener: async (threadId) => {
+      assert.equal(threadId, "thread-new");
+      restoredOpenCount += 1;
+    },
+    guiNewChatStarter: async () => {
+      restoredNewChatCount += 1;
+    },
+    guiPromptInjector: async () => {
+      throw new Error("GUI prompt injection must not be used");
+    },
+  });
+
+  const pending = second.sendPrompt({ text: "first message after restart" });
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-new",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      items: [],
+    },
+  });
+  const result = await pending;
+
+  assert.equal(restoredOpenCount, 1);
+  assert.equal(restoredNewChatCount, 0);
+  assert.equal(result.threadId, "thread-new");
+  assert.equal((await second.getCurrentBinding())?.threadId, "thread-new");
+  second.close();
+});
+
+test("recovers when an unmaterialized GUI thread was not marked as fresh locally", async () => {
+  const transport = new FakeTransport();
+  transport.unmaterializedThreadIds.add("thread-new");
+  let guiInjectionCount = 0;
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    defaultThreadId: "thread-new",
+    deliveryMode: "gui-automation",
+    guiThreadOpener: async () => undefined,
+    guiPromptInjector: async () => {
+      guiInjectionCount += 1;
+    },
+  });
+
+  const pending = bridge.sendPrompt({
+    id: "wechat-recovered-first-message",
+    text: "recover first message",
+  });
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-new",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      items: [],
+    },
+  });
+
+  assert.equal((await pending).status, "completed");
+  assert.equal(guiInjectionCount, 0);
+  assert.equal(
+    transport.calls.some((call) =>
+      call.method === "thread/read" &&
+      (call.params as { includeTurns?: boolean })?.includeTurns === true
+    ),
+    true,
+  );
+});
+
+test("reports status from App Server turns without reading Desktop IPC", async () => {
+  const transport = new FakeTransport();
+  let desktopSnapshotReads = 0;
   transport.appServerTurnsByThread.set("thread-1", [{
     id: "active-turn-1",
     status: "inProgress",
@@ -287,6 +668,10 @@ test("reports working from the latest in-progress turn when thread status is idl
       async request<T>(): Promise<T> {
         throw new Error("unexpected desktop IPC request");
       },
+      async readThreadSnapshot() {
+        desktopSnapshotReads += 1;
+        throw new Error("Desktop IPC must not be used by /status");
+      },
     },
   });
 
@@ -294,7 +679,8 @@ test("reports working from the latest in-progress turn when thread status is idl
   const working = await bridge.getStatus();
 
   assert.equal(working.state, "working");
-  assert.match(working.summary ?? "", /active-turn-1.*in progress/);
+  assert.match(working.summary ?? "", /App Server.*active-turn-1.*in progress/);
+  assert.equal(desktopSnapshotReads, 0);
 
   transport.appServerTurnsByThread.set("thread-1", [{
     id: "active-turn-1",
@@ -306,46 +692,21 @@ test("reports working from the latest in-progress turn when thread status is idl
       text: "Done.",
     }],
   }]);
-  assert.equal((await bridge.getStatus()).state, "idle");
-});
+  const completed = await bridge.getStatus();
+  assert.equal(completed.state, "completed");
+  assert.match(completed.summary ?? "", /App Server.*active-turn-1.*completed/);
+  assert.equal(desktopSnapshotReads, 0);
 
-test("reports the Codex Desktop pet status for the bound chat", async () => {
-  const transport = new FakeTransport();
-  const bridge = new CodexGuiAppServerBridge({
-    transport,
-    desktopIpcTransport: new FakeLiveStatusDesktopIpcTransport({
-      threadId: "thread-1",
-      projectPath: "/tmp/wechat2all",
-      updatedAt: 1_785_000_123_000,
-      runtimeStatus: { type: "active", activeFlags: [] },
-      latestTurnStatus: "inProgress",
-    }),
-  });
-
-  await bridge.bindThread("thread-1");
-  const status = await bridge.getStatus();
-
-  assert.equal(status.state, "working");
-  assert.equal(status.currentProject, "wechat2all");
-  assert.equal(status.updatedAt, 1_785_000_123_000);
-  assert.match(status.summary ?? "", /Desktop.*active/);
-});
-
-test("does not report idle when the Codex Desktop live status is unavailable", async () => {
-  const transport = new FakeTransport();
-  const bridge = new CodexGuiAppServerBridge({
-    transport,
-    desktopIpcTransport: new FakeLiveStatusDesktopIpcTransport(
-      undefined,
-      new Error("desktop snapshot unavailable"),
-    ),
-  });
-
-  await bridge.bindThread("thread-1");
-  const status = await bridge.getStatus();
-
-  assert.equal(status.state, "unknown");
-  assert.match(status.summary ?? "", /desktop snapshot unavailable/);
+  transport.appServerTurnsByThread.set("thread-1", [{
+    id: "failed-turn-1",
+    status: "failed",
+    error: { message: "model unavailable" },
+    items: [],
+  }]);
+  const blocked = await bridge.getStatus();
+  assert.equal(blocked.state, "blocked");
+  assert.match(blocked.summary ?? "", /App Server.*failed-turn-1.*model unavailable/);
+  assert.equal(desktopSnapshotReads, 0);
 });
 
 test("starts a turn with standardized text input on the bound thread", async () => {
@@ -860,6 +1221,137 @@ test("waits for turn completion and returns final answer text", async () => {
     replyMode: "final",
     error: undefined,
   });
+});
+
+test("ignores a transient interrupted completion until the same turn has a final answer", async () => {
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    guiPollIntervalMs: 1,
+    turnTimeoutMs: 1000,
+  });
+
+  await bridge.bindThread("thread-1");
+  const pending = bridge.sendPrompt({
+    id: "wechat-transient-interrupted",
+    text: "finish even if App Server briefly reports interrupted",
+  });
+
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "interrupted",
+      error: null,
+      completedAt: null,
+      items: [],
+    },
+  });
+
+  // A bare interrupted event is a transient Codex App Server snapshot. The
+  // bridge must remain subscribed instead of returning `No Final Reply`.
+  assert.equal(transport.notificationHandlers.size, 1);
+
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      completedAt: 1_785_000_100,
+      items: [{
+        type: "agentMessage",
+        id: "assistant-after-transient-interrupted",
+        text: "The turn completed after the transient interruption.",
+        phase: "final_answer",
+      }],
+    },
+  });
+
+  const result = await pending;
+  assert.equal(result.status, "completed");
+  assert.equal(
+    result.finalText,
+    "The turn completed after the transient interruption.",
+  );
+});
+
+test("keeps polling while thread/read exposes a bare interrupted snapshot", async () => {
+  const transport = new FakeTransport();
+  transport.turnStartTurn = {
+    id: "turn-1",
+    status: "interrupted",
+    error: null,
+    completedAt: null,
+    items: [],
+  };
+  transport.appServerTurnsByThread.set("thread-1", [{
+    id: "turn-1",
+    status: "interrupted",
+    error: null,
+    completedAt: null,
+    items: [],
+  }]);
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    guiPollIntervalMs: 1,
+    turnTimeoutMs: 1000,
+  });
+
+  await bridge.bindThread("thread-1");
+  const pending = bridge.sendPrompt({
+    id: "wechat-polled-transient-interrupted",
+    text: "keep polling this interrupted snapshot",
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  transport.appServerTurnsByThread.set("thread-1", [{
+    id: "turn-1",
+    status: "completed",
+    error: null,
+    completedAt: 1_785_000_100,
+    items: [{
+      type: "agentMessage",
+      id: "assistant-after-polled-interruption",
+      text: "Polling recovered the final answer.",
+      phase: "final_answer",
+    }],
+  }]);
+
+  const result = await pending;
+  assert.equal(result.status, "completed");
+  assert.equal(result.finalText, "Polling recovered the final answer.");
+});
+
+test("returns an interrupted turn once App Server reports a real error", async () => {
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({ transport, turnTimeoutMs: 1000 });
+
+  await bridge.bindThread("thread-1");
+  const pending = bridge.sendPrompt({
+    id: "wechat-real-interruption",
+    text: "surface a real interruption",
+  });
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "interrupted",
+      error: { message: "The turn was cancelled." },
+      completedAt: 1_785_000_100,
+      items: [],
+    },
+  });
+
+  const result = await pending;
+  assert.equal(result.status, "interrupted");
+  assert.equal(result.error, "The turn was cancelled.");
 });
 
 test("returns local image files mentioned by Codex output", async () => {
@@ -1378,13 +1870,13 @@ test("stream reply mode returns all completed assistant text parts", async () =>
   });
 });
 
-test("gui-automation mode injects into Codex GUI and polls bound thread", async () => {
+test("gui-automation mode injects into Codex GUI and polls the bound thread", async () => {
   const transport = new FakeTransport();
   const bridge = new CodexGuiAppServerBridge({
     transport,
     deliveryMode: "gui-automation",
     guiPollIntervalMs: 1,
-    turnTimeoutMs: 1000,
+    turnTimeoutMs: 1_000,
     guiPromptInjector: async (text, context) => {
       assert.equal(context?.threadId, "thread-1");
       assert.equal(context?.threadOpenDelayMs, 900);
@@ -1399,36 +1891,26 @@ test("gui-automation mode injects into Codex GUI and polls bound thread", async 
   });
 
   assert.equal(transport.guiInjectedTextByThread.get("thread-1"), "show up in GUI");
-  assert.deepEqual(result, {
-    id: "wechat-message-3",
-    threadId: "thread-1",
-    turnId: "gui-turn-1",
-    status: "completed",
-    finalText: "GUI final answer.",
-    replyParts: undefined,
-    replyMode: "final",
-    error: undefined,
-  });
+  assert.equal(result.threadId, "thread-1");
+  assert.equal(result.turnId, "gui-turn-1");
+  assert.equal(result.finalText, "GUI final answer.");
   assert.equal(
-    transport.calls.some((call) => call.method === "turn/start"),
-    false,
+    transport.calls.filter((call) => call.method === "turn/start").length,
+    0,
   );
+  const status = await bridge.getStatus();
+  assert.match(status.summary ?? "", /Last delivery: gui-automation/);
 });
 
-test("gui-automation falls back to app-server when the GUI is unavailable", async () => {
+test("gui-automation falls back to app-server when GUI injection fails", async () => {
   const transport = new FakeTransport();
   const bridge = new CodexGuiAppServerBridge({
     transport,
-    desktopIpcTransport: {
-      async request<T>(): Promise<T> {
-        throw new Error("unexpected desktop IPC request");
-      },
-    },
     deliveryMode: "gui-automation",
     guiPollIntervalMs: 1,
-    guiFallbackReconcileMs: 2,
+    guiFallbackReconcileMs: 1,
     guiPromptInjector: async () => {
-      throw new Error("Codex has no accessible window while the display is asleep");
+      throw new Error("display is asleep");
     },
   });
 
@@ -1440,17 +1922,6 @@ test("gui-automation falls back to app-server when the GUI is unavailable", asyn
   while (transport.notificationHandlers.size === 0) {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
-
-  const startCall = transport.calls.find((call) => call.method === "turn/start");
-  assert.deepEqual(startCall?.params, {
-    threadId: "thread-1",
-    clientUserMessageId: "wechat-screen-asleep",
-    input: [{
-      type: "text",
-      text: "continue while the display is asleep",
-      text_elements: [],
-    }],
-  });
   transport.emitNotification("turn/completed", {
     threadId: "thread-1",
     turn: {
@@ -1458,17 +1929,14 @@ test("gui-automation falls back to app-server when the GUI is unavailable", asyn
       status: "completed",
       error: null,
       items: [{
-        type: "agentMessage",
-        id: "fallback-agent-1",
-        text: "App-server fallback completed.",
+        type: "agentMessage", id: "assistant-asleep-1", text: "Still completed.",
         phase: "final_answer",
       }],
     },
   });
-
   const result = await pending;
-  assert.equal(result.threadId, "thread-1");
-  assert.equal(result.finalText, "App-server fallback completed.");
+
+  assert.equal(result.finalText, "Still completed.");
   assert.equal(
     transport.calls.filter((call) => call.method === "turn/start").length,
     1,
@@ -1477,35 +1945,81 @@ test("gui-automation falls back to app-server when the GUI is unavailable", asyn
   assert.match(status.summary ?? "", /Last delivery: app-server-fallback/);
 });
 
-test("gui-automation suppresses fallback when a turn appeared before the injector error", async () => {
+test("gui-automation falls back when a locked display silently accepts injection but creates no turn", async () => {
   const transport = new FakeTransport();
   const bridge = new CodexGuiAppServerBridge({
     transport,
     deliveryMode: "gui-automation",
     guiPollIntervalMs: 1,
-    guiFallbackReconcileMs: 10,
-    guiPromptInjector: async (text, context) => {
-      transport.guiInjectedTextByThread.set(context?.threadId ?? "frontmost-thread", text);
-      throw new Error("clipboard restoration failed after Return was sent");
+    guiFallbackReconcileMs: 2,
+    guiTurnObservationMs: 5,
+    guiPromptInjector: async () => {
+      // macOS may let osascript exit successfully while the locked UI ignores
+      // the paste/Return events. Deliberately do not publish a GUI turn.
     },
   });
 
   await bridge.bindThread("thread-1");
-  const result = await bridge.sendPrompt({
-    id: "wechat-gui-reconciled",
-    text: "send exactly once",
+  const pending = bridge.sendPrompt({
+    id: "wechat-locked-display",
+    text: "continue while the Mac is locked",
+  });
+  while (
+    !transport.calls.some((call) => call.method === "turn/start")
+    || transport.notificationHandlers.size === 0
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      items: [{
+        type: "agentMessage",
+        id: "assistant-locked-display",
+        text: "Completed through app-server.",
+        phase: "final_answer",
+      }],
+    },
   });
 
-  assert.equal(result.threadId, "thread-1");
-  assert.equal(result.turnId, "gui-turn-1");
-  assert.equal(result.finalText, "GUI final answer.");
+  const result = await pending;
+  assert.equal(result.finalText, "Completed through app-server.");
   assert.equal(
-    transport.calls.some((call) => call.method === "turn/start"),
-    false,
+    transport.calls.filter((call) => call.method === "turn/start").length,
+    1,
   );
+  const status = await bridge.getStatus();
+  assert.match(status.summary ?? "", /Last delivery: app-server-fallback/);
 });
 
-test("gui-automation reports both errors when app-server fallback also fails", async () => {
+test("gui-automation does not duplicate a GUI prompt that appears during final reconciliation", async () => {
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    deliveryMode: "gui-automation",
+    guiPollIntervalMs: 1,
+    guiTurnObservationMs: 2,
+    guiFallbackReconcileMs: 20,
+    guiPromptInjector: async (text, context) => {
+      setTimeout(() => {
+        transport.guiInjectedTextByThread.set(context?.threadId ?? "thread-1", text);
+      }, 5);
+    },
+  });
+
+  await bridge.bindThread("thread-1");
+  const result = await bridge.sendPrompt({ text: "slow GUI publication" });
+
+  assert.equal(result.finalText, "GUI final answer.");
+  assert.equal(transport.calls.some((call) => call.method === "turn/start"), false);
+  const status = await bridge.getStatus();
+  assert.match(status.summary ?? "", /Last delivery: gui-automation/);
+});
+
+test("gui-automation reports both GUI and fallback errors when delivery fails", async () => {
   const transport = new FakeTransport();
   transport.turnStartError = new Error("app-server is unavailable");
   const bridge = new CodexGuiAppServerBridge({
@@ -1520,24 +2034,26 @@ test("gui-automation reports both errors when app-server fallback also fails", a
 
   await bridge.bindThread("thread-1");
   await assert.rejects(
-    bridge.sendPrompt({ text: "try both delivery paths" }),
-    (error: Error) => {
-      assert.match(error.message, /GUI automation failed.*no accessible Codex window/);
-      assert.match(error.message, /App-server fallback also failed.*app-server is unavailable/);
+    bridge.sendPrompt({ text: "try delivery" }),
+    (error: unknown) => {
+      assert.match(String(error), /display has no accessible Codex window/);
+      assert.match(String(error), /app-server is unavailable/);
       return true;
     },
   );
 });
 
-test("gui-automation mode sends regular files as validated local path context", async () => {
+test("gui-automation mode injects regular-file references through the GUI", async () => {
   const transport = new FakeTransport();
   const filePath = await tempFilePath("gui-report.pdf", "pdf-content");
+  let attachmentPaths: string[] | undefined;
   const bridge = new CodexGuiAppServerBridge({
     transport,
     deliveryMode: "gui-automation",
     guiPollIntervalMs: 1,
-    turnTimeoutMs: 1000,
+    turnTimeoutMs: 1_000,
     guiPromptInjector: async (text, context) => {
+      attachmentPaths = context?.attachmentPaths;
       transport.guiInjectedTextByThread.set(context?.threadId ?? "frontmost-thread", text);
     },
   });
@@ -1555,34 +2071,128 @@ test("gui-automation mode sends regular files as validated local path context", 
   });
 
   assert.equal(result.finalText, "GUI final answer.");
-  assert.equal(
-    transport.guiInjectedTextByThread.get("thread-1"),
-    [
-      "summarize this PDF",
-      "",
-      "WeChat attachments for this request are cached on this computer.",
-      "Use these local paths directly when answering:",
-      `- file 1: gui-report.pdf: ${filePath} [application/pdf]`,
-    ].join("\n"),
-  );
+  assert.deepEqual(attachmentPaths, [filePath]);
+  const injected = transport.guiInjectedTextByThread.get("thread-1") ?? "";
+  assert.match(injected, /summarize this PDF/);
+  assert.match(injected, new RegExp(filePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.equal(transport.calls.some((call) => call.method === "turn/start"), false);
 });
 
-test("gui-automation mode sends image attachments through app-server localImage", async () => {
+test("gui-automation suppresses fallback when a GUI turn appears before injector error", async () => {
   const transport = new FakeTransport();
-  let guiInjected = false;
   const bridge = new CodexGuiAppServerBridge({
     transport,
     deliveryMode: "gui-automation",
     guiPollIntervalMs: 1,
-    turnTimeoutMs: 1000,
-    guiPromptInjector: async () => {
-      guiInjected = true;
+    guiFallbackReconcileMs: 10,
+    turnTimeoutMs: 1_000,
+    guiPromptInjector: async (text, context) => {
+      transport.guiInjectedTextByThread.set(context?.threadId ?? "frontmost-thread", text);
+      throw new Error("clipboard restoration failed after Return");
     },
   });
 
   await bridge.bindThread("thread-1");
+  const result = await bridge.sendPrompt({ text: "already submitted" });
+
+  assert.equal(result.finalText, "GUI final answer.");
+  assert.equal(transport.calls.some((call) => call.method === "turn/start"), false);
+});
+
+test("does not classify user-role image input as Codex output", async () => {
+  const transport = new FakeTransport();
+  const imagePath = await tempImagePath("wechat-input.png");
+  const bridge = new CodexGuiAppServerBridge({ transport });
+  await bridge.bindThread("thread-1");
+
   const pending = bridge.sendPrompt({
+    id: "wechat-user-role-image",
+    text: "analyze the image",
+  });
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      items: [
+        {
+          type: "message",
+          role: "user",
+          content: [
+            { type: "input_text", text: `<image path=${imagePath}>` },
+            { type: "input_image", image_url: pathToFileURL(imagePath).href },
+          ],
+        },
+        {
+          type: "agentMessage",
+          id: "assistant-user-image-1",
+          text: "Input image analyzed.",
+          phase: "final_answer",
+        },
+      ],
+    },
+  });
+
+  const result = await pending;
+  assert.equal(result.finalText, "Input image analyzed.");
+  assert.equal(result.outputFiles, undefined);
+});
+
+test("never returns the original prompt attachment as an output file", async () => {
+  const transport = new FakeTransport();
+  const imagePath = await tempImagePath("same-input-output.png");
+  const bridge = new CodexGuiAppServerBridge({ transport });
+  await bridge.bindThread("thread-1");
+
+  const pending = bridge.sendPrompt({
+    id: "wechat-input-output-defense",
+    text: "analyze this",
+    attachments: [{ kind: "image", filePath: imagePath }],
+  });
+  while (transport.notificationHandlers.size === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.emitNotification("turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      error: null,
+      items: [{
+        type: "agentMessage",
+        id: "assistant-echoed-path-1",
+        text: `Done. ${imagePath}`,
+        phase: "final_answer",
+      }],
+    },
+  });
+
+  const result = await pending;
+  assert.equal(result.outputFiles, undefined);
+});
+
+test("gui-automation mode pastes image attachments and prompt through the GUI", async () => {
+  const transport = new FakeTransport();
+  let injectedText = "";
+  let attachmentPaths: string[] | undefined;
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    deliveryMode: "gui-automation",
+    guiPollIntervalMs: 1,
+    turnTimeoutMs: 1_000,
+    guiPromptInjector: async (text, context) => {
+      injectedText = text;
+      attachmentPaths = context?.attachmentPaths;
+      transport.guiInjectedTextByThread.set(context?.threadId ?? "frontmost-thread", text);
+    },
+  });
+
+  await bridge.bindThread("thread-1");
+  const result = await bridge.sendPrompt({
     id: "wechat-image-gui-mode",
     text: "请分析这张微信图片。",
     attachments: [{
@@ -1590,6 +2200,35 @@ test("gui-automation mode sends image attachments through app-server localImage"
       filePath: "/tmp/wechat-image.jpg",
       fileName: "wechat-image.jpg",
       mimeType: "image/jpeg",
+    }],
+  });
+
+  assert.equal(result.finalText, "GUI final answer.");
+  assert.deepEqual(attachmentPaths, ["/tmp/wechat-image.jpg"]);
+  assert.match(injectedText, /请分析这张微信图片。/);
+  assert.match(injectedText, /image 1: wechat-image\.jpg: \/tmp\/wechat-image\.jpg/);
+  assert.equal(transport.calls.some((call) => call.method === "turn/start"), false);
+});
+
+test("GUI opening failure does not block app-server localImage delivery", async () => {
+  const transport = new FakeTransport();
+  const bridge = new CodexGuiAppServerBridge({
+    transport,
+    deliveryMode: "gui-automation",
+    guiPollIntervalMs: 1,
+    guiFallbackReconcileMs: 1,
+    guiPromptInjector: async () => {
+      throw new Error("Accessibility is unavailable");
+    },
+  });
+  await bridge.bindThread("thread-1");
+
+  const pending = bridge.sendPrompt({
+    id: "wechat-image-gui-fallback",
+    text: "analyze image",
+    attachments: [{
+      kind: "image",
+      filePath: "/tmp/wechat-fallback-image.jpg",
     }],
   });
   while (transport.notificationHandlers.size === 0) {
@@ -1603,69 +2242,53 @@ test("gui-automation mode sends image attachments through app-server localImage"
       error: null,
       items: [{
         type: "agentMessage",
-        id: "assistant-image-1",
-        text: "Image received.",
+        id: "assistant-image-fallback-1",
+        text: "Fallback image analyzed.",
         phase: "final_answer",
       }],
     },
   });
 
   const result = await pending;
-  assert.equal(guiInjected, false);
-  assert.equal(result.finalText, "Image received.");
+  assert.equal(result.finalText, "Fallback image analyzed.");
   assert.deepEqual(
     transport.calls.find((call) => call.method === "turn/start")?.params,
     {
       threadId: "thread-1",
-      clientUserMessageId: "wechat-image-gui-mode",
+      clientUserMessageId: "wechat-image-gui-fallback",
       input: [
-        {
-          type: "text",
-          text: "请分析这张微信图片。",
-          text_elements: [],
-        },
-        {
-          type: "localImage",
-          path: "/tmp/wechat-image.jpg",
-        },
+        { type: "text", text: "analyze image", text_elements: [] },
+        { type: "localImage", path: "/tmp/wechat-fallback-image.jpg" },
       ],
       runtimeWorkspaceRoots: ["/tmp/wechat2all", "/tmp"],
     },
   );
 });
 
-test("gui-automation opens and polls the explicitly bound thread, not the frontmost chat", async () => {
+test("gui-automation injects into the explicitly bound thread", async () => {
   const transport = new FakeTransport();
   const bridge = new CodexGuiAppServerBridge({
     transport,
     deliveryMode: "gui-automation",
     guiPollIntervalMs: 1,
-    turnTimeoutMs: 1000,
-    guiThreadOpenDelayMs: 1234,
+    turnTimeoutMs: 1_000,
     guiPromptInjector: async (text, context) => {
       transport.guiInjectedTextByThread.set(context?.threadId ?? "frontmost-thread", text);
     },
   });
 
   await bridge.bindThread("thread-2");
-  transport.guiInjectedTextByThread.set("frontmost-thread", "wrong chat prompt");
+  transport.guiInjectedTextByThread.set("frontmost-thread", "wrong prompt");
   const result = await bridge.sendPrompt({
     id: "wechat-message-4",
     text: "send to bound chat",
   });
 
   assert.equal(transport.guiInjectedTextByThread.get("thread-2"), "send to bound chat");
-  assert.equal(transport.guiInjectedTextByThread.get("frontmost-thread"), "wrong chat prompt");
-  assert.deepEqual(result, {
-    id: "wechat-message-4",
-    threadId: "thread-2",
-    turnId: "gui-turn-1",
-    status: "completed",
-    finalText: "GUI final answer.",
-    replyParts: undefined,
-    replyMode: "final",
-    error: undefined,
-  });
+  assert.equal(transport.guiInjectedTextByThread.get("frontmost-thread"), "wrong prompt");
+  assert.equal(result.threadId, "thread-2");
+  assert.equal(result.finalText, "GUI final answer.");
+  assert.equal(transport.calls.some((call) => call.method === "turn/start"), false);
 });
 
 test("refuses to send before a thread is bound", async () => {

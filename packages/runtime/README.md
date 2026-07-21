@@ -13,7 +13,7 @@ connectors, agents, memory, and action execution.
 - Main assistant (`大助手`) behavior: `/help`, `/ls`, `/rename`, `/cd`.
 - Route-local behavior such as `/cd ..`.
 - Connector interfaces for local handlers, route assistants, MCP-style tools,
-  agents, and Codex.
+  agents, and independently packaged routes.
 - Conversation memory and agent memory providers.
 - Media cache pipeline and dummy TTS provider.
 - Message dedupe and typed runtime events.
@@ -34,26 +34,9 @@ flowchart LR
   X --> WC["WeChatClient"]
 ```
 
-Example: a text message in the default chat starts in the main assistant. If the
-user sends `/cd codex`, runtime moves that conversation into the `codex` route.
-Further plain text is handled only by the Codex connector until `/cd ..`.
-
-## Codex Route Reply Modes
-
-The Codex connector supports route-local reply modes:
-
-- `final`: default. Return only Codex `final_answer` text.
-- `silent`: wait for completion, then return only a completion notice.
-- `stream`: return every completed Codex assistant text part as separate actions.
-
-Inside the Codex route:
-
-```text
-/mode
-/mode final
-/mode silent
-/mode stream
-```
+Example: a text message starts in the main assistant. If the user sends `/cd`
+for an installed route, runtime binds that conversation to the route's connector
+until `/cd ..`. Runtime does not import or export any specific route implementation.
 
 ## Memory
 
@@ -105,18 +88,9 @@ disk for route connectors. The desktop router stores this under
 The profile directory segment is sanitized and hash-suffixed when needed, so
 unusual profile names cannot escape the configured cache root.
 
-The Codex connector uses that cache for attachment-aware prompts:
-
-- Images are cached and sent to Codex as local image inputs plus path
-  references.
-- Files, videos, and voice attachments are cached and sent as local path
-  references, because the stable Codex app-server input variants currently cover
-  text and local images.
-- Pure attachment messages are held until the next text request from the same
-  sender/conversation. If no text arrives, runtime sends one light reminder and
-  keeps the cached attachment draft.
-- Local files/images produced by Codex are mapped back to `send_media` actions
-  when the bridge can resolve them on disk.
+Route packages receive a narrow `RuntimeMediaService` capability for downloading
+message media, reading cache stats, and clearing cache. Route-specific attachment
+lifecycle and output handling stay inside the route package.
 
 Cache pruning is best-effort and configurable:
 

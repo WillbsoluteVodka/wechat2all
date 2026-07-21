@@ -1,0 +1,50 @@
+{
+  "$schema": "../route-sdk/schemas/route-manifest.v1.schema.json",
+  "protocol": "weconnect.route",
+  "protocolVersion": 1,
+  "id": "codex",
+  "packageName": "@wechat2all/codex-route",
+  "displayName": "Codex",
+  "version": "0.1.0",
+  "description": "Codex Desktop GUI automation with app-server fallback.",
+  "license": "MIT",
+  "engines": {
+    "weconnect": ">=0.1.0 <2",
+    "node": ">=20"
+  },
+  "capabilities": [
+    "text-input",
+    "media-input",
+    "text-output",
+    "media-output",
+    "setup-check",
+    "config",
+    "lifecycle"
+  ],
+  "permissions": [
+    {
+      "name": "process:spawn",
+      "reason": "Start and self-heal the local Codex app-server process."
+    },
+    {
+      "name": "filesystem:read",
+      "reason": "Forward user-selected local attachments and inspect Codex output files."
+    },
+    {
+      "name": "filesystem:write",
+      "reason": "Persist the bound chat, alarm, and recovery state."
+    },
+    {
+      "name": "network",
+      "reason": "Codex app-server may contact the configured model provider."
+    },
+    {
+      "name": "macos:accessibility",
+      "reason": "Inject prompts into the exact Codex Desktop chat."
+    },
+    {
+      "name": "macos:automation",
+      "reason": "Control ChatGPT/Codex and System Events for GUI delivery."
+    }
+  ]
+}
