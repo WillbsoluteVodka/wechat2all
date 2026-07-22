@@ -76,6 +76,8 @@ let sessionReminders: SessionReminderService | undefined;
 let installedRouteModules: InstalledRouteModule[] | undefined;
 let community: CommunityService | undefined;
 let shuttingDown = false;
+const DEFAULT_COMMUNITY_CATALOG_URL =
+  "https://raw.githubusercontent.com/WillbsoluteVodka/wechat2all/main/community-routes/catalog.dev.json";
 
 function ensureInstalledRouteModules(): InstalledRouteModule[] {
   if (!installedRouteModules) throw new Error("Route packages are not initialized.");
@@ -115,7 +117,8 @@ function communityCatalogSources(): string[] {
     path.resolve(process.cwd(), "../../community-routes/catalog.dev.json"),
     path.resolve(import.meta.dirname, "../../../community-routes/catalog.dev.json"),
   ])];
-  return candidates.filter((candidate) => fsExists(candidate));
+  const localSources = candidates.filter((candidate) => fsExists(candidate));
+  return localSources.length ? localSources : [DEFAULT_COMMUNITY_CATALOG_URL];
 }
 
 function fsExists(filePath: string): boolean {

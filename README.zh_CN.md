@@ -83,9 +83,9 @@ daemon 源码。完整协议见
 - 独立 Claude Agent SDK route：可连接 Obsidian vault 或本地 workspace，支持
   `/status`、`/new`、per-sender session resume、图片/文件输入，以及把 workspace
   文件或图片发回微信。
-- 独立 Office route：复用 `WECHAT2ALL_LLM_*` 配置，通过受限参数调用 OfficeCLI，
-  支持自然语言创建或修改 Word、Excel、PowerPoint，并把结果文件发回微信；不依赖
-  Codex 或 Claude。通过 `/cd office` 进入。
+- Community 可选安装 Office CLI route：安装后复用 `WECHAT2ALL_LLM_*` 配置，
+  通过受限参数调用独立安装的 OfficeCLI；卸载后 `/cd office` 会从 routes 中消失，
+  主程序不包含它的业务源码。
 - 标准 runtime action：`send_text`、`send_media`、`send_voice`、`typing`、
   `noop`。
 - 对文本、媒体、语音、表情/贴纸类附件、普通文件做消息标准化。具体能力取决于

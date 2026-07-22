@@ -146,8 +146,6 @@ async function buildRuntimeDependencies() {
     "--filter",
     "@wechat2all/claude-route",
     "--filter",
-    "@wechat2all/office-route",
-    "--filter",
     "@wechat2all/runtime",
     "build",
   ]);

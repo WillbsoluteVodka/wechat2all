@@ -4,7 +4,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { routePackage as codexRoutePackage } from "@wechat2all/codex-route";
 import { routePackage as claudeRoutePackage } from "@wechat2all/claude-route";
-import { routePackage as officeRoutePackage } from "@wechat2all/office-route";
 import {
   assertRouteManifestMatchesPackageV1,
   instantiateRoutePackageV1,
@@ -202,7 +201,7 @@ export async function createInstalledRouteModules(
     },
   );
   const installed = instantiateInstalledRoutePackages(
-    [codexRoutePackage, claudeRoutePackage, officeRoutePackage],
+    [codexRoutePackage, claudeRoutePackage],
     profileId,
     env,
     options,

@@ -122,9 +122,11 @@ and a failed activation restores the previous registry/version. Uninstalling a
 route removes its code but preserves the separately assigned route data.
 
 For repository development, `community-routes/catalog.dev.json` is discovered
-automatically. A catalog may point to a local directory artifact so the POC can
-run without GitHub. Set `WECHAT2ALL_COMMUNITY_CATALOGS` (comma-separated) for
-other local catalogs or production HTTPS catalogs, and
+automatically. If that repository file is absent (for example in a packaged
+build), the daemon falls back to the official WeConnect GitHub catalog. A
+catalog may point to a local directory artifact so the POC can run without
+GitHub. Set `WECHAT2ALL_COMMUNITY_CATALOGS` (comma-separated) to override the
+default with other local catalogs or production HTTPS catalogs, and
 `WECHAT2ALL_COMMUNITY_ROOT` only when app-data must be relocated.
 
 Production artifacts are prebuilt `.tar.gz` route packages. Remote catalogs and

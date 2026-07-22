@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-21T00:00:00.000Z",
+  "generatedAt": "2026-07-22T11:24:21.000Z",
   "channel": "development",
   "routes": [
     {
@@ -52,6 +52,79 @@
         {
           "name": "macOS 13+ on Apple Silicon",
           "description": "The currently published Upochi App build supports macOS arm64 only.",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "office",
+      "packageName": "@weconnect-community/office-cli-route",
+      "displayName": "Office CLI",
+      "version": "0.1.0",
+      "description": "Create and edit Word, Excel, and PowerPoint files through a self-contained OfficeCLI route.",
+      "manifest": {
+        "protocol": "weconnect.route",
+        "protocolVersion": 1,
+        "id": "office",
+        "packageName": "@weconnect-community/office-cli-route",
+        "displayName": "Office CLI",
+        "version": "0.1.0",
+        "description": "Create and edit Word, Excel, and PowerPoint files through a self-contained OfficeCLI route.",
+        "license": "MIT",
+        "author": {
+          "name": "WillbsoluteVodka",
+          "url": "https://github.com/WillbsoluteVodka"
+        },
+        "homepage": "https://github.com/WillbsoluteVodka/wechat2all_office_route",
+        "repository": "https://github.com/WillbsoluteVodka/wechat2all_office_route",
+        "engines": {
+          "weconnect": ">=0.1.0 <2",
+          "node": ">=20"
+        },
+        "capabilities": [
+          "text-input",
+          "media-input",
+          "text-output",
+          "media-output",
+          "setup-check",
+          "config",
+          "lifecycle"
+        ],
+        "permissions": [
+          {
+            "name": "network",
+            "reason": "Call the OpenAI-compatible LLM configured in WeConnect."
+          },
+          {
+            "name": "filesystem:read",
+            "reason": "Read user-provided documents and assets inside the private Office route workspace."
+          },
+          {
+            "name": "filesystem:write",
+            "reason": "Create and edit documents inside the private Office route workspace."
+          },
+          {
+            "name": "process:spawn",
+            "reason": "Run the separately installed OfficeCLI binary with validated arguments and no shell."
+          }
+        ]
+      },
+      "artifact": {
+        "type": "archive",
+        "url": "https://api.github.com/repos/WillbsoluteVodka/wechat2all_office_route/releases/assets/485874295",
+        "sha256": "bb54307edb16ad96b567fb93b4d22e70515ab2cb1ab6f95db7f6df2bf0e10e87",
+        "entrypoint": "./dist/index.mjs"
+      },
+      "requirements": [
+        {
+          "name": "OfficeCLI 1.x",
+          "description": "Install the separate CLI with 'npm install -g @officecli/officecli', then verify 'officecli --version'. It is not bundled with this route.",
+          "url": "https://github.com/iOfficeAI/OfficeCLI",
+          "required": true
+        },
+        {
+          "name": "WeConnect LLM",
+          "description": "Configure and validate an OpenAI-compatible API key and model in WeConnect before using this route.",
           "required": true
         }
       ]

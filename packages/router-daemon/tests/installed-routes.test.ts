@@ -166,7 +166,7 @@ test("a crashing community factory does not prevent built-in routes from loading
     { storageRoot, logger },
   );
 
-  assert.deepEqual(installed.map((item) => item.id), ["codex", "claude", "office"]);
+  assert.deepEqual(installed.map((item) => item.id), ["codex", "claude"]);
   const codex = installed.find((item) => item.id === "codex");
   const management = codex?.route.metadata?.dashboardManagement as {
     setupCheck?: boolean;
