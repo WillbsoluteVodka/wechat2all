@@ -1,4 +1,4 @@
-export type PageKey = "home" | "config" | "routes" | "agents" | "trace";
+export type PageKey = "home" | "config" | "routes" | "community" | "trace";
 
 export interface ProfileStatus {
   id: string;
@@ -23,6 +23,107 @@ export interface RouteSummary {
     messagesToday: number;
     lastHitAt?: string | null;
   };
+}
+
+export interface CommunityRouteManifest {
+  protocol: "weconnect.route";
+  protocolVersion: 1;
+  id: string;
+  packageName: string;
+  displayName: string;
+  version: string;
+  description: string;
+  license?: string;
+  author?: {
+    name: string;
+    url?: string;
+  };
+  homepage?: string;
+  repository?: string;
+  engines: {
+    weconnect: string;
+    node?: string;
+  };
+  capabilities: string[];
+  permissions: Array<{
+    name: string;
+    reason: string;
+    optional?: boolean;
+  }>;
+}
+
+export interface CommunityRouteRequirement {
+  name: string;
+  description?: string;
+  url?: string;
+  required?: boolean;
+}
+
+export interface CommunityCatalogRoute {
+  id: string;
+  packageName: string;
+  displayName: string;
+  version: string;
+  description: string;
+  manifest: CommunityRouteManifest;
+  artifact: {
+    type: "archive" | "directory";
+    url: string;
+    sha256?: string;
+  };
+  requirements?: CommunityRouteRequirement[];
+  installedVersion: string | null;
+  status: "available" | "installed" | "update-available";
+}
+
+export interface CommunityInstalledRoute {
+  id: string;
+  packageName: string;
+  displayName: string;
+  version: string;
+  manifest: CommunityRouteManifest;
+  installedAt: string;
+  sourceCatalog: string;
+  installDir: string;
+  status?: "installed";
+}
+
+export interface CommunityCatalogResponse {
+  ok: true;
+  schemaVersion: 1;
+  routes: CommunityCatalogRoute[];
+}
+
+export interface CommunityInstalledResponse {
+  ok: true;
+  schemaVersion: 1;
+  routes: CommunityInstalledRoute[];
+}
+
+export type CommunityOperationKind = "install" | "update" | "uninstall";
+export type CommunityOperationStatus = "queued" | "running" | "succeeded" | "failed";
+
+export interface CommunityOperation {
+  id: string;
+  kind: CommunityOperationKind;
+  routeId: string;
+  status: CommunityOperationStatus;
+  progress: number;
+  message?: string;
+  error?: string;
+  restartRequired: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CommunityOperationResponse {
+  ok: true;
+  operation: CommunityOperation;
+}
+
+export interface CommunityInstallRequest {
+  version?: string;
+  acceptedPermissions?: string[];
 }
 
 export interface RouteManagement {
@@ -163,49 +264,6 @@ export interface LocalConfigResponse {
 export interface LocalConfigUpdateResponse extends LocalConfigResponse {
   changed: boolean;
   changedFields: string[];
-}
-
-export type UpochiLlmModel = "deepseek-chat" | "gpt-4.1-mini";
-
-export interface UpochiConfigSnapshot {
-  projectPath: string;
-  envPath: string;
-  envExists: boolean;
-  restartRequired: boolean;
-  llm: {
-    endpoint: string | null;
-    model: string | null;
-    apiKey: SecretConfigStatus;
-  };
-}
-
-export interface UpochiConfigPatch {
-  model?: UpochiLlmModel;
-  apiKey?: string | null;
-}
-
-export interface UpochiConfigResponse {
-  ok: true;
-  schemaVersion: 1;
-  config: UpochiConfigSnapshot;
-}
-
-export interface UpochiConfigUpdateResponse extends UpochiConfigResponse {
-  changed: boolean;
-  changedFields: string[];
-}
-
-export interface UpochiHealthResponse {
-  ok: true;
-  schemaVersion: 1;
-  upochi: {
-    status: "ready" | "not-running";
-    running: boolean;
-    baseUrl: string;
-    checkedAt: string;
-    latencyMs: number;
-    error: string | null;
-  };
 }
 
 export interface DashboardSnapshot {

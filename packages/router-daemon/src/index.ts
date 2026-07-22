@@ -1,4 +1,5 @@
 import http from "node:http";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -25,6 +26,13 @@ import {
   createDashboardSnapshot,
   type DashboardRouteStats,
 } from "./dashboard.js";
+import { handleCommunityHttpRequest } from "./community-http.js";
+import {
+  CommunityService,
+  parseCommunityCatalogSources,
+  resolveCommunityRoot,
+} from "./community.js";
+import { readCommunityInstalledRegistry } from "./community-registry.js";
 import {
   envNumber,
   loadLocalEnv,
@@ -54,12 +62,6 @@ import {
   type SessionReminderEvent,
 } from "./session-reminders.js";
 import { createTraceLogger } from "./trace.js";
-import { checkUpochiHealth, createUpochiConnector } from "./upochi.js";
-import {
-  UpochiConfigStore,
-  UpochiConfigValidationError,
-  UpochiProjectNotFoundError,
-} from "./upochi-config.js";
 
 let routerAddress = readRouterAddress();
 let HOST = routerAddress.host;
@@ -69,15 +71,59 @@ const BASE_STATE_DIR = path.join(os.homedir(), ".wechat2all-runtime-bot");
 const stateStore = new FileRuntimeStateStore({ baseDir: BASE_STATE_DIR });
 let server: http.Server | undefined;
 let localConfig: LocalConfigStore | undefined;
-let upochiConfig: UpochiConfigStore | undefined;
 let llmHealth: LlmHealthService | undefined;
 let sessionReminders: SessionReminderService | undefined;
 let installedRouteModules: InstalledRouteModule[] | undefined;
+let community: CommunityService | undefined;
 let shuttingDown = false;
 
 function ensureInstalledRouteModules(): InstalledRouteModule[] {
   if (!installedRouteModules) throw new Error("Route packages are not initialized.");
   return installedRouteModules;
+}
+
+function requireCommunity(): CommunityService {
+  if (!community) throw new Error("Community service is not initialized.");
+  return community;
+}
+
+function routePackageLogger() {
+  return {
+    debug(message: string, context?: Record<string, unknown>) {
+      trace("debug", "route-package", `${message}${context ? ` ${JSON.stringify(context)}` : ""}`);
+    },
+    info(message: string, context?: Record<string, unknown>) {
+      trace("info", "route-package", `${message}${context ? ` ${JSON.stringify(context)}` : ""}`);
+    },
+    warn(message: string, context?: Record<string, unknown>) {
+      trace("warn", "route-package", `${message}${context ? ` ${JSON.stringify(context)}` : ""}`);
+    },
+    error(message: string, context?: Record<string, unknown>) {
+      trace("error", "route-package", `${message}${context ? ` ${JSON.stringify(context)}` : ""}`);
+    },
+  };
+}
+
+function communityCatalogSources(): string[] {
+  const configured = parseCommunityCatalogSources(
+    process.env.WECHAT2ALL_COMMUNITY_CATALOGS
+      ?? process.env.WECHAT2ALL_COMMUNITY_CATALOG,
+  );
+  if (configured.length) return configured;
+  const candidates = [...new Set([
+    path.resolve(process.cwd(), "community-routes/catalog.dev.json"),
+    path.resolve(process.cwd(), "../../community-routes/catalog.dev.json"),
+    path.resolve(import.meta.dirname, "../../../community-routes/catalog.dev.json"),
+  ])];
+  return candidates.filter((candidate) => fsExists(candidate));
+}
+
+function fsExists(filePath: string): boolean {
+  try {
+    return Boolean(filePath) && fs.existsSync(filePath);
+  } catch {
+    return false;
+  }
 }
 
 async function stopInstalledRouteModules(): Promise<void> {
@@ -92,6 +138,123 @@ async function stopInstalledRouteModules(): Promise<void> {
       );
     }
   }
+}
+
+async function loadInstalledRouteModules(
+  registryPath: string,
+  requireEveryCommunityPackage = false,
+): Promise<InstalledRouteModule[]> {
+  const modules = await createInstalledRouteModules(PROFILE_ID, process.env, {
+    storageRoot: path.join(stateStore.profileDir(PROFILE_ID), "routes"),
+    registryPath,
+    logger: routePackageLogger(),
+  });
+  if (requireEveryCommunityPackage) {
+    const registered = readCommunityInstalledRegistry(registryPath);
+    for (const record of registered.packages) {
+      const loaded = modules.find((module) =>
+        module.manifest.id === record.id
+        && module.manifest.packageName === record.packageName
+        && module.manifest.version === record.version
+      );
+      if (!loaded) {
+        throw new Error(`Installed Community route did not activate: ${record.id}@${record.version}.`);
+      }
+    }
+  }
+  return modules;
+}
+
+async function startActiveRouteLifecycles(
+  modules: readonly InstalledRouteModule[],
+  targetRuntime: WeChatRuntime | undefined = runtime,
+  failOnStartError = false,
+): Promise<void> {
+  const activeConnectorIds = new Set(
+    targetRuntime?.listRoutes()
+      .filter((route) => route.enabled !== false)
+      .map((route) => route.connectorId) ?? [],
+  );
+  for (const routeModule of modules) {
+    if (!activeConnectorIds.has(routeModule.connectorId)) continue;
+    try {
+      await routeModule.lifecycle?.start?.();
+    } catch (error) {
+      const message = `${routeModule.id} startup hook failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+      trace(
+        "warn",
+        "route-module",
+        message,
+      );
+      if (failOnStartError) throw new Error(message, { cause: error });
+    }
+  }
+}
+
+/** Rebuilds only the in-memory route runtime; the daemon and Desktop stay up. */
+async function reloadInstalledCommunityRoutes(registryPath: string): Promise<void> {
+  if (runtimeReloadOperation) return runtimeReloadOperation;
+  let shouldRestartProfile = false;
+  const operation = (async () => {
+    const savedCredentials = await stateStore.loadCredentials(PROFILE_ID);
+    shouldRestartProfile = Boolean(savedCredentials);
+    // Import and instantiate the complete candidate set before touching the
+    // live runtime. Conflicts or missing dependencies fail while current routes
+    // continue serving messages.
+    const modules = await loadInstalledRouteModules(registryPath, true);
+    const nextConfigExtensions = modules.flatMap((routeModule) =>
+      routeModule.config ? [routeModule.config] : []
+    );
+    // Constructor validation catches reserved/duplicate config schemas before
+    // the live runtime is stopped. The temporary store performs no I/O.
+    new LocalConfigStore({
+      filePath: resolveLocalEnvPath(),
+      extensions: nextConfigExtensions,
+    });
+    const candidateRuntime = await buildRuntime({
+      id: PROFILE_ID,
+      name: `Desktop Router (${PROFILE_ID})`,
+      credentials: savedCredentials
+        ? {
+            accountId: savedCredentials.accountId,
+            token: savedCredentials.token,
+            baseUrl: savedCredentials.baseUrl,
+          }
+        : undefined,
+    }, modules);
+
+    try {
+      runtime?.stopProfile(PROFILE_ID);
+    } catch {
+      // The profile may already be stopped.
+    }
+    runtimeStarting = false;
+    await stopInstalledRouteModules();
+
+    installedRouteModules = modules;
+    if (localConfig) {
+      await localConfig.replaceExtensions(nextConfigExtensions);
+    } else {
+      localConfig = new LocalConfigStore({
+        filePath: resolveLocalEnvPath(),
+        extensions: nextConfigExtensions,
+      });
+    }
+    await startActiveRouteLifecycles(modules, candidateRuntime, true);
+    // Publish only a fully validated candidate. Concurrent readers wait on the
+    // reload barrier and cannot rebuild a runtime from stale route modules.
+    runtime = candidateRuntime;
+    trace("info", "community", `Reloaded ${modules.length} route package(s).`);
+  })();
+  runtimeReloadOperation = operation;
+  try {
+    await operation;
+  } finally {
+    if (runtimeReloadOperation === operation) runtimeReloadOperation = undefined;
+  }
+  if (shouldRestartProfile) await startRuntimeMonitor();
 }
 
 async function gracefulShutdown(exitCode = 0): Promise<void> {
@@ -182,6 +345,7 @@ interface LoginState {
 
 let runtime: WeChatRuntime | undefined;
 let runtimeStarting = false;
+let runtimeReloadOperation: Promise<void> | undefined;
 let loginState: LoginState = { active: false, status: "idle" };
 let loginAbortController: AbortController | undefined;
 let loginRunId = 0;
@@ -208,10 +372,13 @@ function recordRouteHit(routeId: string): void {
   });
 }
 
-async function buildRuntime(profile: RuntimeProfileConfig): Promise<WeChatRuntime> {
+async function buildRuntime(
+  profile: RuntimeProfileConfig,
+  routeModulesOverride?: readonly InstalledRouteModule[],
+): Promise<WeChatRuntime> {
   const savedRoutes = await stateStore.loadRoutes(PROFILE_ID);
   const savedUserRoutes = savedRoutes.filter(isUserManagedRoute);
-  const routeModules = ensureInstalledRouteModules();
+  const routeModules = routeModulesOverride ?? ensureInstalledRouteModules();
   const builtInRoutes = defaultRoutes(
     profile.id,
     routeModules.map((routeModule) => routeModule.route),
@@ -254,7 +421,6 @@ async function buildRuntime(profile: RuntimeProfileConfig): Promise<WeChatRuntim
     },
     connectors: [
       ...routeModules.map((routeModule) => routeModule.connector),
-      createUpochiConnector(),
       createMainAssistantConnector({
         id: "main-assistant",
         llm,
@@ -404,6 +570,7 @@ async function initializeSessionReminders(
 }
 
 async function ensureRuntime(): Promise<WeChatRuntime> {
+  if (runtimeReloadOperation) await runtimeReloadOperation;
   if (runtime) return runtime;
   const savedCredentials = await stateStore.loadCredentials(PROFILE_ID);
   runtime = await buildRuntime({
@@ -546,6 +713,7 @@ async function startQrLogin(): Promise<LoginState> {
 }
 
 async function unlinkWechatSession(): Promise<void> {
+  if (runtimeReloadOperation) await runtimeReloadOperation;
   loginRunId++;
   loginAbortController?.abort();
   loginAbortController = undefined;
@@ -618,7 +786,7 @@ function sendJson(res: http.ServerResponse, status: number, data: unknown): void
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "http://localhost:5173",
     "Access-Control-Allow-Headers": "content-type",
-    "Access-Control-Allow-Methods": "GET,POST,PATCH,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
   });
@@ -649,6 +817,7 @@ async function handleRequest(
 
   const url = new URL(req.url ?? "/", `http://${HOST}:${PORT}`);
   try {
+    if (await handleCommunityHttpRequest(req, res, url, requireCommunity())) return;
     if (req.method === "GET" && url.pathname === "/health") {
       sendJson(res, 200, {
         ok: true,
@@ -696,36 +865,6 @@ async function handleRequest(
         trace("info", "config", `Updated ${result.changedFields.join(", ")}`);
       }
       sendJson(res, 200, { ok: true, schemaVersion: 1, ...result });
-      return;
-    }
-    if (req.method === "GET" && url.pathname === "/upochi/config") {
-      if (!upochiConfig) throw new Error("Upochi config store is not initialized.");
-      sendJson(res, 200, {
-        ok: true,
-        schemaVersion: 1,
-        config: await upochiConfig.snapshot(),
-      });
-      return;
-    }
-    if (req.method === "PATCH" && url.pathname === "/upochi/config") {
-      if (!upochiConfig) throw new Error("Upochi config store is not initialized.");
-      const result = await upochiConfig.update(await readJson(req));
-      if (result.changed) {
-        trace(
-          "info",
-          "upochi-config",
-          `Updated ${result.changedFields.join(", ")} in ${result.config.envPath}`,
-        );
-      }
-      sendJson(res, 200, { ok: true, schemaVersion: 1, ...result });
-      return;
-    }
-    if (req.method === "GET" && url.pathname === "/upochi/health") {
-      sendJson(res, 200, {
-        ok: true,
-        schemaVersion: 1,
-        upochi: await checkUpochiHealth(),
-      });
       return;
     }
     if (req.method === "GET" && url.pathname === "/llm/health") {
@@ -812,11 +951,7 @@ async function handleRequest(
       ? error.status
       : error instanceof LocalConfigValidationError
         ? 400
-        : error instanceof UpochiConfigValidationError
-          ? 400
-          : error instanceof UpochiProjectNotFoundError
-            ? 404
-            : 500;
+        : 500;
     trace(status >= 500 ? "error" : "warn", "http", message);
     sendJson(res, status, { error: message });
   }
@@ -825,23 +960,9 @@ async function handleRequest(
 async function main(): Promise<void> {
   loadLocalEnv(trace);
   refreshRuntimeSettings();
-  const routeModules = await createInstalledRouteModules(PROFILE_ID, process.env, {
-    storageRoot: path.join(stateStore.profileDir(PROFILE_ID), "routes"),
-    logger: {
-      debug(message, context) {
-        trace("debug", "route-package", `${message}${context ? ` ${JSON.stringify(context)}` : ""}`);
-      },
-      info(message, context) {
-        trace("info", "route-package", `${message}${context ? ` ${JSON.stringify(context)}` : ""}`);
-      },
-      warn(message, context) {
-        trace("warn", "route-package", `${message}${context ? ` ${JSON.stringify(context)}` : ""}`);
-      },
-      error(message, context) {
-        trace("error", "route-package", `${message}${context ? ` ${JSON.stringify(context)}` : ""}`);
-      },
-    },
-  });
+  const communityRoot = resolveCommunityRoot(process.env);
+  const communityRegistryPath = path.join(communityRoot, "installed-routes.json");
+  const routeModules = await loadInstalledRouteModules(communityRegistryPath);
   installedRouteModules = routeModules;
   localConfig = new LocalConfigStore({
     filePath: resolveLocalEnvPath(),
@@ -849,7 +970,16 @@ async function main(): Promise<void> {
       routeModule.config ? [routeModule.config] : []
     ),
   });
-  upochiConfig = new UpochiConfigStore();
+  community = new CommunityService({
+    rootDir: communityRoot,
+    registryPath: communityRegistryPath,
+    catalogSources: communityCatalogSources(),
+    hostVersion: "0.1.0",
+    profileId: PROFILE_ID,
+    routeStorageRoot: path.join(stateStore.profileDir(PROFILE_ID), "routes"),
+    logger: routePackageLogger(),
+    onInstalledChanged: () => reloadInstalledCommunityRoutes(communityRegistryPath),
+  });
   llmHealth = new LlmHealthService({
     timeoutMs: envNumber("WECHAT2ALL_LLM_HEALTH_TIMEOUT_MS"),
     onResult(result) {
@@ -902,21 +1032,7 @@ async function main(): Promise<void> {
   server.listen(PORT, HOST, () => {
     trace("info", "http", `Listening on http://${HOST}:${PORT}`);
     void requireLlmHealth().check();
-    const activeConnectorIds = new Set(
-      runtime?.listRoutes()
-        .filter((route) => route.enabled !== false)
-        .map((route) => route.connectorId) ?? [],
-    );
-    for (const routeModule of routeModules) {
-      if (!activeConnectorIds.has(routeModule.connectorId)) continue;
-      void Promise.resolve(routeModule.lifecycle?.start?.()).catch((error: unknown) => {
-        trace(
-          "warn",
-          "route-module",
-          `${routeModule.id} startup hook failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      });
-    }
+    void startActiveRouteLifecycles(routeModules);
   });
 }
 

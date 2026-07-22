@@ -1,5 +1,4 @@
 import type { RuntimeRoute } from "@wechat2all/runtime";
-import { createUpochiRouteDefinition } from "./upochi.js";
 
 export function isUserManagedRoute(route: RuntimeRoute): boolean {
   return route.metadata?.createdBy === "main-assistant";
@@ -36,7 +35,6 @@ export function defaultRoutes(
 ): RuntimeRoute[] {
   return [
     ...installedRoutes,
-    createUpochiRouteDefinition(profileId),
     {
       id: "main-assistant-default",
       profileId,
@@ -63,7 +61,6 @@ export function routeDescription(route: RuntimeRoute): string {
   const description = route.metadata?.description;
   if (typeof description === "string" && description.trim()) return description;
   const prompt = route.metadata?.systemPrompt;
-  if (route.id === "upochi" && prompt === "") return "";
   if (typeof prompt === "string" && prompt.trim()) return prompt;
   if (route.id === "main-assistant-default") {
     return "默认入口：普通对话、route 分发、固定 slash 命令。";

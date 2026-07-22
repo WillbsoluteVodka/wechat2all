@@ -19,7 +19,8 @@ import {
   refreshRouteSetupCheck,
   unlinkWechatSession,
 } from "./api";
-import { AgentsPage, TracePage } from "./pages/ConstructionPages";
+import { TracePage } from "./pages/ConstructionPages";
+import { CommunityPage } from "./pages/CommunityPage";
 import { ConfigPage } from "./pages/ConfigPage";
 import { HomePage } from "./pages/HomePage";
 import { RoutesPage } from "./pages/RoutesPage";
@@ -387,8 +388,8 @@ export function App() {
               onSelect={setSelectedRouteId}
             />
           ) : null}
+          {activePage === "community" ? <CommunityPage /> : null}
         </section>
-        {activePage === "agents" ? <AgentsPage /> : null}
         {activePage === "trace" ? <TracePage /> : null}
       </div>
       {startupGate}

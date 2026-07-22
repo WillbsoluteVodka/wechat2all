@@ -1,6 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import type {
+  CommunityCatalogResponse,
+  CommunityInstallRequest,
+  CommunityInstalledResponse,
+  CommunityInstalledRoute,
+  CommunityOperation,
+  CommunityOperationKind,
+  CommunityOperationResponse,
   DashboardSnapshot,
   LocalConfigPatch,
   LocalConfigResponse,
@@ -10,11 +17,6 @@ import type {
   LoginStatus,
   QrLoginResponse,
   RouteSetupCheckResponse,
-  UpochiConfigPatch,
-  UpochiConfigResponse,
-  UpochiConfigSnapshot,
-  UpochiConfigUpdateResponse,
-  UpochiHealthResponse,
 } from "./types";
 
 declare global {
@@ -56,16 +58,6 @@ const fallbackSnapshot: DashboardSnapshot = {
       priority: 850,
       connectorId: "claude-route",
       matchText: [],
-      stats: { messagesToday: 0, lastHitAt: null },
-    },
-    {
-      id: "upochi",
-      name: "Upochi",
-      description: "连接本机 Upochi Todo。进入 route 后可使用 /check、/add 标题、/remove id。",
-      enabled: true,
-      priority: 800,
-      connectorId: "upochi-route",
-      matchText: ["/check", "/add", "/remove"],
       stats: { messagesToday: 0, lastHitAt: null },
     },
     {
@@ -133,6 +125,59 @@ const fallbackSnapshot: DashboardSnapshot = {
   },
 };
 
+const previewCommunityManifest = {
+  protocol: "weconnect.route" as const,
+  protocolVersion: 1 as const,
+  id: "community-preview",
+  packageName: "@weconnect-preview/community-route",
+  displayName: "Community Preview",
+  version: "0.0.0",
+  description: "Browser-only preview of the generic Community installation flow.",
+  license: "MIT",
+  author: { name: "WeConnect Preview" },
+  engines: { weconnect: ">=0.1.0 <2", node: ">=20" },
+  capabilities: ["text-input", "text-output"],
+  permissions: [],
+};
+
+let fallbackCommunityInstalled: CommunityInstalledRoute[] = [];
+const fallbackCommunityOperations = new Map<string, CommunityOperation>();
+
+function previewOperation(kind: CommunityOperationKind, routeId: string): CommunityOperationResponse {
+  if (routeId !== previewCommunityManifest.id) {
+    throw new Error(`Unknown Community preview route: ${routeId}`);
+  }
+  const now = new Date().toISOString();
+  if (kind === "uninstall") {
+    fallbackCommunityInstalled = fallbackCommunityInstalled.filter((route) => route.id !== routeId);
+  } else if (!fallbackCommunityInstalled.some((route) => route.id === routeId)) {
+    fallbackCommunityInstalled = [{
+      id: previewCommunityManifest.id,
+      packageName: previewCommunityManifest.packageName,
+      displayName: previewCommunityManifest.displayName,
+      version: previewCommunityManifest.version,
+      manifest: previewCommunityManifest,
+      installedAt: now,
+      sourceCatalog: "browser-preview",
+      installDir: `~/Library/Application Support/WeConnect/community/routes/${routeId}/0.0.0`,
+      status: "installed",
+    }];
+  }
+  const operation: CommunityOperation = {
+    id: `preview-${kind}-${Date.now()}`,
+    kind,
+    routeId,
+    status: "succeeded",
+    progress: 100,
+    message: `${kind} completed in browser preview.`,
+    restartRequired: false,
+    createdAt: now,
+    updatedAt: now,
+  };
+  fallbackCommunityOperations.set(operation.id, operation);
+  return { ok: true, operation };
+}
+
 let fallbackLocalConfig: LocalConfigSnapshot = {
   configPath: ".env.local",
   runtimeApplied: true,
@@ -166,18 +211,6 @@ let fallbackLocalConfig: LocalConfigSnapshot = {
     timeoutMs: 10 * 60_000,
     allowCliAuth: false,
     executable: null,
-  },
-};
-
-let fallbackUpochiConfig: UpochiConfigSnapshot = {
-  projectPath: "Auto-discovered Upochi project",
-  envPath: "Auto-discovered Upochi project/.env",
-  envExists: false,
-  restartRequired: false,
-  llm: {
-    endpoint: null,
-    model: null,
-    apiKey: { configured: false, masked: null },
   },
 };
 
@@ -390,83 +423,71 @@ export async function patchLocalConfig(
   return invoke<LocalConfigUpdateResponse>("patch_local_config", { payload });
 }
 
-const UPOCHI_ENDPOINTS = {
-  "deepseek-chat": "https://api.deepseek.com/v1",
-  "gpt-4.1-mini": "https://api.openai.com/v1",
-} as const;
-
-function upochiConfigError(error: unknown): Error {
-  const message = error instanceof Error ? error.message : String(error);
-  if (message.includes("404") && message.includes("/upochi/config")) {
-    return new Error("Router daemon 需要重启以加载 Upochi 配置接口。请重启 WeConnect。");
-  }
-  return error instanceof Error ? error : new Error(message);
-}
-
-export async function getUpochiConfig(): Promise<UpochiConfigSnapshot> {
-  if (!isTauri()) return fallbackUpochiConfig;
-  try {
-    const response = await invoke<UpochiConfigResponse>("get_upochi_config");
-    return response.config;
-  } catch (error) {
-    throw upochiConfigError(error);
-  }
-}
-
-export async function getUpochiHealth(): Promise<UpochiHealthResponse> {
+export async function getCommunityCatalog(): Promise<CommunityCatalogResponse> {
   if (!isTauri()) {
+    const installed = fallbackCommunityInstalled.find(
+      (route) => route.id === previewCommunityManifest.id,
+    );
     return {
       ok: true,
       schemaVersion: 1,
-      upochi: {
-        status: "not-running",
-        running: false,
-        baseUrl: "http://127.0.0.1:8765",
-        checkedAt: new Date().toISOString(),
-        latencyMs: 0,
-        error: "Browser preview cannot probe the local Upochi process.",
-      },
+      routes: [{
+        id: previewCommunityManifest.id,
+        packageName: previewCommunityManifest.packageName,
+        displayName: previewCommunityManifest.displayName,
+        version: previewCommunityManifest.version,
+        description: previewCommunityManifest.description,
+        manifest: previewCommunityManifest,
+        artifact: {
+          type: "directory",
+          url: "browser-preview://community-route",
+        },
+        requirements: [],
+        installedVersion: installed?.version ?? null,
+        status: installed ? "installed" : "available",
+      }],
     };
   }
-  try {
-    return await invoke<UpochiHealthResponse>("get_upochi_health");
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes("404") && message.includes("/upochi/health")) {
-      throw new Error("Router daemon 需要重启以加载 Upochi 状态检查。请重启 WeConnect。");
-    }
-    throw error;
-  }
+  return invoke<CommunityCatalogResponse>("get_community_catalog");
 }
 
-export async function patchUpochiConfig(
-  payload: UpochiConfigPatch,
-): Promise<UpochiConfigUpdateResponse> {
+export async function getCommunityInstalled(): Promise<CommunityInstalledResponse> {
   if (!isTauri()) {
-    const model = payload.model ?? fallbackUpochiConfig.llm.model;
-    fallbackUpochiConfig = {
-      ...fallbackUpochiConfig,
-      envExists: true,
-      restartRequired: true,
-      llm: {
-        model,
-        endpoint: payload.model
-          ? UPOCHI_ENDPOINTS[payload.model]
-          : fallbackUpochiConfig.llm.endpoint,
-        apiKey: previewSecretStatus(payload.apiKey, fallbackUpochiConfig.llm.apiKey),
-      },
-    };
-    return {
-      ok: true,
-      schemaVersion: 1,
-      changed: true,
-      changedFields: ["browser-preview"],
-      config: fallbackUpochiConfig,
-    };
+    return { ok: true, schemaVersion: 1, routes: fallbackCommunityInstalled };
   }
-  try {
-    return await invoke<UpochiConfigUpdateResponse>("patch_upochi_config", { payload });
-  } catch (error) {
-    throw upochiConfigError(error);
+  return invoke<CommunityInstalledResponse>("get_community_installed");
+}
+
+export async function installCommunityRoute(
+  routeId: string,
+  payload: CommunityInstallRequest = {},
+): Promise<CommunityOperationResponse> {
+  if (!isTauri()) return previewOperation("install", routeId);
+  return invoke<CommunityOperationResponse>("install_community_route", { routeId, payload });
+}
+
+export async function updateCommunityRoute(
+  routeId: string,
+  payload: CommunityInstallRequest = {},
+): Promise<CommunityOperationResponse> {
+  if (!isTauri()) return previewOperation("update", routeId);
+  return invoke<CommunityOperationResponse>("update_community_route", { routeId, payload });
+}
+
+export async function uninstallCommunityRoute(
+  routeId: string,
+): Promise<CommunityOperationResponse> {
+  if (!isTauri()) return previewOperation("uninstall", routeId);
+  return invoke<CommunityOperationResponse>("uninstall_community_route", { routeId });
+}
+
+export async function getCommunityOperation(
+  operationId: string,
+): Promise<CommunityOperationResponse> {
+  if (!isTauri()) {
+    const operation = fallbackCommunityOperations.get(operationId);
+    if (!operation) throw new Error(`Unknown Community operation: ${operationId}`);
+    return { ok: true, operation };
   }
+  return invoke<CommunityOperationResponse>("get_community_operation", { operationId });
 }

@@ -1,254 +1,12 @@
-import { useEffect, useState, type ChangeEvent, type KeyboardEvent } from "react";
-
-import { getUpochiConfig, getUpochiHealth, patchUpochiConfig } from "../api";
 import type {
   LocalConfigSnapshot,
   RouteSetupCheckItemStatus,
   RouteSetupCheckResponse,
   RouteSummary,
-  UpochiConfigSnapshot,
-  UpochiHealthResponse,
-  UpochiLlmModel,
 } from "../types";
 import { StatusPill } from "../ui/Common";
 import { displayRouteName, routeRuleDetails } from "../ui/constants";
 import { PixelText } from "../ui/PixelArt";
-
-const UPOCHI_LLM_PRESETS: Record<UpochiLlmModel, { label: string; endpoint: string }> = {
-  "deepseek-chat": {
-    label: "DeepSeek",
-    endpoint: "https://api.deepseek.com/v1",
-  },
-  "gpt-4.1-mini": {
-    label: "OpenAI",
-    endpoint: "https://api.openai.com/v1",
-  },
-};
-
-function isUpochiLlmModel(value: string | null): value is UpochiLlmModel {
-  return value !== null && value in UPOCHI_LLM_PRESETS;
-}
-
-function UpochiLlmSettings() {
-  const [config, setConfig] = useState<UpochiConfigSnapshot | null>(null);
-  const [model, setModel] = useState<UpochiLlmModel>("deepseek-chat");
-  const [apiKey, setApiKey] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    let retryTimer: number | undefined;
-    const loadConfig = async (initial: boolean) => {
-      if (initial) setLoading(true);
-      try {
-        const nextConfig = await getUpochiConfig();
-        if (cancelled) return;
-        setConfig(nextConfig);
-        if (isUpochiLlmModel(nextConfig.llm.model)) setModel(nextConfig.llm.model);
-        setError(null);
-      } catch (reason) {
-        if (cancelled) return;
-        setError(reason instanceof Error ? reason.message : String(reason));
-        retryTimer = window.setTimeout(() => void loadConfig(false), 2_000);
-      } finally {
-        if (!cancelled && initial) setLoading(false);
-      }
-    };
-    void loadConfig(true);
-    return () => {
-      cancelled = true;
-      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
-    };
-  }, []);
-
-  async function save(payload: { model: UpochiLlmModel; apiKey?: string | null }) {
-    if (saving) return;
-    setSaving(true);
-    setSaved(false);
-    setError(null);
-    try {
-      const result = await patchUpochiConfig(payload);
-      setConfig(result.config);
-      setApiKey("");
-      setSaved(true);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  function onModelChange(event: ChangeEvent<HTMLSelectElement>) {
-    const nextModel = event.target.value as UpochiLlmModel;
-    setModel(nextModel);
-    void save({ model: nextModel });
-  }
-
-  function savePendingApiKey() {
-    if (!apiKey.trim() || saving) return;
-    void save({ model, apiKey });
-  }
-
-  function onApiKeyKeyDown(event: KeyboardEvent<HTMLInputElement>) {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
-    event.currentTarget.blur();
-  }
-
-  const endpoint = UPOCHI_LLM_PRESETS[model].endpoint;
-
-  return (
-    <section className="route-detail-section upochi-llm-settings">
-      <div className="route-detail-section-heading upochi-llm-heading">
-        <div>
-          <h2 className="home-kicker">UPOCHI LLM SETTINGS</h2>
-          <p>MODEL 自动匹配 LLM_ENDPOINT；修改会写入自动找到的 Upochi .env。</p>
-        </div>
-        {config?.restartRequired ? (
-          <span className="route-delivery-restart">RESTART UPOCHI REQUIRED</span>
-        ) : null}
-      </div>
-
-      {loading ? (
-        <div className="upochi-config-state">SEARCHING FOR UPOCHI ENV...</div>
-      ) : error && !config ? (
-        <div className="upochi-config-state is-error">{error}</div>
-      ) : (
-        <div className="upochi-llm-form">
-          <label className="upochi-config-field">
-            <span>LLM MODEL</span>
-            <select value={model} disabled={saving} onChange={onModelChange}>
-              {(Object.entries(UPOCHI_LLM_PRESETS) as Array<[
-                UpochiLlmModel,
-                { label: string; endpoint: string },
-              ]>).map(([value, preset]) => (
-                <option key={value} value={value}>{preset.label}</option>
-              ))}
-            </select>
-          </label>
-
-          <div className="upochi-config-field">
-            <div className="upochi-config-field-heading">
-              <span>LLM API KEY</span>
-              <small>{config?.llm.apiKey.masked ?? "NOT CONFIGURED"}</small>
-            </div>
-            <div className="upochi-secret-control">
-              <input
-                type="password"
-                autoComplete="off"
-                spellCheck={false}
-                value={apiKey}
-                disabled={saving}
-                placeholder={config?.llm.apiKey.configured
-                  ? "Enter a new key to replace the saved key"
-                  : "Enter API key"}
-                onChange={(event) => {
-                  setApiKey(event.target.value);
-                  setSaved(false);
-                }}
-                onBlur={savePendingApiKey}
-                onKeyDown={onApiKeyKeyDown}
-              />
-              <button
-                type="button"
-                className="secondary-button upochi-clear-key"
-                disabled={saving || !config?.llm.apiKey.configured}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => void save({ model, apiKey: null })}
-              >
-                CLEAR
-              </button>
-            </div>
-          </div>
-
-          <div className="upochi-endpoint-field">
-            <span>LLM ENDPOINT</span>
-            <code>{endpoint}</code>
-          </div>
-        </div>
-      )}
-
-      {config || !error ? (
-        <div className="upochi-config-footer">
-          <div>
-            <strong className={error ? "is-error" : ""}>
-              {saving ? "SAVING..." : error ? error : saved ? "SAVED" : "AUTO SAVE ON SELECT / BLUR"}
-            </strong>
-            <small title={config?.envPath}>{config?.envPath ?? "Upochi .env is being located automatically"}</small>
-          </div>
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-function UpochiHealthChecklist() {
-  const [health, setHealth] = useState<UpochiHealthResponse["upochi"] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    let requestInFlight = false;
-    const refresh = async () => {
-      if (requestInFlight) return;
-      requestInFlight = true;
-      try {
-        const result = await getUpochiHealth();
-        if (!cancelled) {
-          setHealth(result.upochi);
-          setError(null);
-        }
-      } catch (reason) {
-        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
-      } finally {
-        requestInFlight = false;
-      }
-    };
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 2_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, []);
-
-  const running = health?.running === true && !error;
-  const label = error
-    ? "COULD NOT CHECK UPOCHI"
-    : health === null
-      ? "CHECKING UPOCHI"
-      : running
-        ? "UPOCHI IS RUNNING"
-        : "UPOCHI IS NOT RUNNING";
-  const detail = error
-    ? "CHECK FAILED"
-    : health === null
-      ? "CHECKING"
-      : running
-        ? `LISTENING · ${health.latencyMs} MS`
-        : "NOT LISTENING";
-
-  return (
-    <section className="route-detail-section">
-      <h2 className="home-kicker">CONFIG CHECKLIST</h2>
-      <ul className="route-config-checklist upochi-health-checklist" aria-live="polite">
-        <li
-          className={running ? "is-pass" : health === null && !error ? "is-info" : "is-missing"}
-          title={error ?? health?.error ?? health?.baseUrl}
-        >
-          <span className="route-config-check" aria-hidden="true">
-            {running ? "[x]" : health === null && !error ? "[...]" : "[!]"}
-          </span>
-          <strong>{label}</strong>
-          <small>{detail}</small>
-        </li>
-      </ul>
-    </section>
-  );
-}
 
 function isWeConnectRoute(route: RouteSummary) {
   return route.id === "main-assistant-default"
@@ -377,7 +135,6 @@ export function RoutesPage(props: {
   }
 
   const matchRules = routeRuleDetails(selected);
-  const isUpochiRoute = selected.id === "upochi" || selected.connectorId.includes("upochi");
   const management = selected.management;
   const hasSetupCheck = management?.setupCheck === true;
   const configControls = management?.configControls ?? [];
@@ -569,14 +326,9 @@ export function RoutesPage(props: {
           <p>{selected.description}</p>
         </header>
 
-        {hasSetupCheck
-          ? configChecklistSection
-          : isUpochiRoute
-            ? <UpochiLlmSettings />
-            : matchRulesSection}
+        {hasSetupCheck ? configChecklistSection : matchRulesSection}
         {manualPermissions.length ? manualPermissionsSection : null}
-        {isUpochiRoute ? <UpochiHealthChecklist /> : null}
-        {hasSetupCheck || isUpochiRoute ? matchRulesSection : configChecklistSection}
+        {hasSetupCheck ? matchRulesSection : configChecklistSection}
       </section>
     </main>
   );

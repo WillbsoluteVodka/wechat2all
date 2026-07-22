@@ -11,7 +11,7 @@ Current screens:
 
 - WeChat connection status and QR login.
 - Routes management: cards, selected route detail, and route metadata.
-- Agents / MCP connection management.
+- Community route catalog, installation, updates, removal, and operation progress.
 - Memory, logs, and message trace views.
 - Settings, API keys, router endpoint, and autostart placeholders.
 
@@ -29,6 +29,26 @@ In Tauri mode, commands in `src-tauri` call the local router daemon configured b
 
 In browser preview mode, `src/api.ts` returns local fallback data so UI work can
 continue without a daemon.
+
+## Community Routes
+
+Open **Community** from the primary navigation to see catalog routes and routes
+already installed on this Mac. A route card shows its version, permissions, and
+runtime or external-app requirements. Install and update actions ask the user to
+approve required permissions before they are submitted.
+
+The page is a thin client for the router daemon's generic Community API:
+
+- `GET /community/catalog`
+- `GET /community/installed`
+- `POST /community/routes/:id/install`
+- `POST /community/routes/:id/update`
+- `DELETE /community/routes/:id`
+- `GET /community/operations/:id`
+
+Install, update, and uninstall operations run asynchronously. The page polls the
+returned operation id and reports queued, running, succeeded, or failed status;
+failed operations can be retried from the same route card.
 
 ## Tech Stack
 

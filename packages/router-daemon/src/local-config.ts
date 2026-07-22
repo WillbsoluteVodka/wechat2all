@@ -100,6 +100,22 @@ export interface LocalConfigStoreOptions {
   extensions?: LocalConfigExtension[];
 }
 
+function validateExtensions(extensions: readonly LocalConfigExtension[]): void {
+  const duplicateExtension = extensions.find((extension, index) =>
+    extensions.findIndex((candidate) => candidate.key === extension.key) !== index
+  );
+  if (duplicateExtension) {
+    throw new Error(`Duplicate local config extension: ${duplicateExtension.key}`);
+  }
+  const reservedExtension = extensions.find((extension) =>
+    ["configPath", "runtimeApplied", "restartRequired", "llm", "memory", "claude"]
+      .includes(extension.key)
+  );
+  if (reservedExtension) {
+    throw new Error(`Local config extension uses reserved key: ${reservedExtension.key}`);
+  }
+}
+
 export class LocalConfigValidationError extends Error {
   constructor(message: string) {
     super(message);
@@ -522,19 +538,18 @@ export class LocalConfigStore {
     this.filePath = path.resolve(opts.filePath);
     this.env = opts.env ?? process.env;
     this.extensions = [...(opts.extensions ?? [])];
-    const duplicateExtension = this.extensions.find((extension, index) =>
-      this.extensions.findIndex((candidate) => candidate.key === extension.key) !== index
-    );
-    if (duplicateExtension) {
-      throw new Error(`Duplicate local config extension: ${duplicateExtension.key}`);
-    }
-    const reservedExtension = this.extensions.find((extension) =>
-      ["configPath", "runtimeApplied", "restartRequired", "llm", "memory", "claude"]
-        .includes(extension.key)
-    );
-    if (reservedExtension) {
-      throw new Error(`Local config extension uses reserved key: ${reservedExtension.key}`);
-    }
+    validateExtensions(this.extensions);
+  }
+
+  /** Updates route-owned schemas without losing pending restart state. */
+  async replaceExtensions(extensions: readonly LocalConfigExtension[]): Promise<void> {
+    const nextExtensions = [...extensions];
+    validateExtensions(nextExtensions);
+    const next = this.operation.then(() => {
+      this.extensions.splice(0, this.extensions.length, ...nextExtensions);
+    });
+    this.operation = next.then(() => undefined, () => undefined);
+    await next;
   }
 
   async snapshot(): Promise<LocalConfigSnapshot> {

@@ -1,11 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { routePackage as codexRoutePackage } from "@wechat2all/codex-route";
 import { routePackage as claudeRoutePackage } from "@wechat2all/claude-route";
 import { routePackage as officeRoutePackage } from "@wechat2all/office-route";
 import {
+  assertRouteManifestMatchesPackageV1,
   instantiateRoutePackageV1,
   routePackageFromModuleExportsV1,
   type RouteLoggerV1,
@@ -14,10 +15,14 @@ import {
   type RoutePackageV1,
 } from "@wechat2all/route-sdk";
 
+import { readCommunityInstalledRegistry } from "./community-registry.js";
+
 export type InstalledRouteModule = InstantiatedRouteModuleV1;
 
 export interface InstalledRouteLoadOptions {
   storageRoot: string;
+  /** App-data registry written by the Community installer. */
+  registryPath?: string;
   logger?: RouteLoggerV1;
 }
 
@@ -49,10 +54,47 @@ export function parseRoutePackageSpecifiers(value: string | undefined): string[]
   )];
 }
 
+function packageEntrypoint(directory: string): string {
+  const packageJsonPath = path.join(directory, "package.json");
+  const parsed = JSON.parse(fs.readFileSync(packageJsonPath, "utf8")) as {
+    main?: unknown;
+    exports?: unknown;
+    weconnect?: { routeEntrypoint?: unknown };
+  };
+  const configured = typeof parsed.weconnect?.routeEntrypoint === "string"
+    ? parsed.weconnect.routeEntrypoint
+    : ".";
+  if (configured !== ".") return path.resolve(directory, configured);
+  const exportsValue = parsed.exports;
+  const rootExport = exportsValue && typeof exportsValue === "object"
+    ? (exportsValue as Record<string, unknown>)["."]
+    : exportsValue;
+  const exportPath = typeof rootExport === "string"
+    ? rootExport
+    : rootExport && typeof rootExport === "object"
+      ? (rootExport as Record<string, unknown>).import
+      : undefined;
+  const candidate = typeof exportPath === "string"
+    ? exportPath
+    : typeof parsed.main === "string"
+      ? parsed.main
+      : "dist/index.mjs";
+  return path.resolve(directory, candidate);
+}
+
 function importSpecifier(value: string): string {
-  if (value.startsWith("file:")) return value;
+  if (value.startsWith("file:")) {
+    const resolved = fileURLToPath(value);
+    return fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()
+      ? pathToFileURL(packageEntrypoint(resolved)).href
+      : value;
+  }
   if (path.isAbsolute(value) || value.startsWith(".")) {
-    return pathToFileURL(path.resolve(value)).href;
+    const resolved = path.resolve(value);
+    const entrypoint = fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()
+      ? packageEntrypoint(resolved)
+      : resolved;
+    return pathToFileURL(entrypoint).href;
   }
   return value;
 }
@@ -165,6 +207,30 @@ export async function createInstalledRouteModules(
     env,
     options,
   );
+  if (options.registryPath) {
+    try {
+      const registry = readCommunityInstalledRegistry(options.registryPath);
+      for (const record of registry.packages) {
+        try {
+          const [routePackage] = await loadExternalRoutePackages([record.entrypoint]);
+          if (!routePackage) continue;
+          assertRouteManifestMatchesPackageV1(record.manifest, routePackage);
+          external.push(routePackage);
+        } catch (error) {
+          (options.logger ?? defaultLogger).error("Rejected installed Community route package.", {
+            routeId: record.id,
+            entrypoint: record.entrypoint,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    } catch (error) {
+      (options.logger ?? defaultLogger).error("Could not read Community route registry.", {
+        registryPath: options.registryPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
   for (const routePackage of external) {
     try {
       if (installed.some((item) => item.manifest.id === routePackage.manifest.id)) {

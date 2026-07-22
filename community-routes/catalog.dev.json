@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-21T00:00:00.000Z",
+  "channel": "development",
+  "routes": [
+    {
+      "id": "upochi",
+      "packageName": "@weconnect-community/upochi-route",
+      "displayName": "Upochi",
+      "version": "0.1.0",
+      "description": "Connect WeConnect to the local Upochi Todo API.",
+      "manifest": {
+        "protocol": "weconnect.route",
+        "protocolVersion": 1,
+        "id": "upochi",
+        "packageName": "@weconnect-community/upochi-route",
+        "displayName": "Upochi",
+        "version": "0.1.0",
+        "description": "Connect WeConnect to the local Upochi Todo API.",
+        "license": "MIT",
+        "engines": {
+          "weconnect": ">=0.1.0 <2",
+          "node": ">=20"
+        },
+        "capabilities": [
+          "text-input",
+          "text-output",
+          "setup-check",
+          "config",
+          "lifecycle"
+        ],
+        "permissions": [
+          {
+            "name": "network:loopback",
+            "reason": "Connect to the Upochi App API on this Mac to list, add, and remove Todos."
+          }
+        ]
+      },
+      "artifact": {
+        "type": "archive",
+        "url": "https://api.github.com/repos/WillbsoluteVodka/wechat2all_upochi_route/releases/assets/485033180",
+        "sha256": "20abc8fc3458492e54fc6bd7cc84568897870d424e89b888ab0ea84a2107a798",
+        "entrypoint": "./dist/index.mjs"
+      },
+      "requirements": [
+        {
+          "name": "Upochi App",
+          "description": "Download, install, and run Upochi 1.0.0. This unsigned Apple Silicon build must expose Local API v1 on the configured loopback URL.",
+          "url": "https://github.com/WillbsoluteVodka/wechat2all_upochi_release/releases/download/v1.0.0/UPochi-1.0.0-macOS-arm64.dmg",
+          "required": true
+        },
+        {
+          "name": "macOS 13+ on Apple Silicon",
+          "description": "The currently published Upochi App build supports macOS arm64 only.",
+          "required": true
+        }
+      ]
+    }
+  ]
+}

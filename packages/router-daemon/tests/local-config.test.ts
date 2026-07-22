@@ -159,6 +159,19 @@ test("omitted config fields remain unchanged and a no-op update needs no restart
   assert.match(await fs.readFile(filePath, "utf-8"), /keep-this-secret/);
 });
 
+test("replacing route extensions preserves pending restart state", async () => {
+  const filePath = await tempEnvPath();
+  const store = localConfigStore(filePath);
+  await store.update({ llm: { model: "changed-after-start" } });
+
+  await store.replaceExtensions([]);
+  const snapshot = await store.snapshot();
+
+  assert.equal(snapshot.restartRequired, true);
+  assert.equal(snapshot.runtimeApplied, false);
+  assert.equal("codex" in snapshot, false);
+});
+
 test("config validation rejects arbitrary env fields and unsafe values", async () => {
   const store = localConfigStore(await tempEnvPath());
 

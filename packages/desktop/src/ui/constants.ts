@@ -4,7 +4,7 @@ export const pages: Array<{ key: PageKey; label: string; hint: string }> = [
   { key: "home", label: "Home", hint: "anomaly field" },
   { key: "config", label: "Config", hint: "QR + local settings" },
   { key: "routes", label: "Routes", hint: "routing matrix" },
-  { key: "agents", label: "Agents", hint: "MCP fabric" },
+  { key: "community", label: "Community", hint: "route marketplace" },
   { key: "trace", label: "Trace", hint: "signal memory" },
 ];
 
@@ -46,12 +46,6 @@ const WECONNECT_ROUTE_RULES: RouteRuleDetail[] = [
   { rule: "/cd ..", description: "从二级 route 返回大助手" },
 ];
 
-const UPOCHI_ROUTE_RULES: RouteRuleDetail[] = [
-  { rule: "/check", description: "查看 Upochi 中的所有 Todo" },
-  { rule: "/add <标题>", description: "在 Upochi 中新增 Todo" },
-  { rule: "/remove <id>", description: "按 id 删除 Upochi Todo" },
-];
-
 function describeMatchRule(rule: string) {
   const descriptions: Record<string, string> = {
     fallback: "Handles messages that do not match another route.",
@@ -72,8 +66,5 @@ export function routeRuleDetails(route: RouteSummary): RouteRuleDetail[] {
     return WECONNECT_ROUTE_RULES;
   }
   if (route.management?.commands?.length) return route.management.commands;
-  if (route.id === "upochi" || route.connectorId.includes("upochi")) {
-    return UPOCHI_ROUTE_RULES;
-  }
   return route.matchText.map((rule) => ({ rule, description: describeMatchRule(rule) }));
 }

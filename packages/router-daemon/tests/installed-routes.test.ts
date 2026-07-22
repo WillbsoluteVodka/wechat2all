@@ -65,6 +65,31 @@ test("loads a protocol package through the standard module export", async () => 
   assert.equal(loaded?.manifest.id, "loaded-route");
 });
 
+test("resolves a local package directory through its WeConnect entrypoint", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "weconnect-directory-route-"));
+  fs.mkdirSync(path.join(root, "dist"));
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({
+    type: "module",
+    main: "./dist/index.mjs",
+    exports: { ".": "./dist/index.mjs" },
+    weconnect: { routeEntrypoint: "." },
+  }));
+  fs.writeFileSync(path.join(root, "dist/index.mjs"), `
+    export default {
+      protocol: "weconnect.route", protocolVersion: 1,
+      manifest: {
+        protocol: "weconnect.route", protocolVersion: 1, id: "directory-route",
+        packageName: "@test/directory-route", displayName: "Directory", version: "1.0.0",
+        description: "Directory route", engines: { weconnect: ">=0.1.0" },
+        capabilities: [], permissions: []
+      },
+      create() { throw new Error("not instantiated"); }
+    };
+  `);
+  const [loaded] = await loadExternalRoutePackages([root]);
+  assert.equal(loaded?.manifest.id, "directory-route");
+});
+
 test("rejects a broken external package without dropping valid packages", async () => {
   const errors: string[] = [];
   const invalid = `data:text/javascript,${encodeURIComponent("export default { nope: true };")}`;

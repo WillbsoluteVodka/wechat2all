@@ -272,36 +272,6 @@ async fn get_local_config() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-async fn get_upochi_config() -> Result<serde_json::Value, String> {
-    let daemon_url = trim_trailing_slash(&env_or_default(
-        "WECHAT2ALL_ROUTER_DAEMON_URL",
-        DEFAULT_DAEMON_URL,
-    ));
-    let url = format!("{daemon_url}/upochi/config");
-    let response = daemon_http_client()?
-        .get(&url)
-        .send()
-        .await
-        .map_err(|err| format!("Router daemon is not reachable at {daemon_url}: {err}"))?;
-    daemon_json_response("Router daemon Upochi config request", response).await
-}
-
-#[tauri::command]
-async fn get_upochi_health() -> Result<serde_json::Value, String> {
-    let daemon_url = trim_trailing_slash(&env_or_default(
-        "WECHAT2ALL_ROUTER_DAEMON_URL",
-        DEFAULT_DAEMON_URL,
-    ));
-    let url = format!("{daemon_url}/upochi/health");
-    let response = daemon_http_client()?
-        .get(&url)
-        .send()
-        .await
-        .map_err(|err| format!("Router daemon is not reachable at {daemon_url}: {err}"))?;
-    daemon_json_response("Router daemon Upochi health request", response).await
-}
-
-#[tauri::command]
 async fn get_llm_health() -> Result<serde_json::Value, String> {
     let daemon_url = trim_trailing_slash(&env_or_default(
         "WECHAT2ALL_ROUTER_DAEMON_URL",
@@ -377,20 +347,117 @@ async fn patch_local_config(payload: serde_json::Value) -> Result<serde_json::Va
     daemon_json_response("Router daemon config update", response).await
 }
 
+fn validate_community_path_id(value: &str, label: &str) -> Result<(), String> {
+    if value.is_empty()
+        || !value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
+    {
+        return Err(format!("{label} contains unsupported characters"));
+    }
+    Ok(())
+}
+
 #[tauri::command]
-async fn patch_upochi_config(payload: serde_json::Value) -> Result<serde_json::Value, String> {
+async fn get_community_catalog() -> Result<serde_json::Value, String> {
     let daemon_url = trim_trailing_slash(&env_or_default(
         "WECHAT2ALL_ROUTER_DAEMON_URL",
         DEFAULT_DAEMON_URL,
     ));
-    let url = format!("{daemon_url}/upochi/config");
+    let url = format!("{daemon_url}/community/catalog");
     let response = daemon_http_client()?
-        .patch(&url)
+        .get(&url)
+        .send()
+        .await
+        .map_err(|err| format!("Router daemon is not reachable at {daemon_url}: {err}"))?;
+    daemon_json_response("Router daemon Community catalog request", response).await
+}
+
+#[tauri::command]
+async fn get_community_installed() -> Result<serde_json::Value, String> {
+    let daemon_url = trim_trailing_slash(&env_or_default(
+        "WECHAT2ALL_ROUTER_DAEMON_URL",
+        DEFAULT_DAEMON_URL,
+    ));
+    let url = format!("{daemon_url}/community/installed");
+    let response = daemon_http_client()?
+        .get(&url)
+        .send()
+        .await
+        .map_err(|err| format!("Router daemon is not reachable at {daemon_url}: {err}"))?;
+    daemon_json_response("Router daemon installed Community routes request", response).await
+}
+
+#[tauri::command]
+async fn install_community_route(
+    route_id: String,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    validate_community_path_id(&route_id, "Route id")?;
+    let daemon_url = trim_trailing_slash(&env_or_default(
+        "WECHAT2ALL_ROUTER_DAEMON_URL",
+        DEFAULT_DAEMON_URL,
+    ));
+    let url = format!("{daemon_url}/community/routes/{route_id}/install");
+    let response = daemon_http_client()?
+        .post(&url)
         .json(&payload)
         .send()
         .await
         .map_err(|err| format!("Router daemon is not reachable at {daemon_url}: {err}"))?;
-    daemon_json_response("Router daemon Upochi config update", response).await
+    daemon_json_response("Router daemon Community route install request", response).await
+}
+
+#[tauri::command]
+async fn update_community_route(
+    route_id: String,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    validate_community_path_id(&route_id, "Route id")?;
+    let daemon_url = trim_trailing_slash(&env_or_default(
+        "WECHAT2ALL_ROUTER_DAEMON_URL",
+        DEFAULT_DAEMON_URL,
+    ));
+    let url = format!("{daemon_url}/community/routes/{route_id}/update");
+    let response = daemon_http_client()?
+        .post(&url)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|err| format!("Router daemon is not reachable at {daemon_url}: {err}"))?;
+    daemon_json_response("Router daemon Community route update request", response).await
+}
+
+#[tauri::command]
+async fn uninstall_community_route(route_id: String) -> Result<serde_json::Value, String> {
+    validate_community_path_id(&route_id, "Route id")?;
+    let daemon_url = trim_trailing_slash(&env_or_default(
+        "WECHAT2ALL_ROUTER_DAEMON_URL",
+        DEFAULT_DAEMON_URL,
+    ));
+    let url = format!("{daemon_url}/community/routes/{route_id}");
+    let response = daemon_http_client()?
+        .delete(&url)
+        .send()
+        .await
+        .map_err(|err| format!("Router daemon is not reachable at {daemon_url}: {err}"))?;
+    daemon_json_response("Router daemon Community route uninstall request", response).await
+}
+
+#[tauri::command]
+async fn get_community_operation(operation_id: String) -> Result<serde_json::Value, String> {
+    validate_community_path_id(&operation_id, "Operation id")?;
+    let daemon_url = trim_trailing_slash(&env_or_default(
+        "WECHAT2ALL_ROUTER_DAEMON_URL",
+        DEFAULT_DAEMON_URL,
+    ));
+    let url = format!("{daemon_url}/community/operations/{operation_id}");
+    let response = daemon_http_client()?
+        .get(&url)
+        .send()
+        .await
+        .map_err(|err| format!("Router daemon is not reachable at {daemon_url}: {err}"))?;
+    daemon_json_response("Router daemon Community operation request", response).await
 }
 
 #[tauri::command]
@@ -480,9 +547,12 @@ fn main() {
             refresh_route_setup_check,
             get_local_config,
             patch_local_config,
-            get_upochi_config,
-            get_upochi_health,
-            patch_upochi_config,
+            get_community_catalog,
+            get_community_installed,
+            install_community_route,
+            update_community_route,
+            uninstall_community_route,
+            get_community_operation,
             request_qr_login,
             get_login_status,
             unlink_wechat_session

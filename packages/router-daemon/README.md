@@ -30,6 +30,9 @@ commands or React state in the main application.
 - `src/session-reminders.ts` - 24-hour session scheduling and local reminder target state.
 - `src/routes.ts` - core route definitions and dashboard route labels.
 - `src/installed-routes.ts` - built-in plus dynamically installed protocol packages.
+- `src/community.ts` - catalog validation and atomic Community install/update/uninstall.
+- `src/community-registry.ts` - private app-data registry for installed route packages.
+- `src/community-http.ts` - generic Community HTTP API.
 - `src/dashboard.ts` - dashboard snapshot projection for the Tauri UI.
 - `src/trace.ts` - in-memory trace buffer and console logging.
 
@@ -56,6 +59,12 @@ Common endpoints:
 - `GET /health`
 - `GET /snapshot`
 - `GET /route-packages`
+- `GET /community/catalog`
+- `GET /community/installed`
+- `POST /community/routes/:routeId/install`
+- `POST /community/routes/:routeId/update`
+- `DELETE /community/routes/:routeId`
+- `GET /community/operations/:operationId`
 - `GET /config`
 - `PATCH /config`
 - `GET /llm/health`
@@ -86,6 +95,51 @@ A third-party package that cannot be imported, validated, or instantiated is
 rejected and logged; it does not prevent the main app or other routes from
 starting. Built-in package failures remain fatal because they indicate a broken
 application build.
+
+### Community installation
+
+The Community UI uses the daemon's generic catalog and operation endpoints.
+Install and update requests return `202` with an operation object; clients poll
+`GET /community/operations/:operationId` until its status is `succeeded` or
+`failed`. Required manifest permissions must be repeated in the request body:
+
+```json
+{
+  "acceptedPermissions": ["network:loopback"]
+}
+```
+
+Installed route code lives outside the application bundle under the platform
+app-data directory. On macOS the default root is:
+
+```text
+~/Library/Application Support/WeConnect/community
+```
+
+`installed-routes.json` is written atomically. A new version is staged and
+validated before the registry changes, the in-memory route runtime is rebuilt,
+and a failed activation restores the previous registry/version. Uninstalling a
+route removes its code but preserves the separately assigned route data.
+
+For repository development, `community-routes/catalog.dev.json` is discovered
+automatically. A catalog may point to a local directory artifact so the POC can
+run without GitHub. Set `WECHAT2ALL_COMMUNITY_CATALOGS` (comma-separated) for
+other local catalogs or production HTTPS catalogs, and
+`WECHAT2ALL_COMMUNITY_ROOT` only when app-data must be relocated.
+
+Production artifacts are prebuilt `.tar.gz` route packages. Remote catalogs and
+artifacts must use HTTPS, and remote artifacts must declare a SHA-256 checksum.
+The installer rejects path traversal, links/devices, oversized downloads and
+expanded archives, incompatible WeConnect/Node engines, mismatched static versus
+exported manifests, and unapproved required permissions. It never clones a Git
+repository or runs a package-manager install script.
+
+Route Protocol validation is not a sandbox: an installed route is executable
+Node.js code in the daemon process. Community catalogs should therefore contain
+only reviewed releases. The manifest permission prompt communicates declared
+access but cannot make untrusted code safe. `WECHAT2ALL_ROUTE_PACKAGES` remains
+available as an explicit local-development override rather than an end-user
+installation mechanism.
 
 ## Local Provider Configuration API
 
@@ -264,9 +318,9 @@ desktop/daemon restarts restore the same chat automatically.
 
 ## Collaborator Notes
 
-- Put each distributable route in its own package. Add only its module factory to
-  `src/installed-routes.ts`; do not add route-specific behavior to runtime or the
-  main daemon entry point.
+- Put each distributable route in its own package and catalog entry. Community
+  routes are discovered through the app-data registry; do not import them from
+  `src/installed-routes.ts` or add route-specific behavior to runtime/the daemon.
 - If the desktop cannot start, check whether port `39787` is already in use.
 - `pnpm desktop` enables the local-only `/dev/shutdown` endpoint while it owns
   the daemon, so an existing development stack can stop cleanly before restart.
