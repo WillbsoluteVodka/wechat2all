@@ -38,8 +38,53 @@ Published packages must include `weconnect.route.json`, validated by
 ```
 
 The JSON manifest and exported `routePackage.manifest` must contain the same
-values. A future community registry can inspect the JSON without executing
-untrusted package code.
+values. The Community registry inspects the JSON without executing untrusted
+package code.
+
+## Managed binary dependencies
+
+A route that needs a standalone tool can declare `managedDependencies`. Each
+entry pins an exact version and immutable HTTPS artifact with a SHA-256 for each
+supported OS/CPU. It must also declare a non-optional `dependency:install`
+permission. Example:
+
+```json
+{
+  "permissions": [{
+    "name": "dependency:install",
+    "reason": "Install the private document CLI."
+  }],
+  "managedDependencies": [{
+    "type": "binary",
+    "id": "document-cli",
+    "displayName": "Document CLI",
+    "version": "1.2.3",
+    "executable": "document-cli",
+    "artifacts": {
+      "darwin-arm64": {
+        "urls": [
+          "https://mirror.example.com/v1.2.3/document-cli-mac-arm64",
+          "https://example.com/releases/v1.2.3/document-cli-mac-arm64"
+        ],
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  }]
+}
+```
+
+Community downloads the matching binary into the staged route, verifies its
+hash and exact `--version`, and only then imports and activates the route. A
+failed download, verification, or activation rolls the whole installation back.
+Managed tools are not global and disappear when the route is uninstalled;
+persistent route `storageDir` data remains separate.
+
+Allowed platform keys are `darwin-arm64`, `darwin-x64`, `linux-arm64`,
+`linux-x64`, `linux-musl-arm64`, `linux-musl-x64`, `win32-arm64`, and
+`win32-x64`. `executable` is extensionless; the host appends `.exe` on Windows.
+Every source in `urls` must serve identical bytes matching `sha256`; sources are
+tried in order. The executable must support `--version` and print the exact
+declared semver (a leading `v` is accepted).
 
 ## Required runtime module
 
@@ -85,6 +130,5 @@ validation remains strict so a broken application build fails visibly.
 
 Protocol validation prevents accidental shape/version conflicts; it is not a
 sandbox. A route package is executable Node.js code. The manifest permission
-list exists so a future installer can show and approve capabilities before
-installation. Until that installer/sandbox exists, only load packages you
-trust.
+list lets Community show and approve capabilities before installation. Only
+install reviewed packages from catalogs you trust.

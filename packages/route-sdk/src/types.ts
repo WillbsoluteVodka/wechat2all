@@ -23,6 +23,36 @@ export interface RoutePermissionV1 {
   optional?: boolean;
 }
 
+export interface RouteManagedBinaryArtifactV1 {
+  /** Ordered immutable HTTPS sources; each must serve bytes matching sha256. */
+  urls: string[];
+  sha256: string;
+}
+
+/** A checksummed executable installed inside the Community route's managed directory. */
+export interface RouteManagedBinaryDependencyV1 {
+  type: "binary";
+  id: string;
+  displayName: string;
+  /** Exact tool version; ranges are intentionally not accepted. */
+  version: string;
+  /** Binary name without a path or platform extension. */
+  executable: string;
+  artifacts: Partial<Record<
+    | "darwin-arm64"
+    | "darwin-x64"
+    | "linux-arm64"
+    | "linux-x64"
+    | "linux-musl-arm64"
+    | "linux-musl-x64"
+    | "win32-arm64"
+    | "win32-x64",
+    RouteManagedBinaryArtifactV1
+  >>;
+}
+
+export type RouteManagedDependencyV1 = RouteManagedBinaryDependencyV1;
+
 /** Static metadata used by package validation and a future community registry. */
 export interface RouteManifestV1 {
   protocol: typeof WECONNECT_ROUTE_PROTOCOL;
@@ -45,6 +75,8 @@ export interface RouteManifestV1 {
   };
   capabilities: RouteCapabilityV1[];
   permissions: RoutePermissionV1[];
+  /** Optional dependencies installed privately and removed with this route. */
+  managedDependencies?: RouteManagedDependencyV1[];
 }
 
 export type RouteSetupCheckItemStatusV1 =

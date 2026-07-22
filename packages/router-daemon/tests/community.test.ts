@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import fs from "node:fs";
 import type http from "node:http";
@@ -235,6 +236,114 @@ test("installs, activates, loads, and uninstalls a local Community route", async
   assert.equal(removedOperation.status, "succeeded", removedOperation.error);
   assert.equal(activations, 3);
   assert.deepEqual(service.installed(), []);
+});
+
+test("downloads checksummed binaries privately and removes them with the route", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "weconnect-community-managed-binary-"));
+  const source = path.join(root, "source-route");
+  const catalogPath = path.join(root, "catalog.json");
+  const binary = Buffer.from(`#!/usr/bin/env node
+    if (process.env.WECHAT2ALL_LLM_API_KEY) process.exit(91);
+    process.stdout.write("1.0.139\\n");
+  `);
+  const digest = createHash("sha256").update(binary).digest("hex");
+  const platform = `${process.platform}-${process.arch}`;
+  const managedManifest: RouteManifestV1 = {
+    ...manifest(),
+    permissions: [{ name: "dependency:install", reason: "Install the private test CLI." }],
+    managedDependencies: [{
+      type: "binary",
+      id: "officecli",
+      displayName: "OfficeCLI",
+      version: "1.0.139",
+      executable: "officecli",
+      artifacts: {
+        [platform]: {
+          urls: ["https://primary.example.com/officecli", "https://fallback.example.com/officecli"],
+          sha256: digest,
+        },
+      },
+    }],
+  };
+  writeRoutePackage(source, managedManifest);
+  writeCatalog(catalogPath, source, managedManifest);
+  const previousSecret = process.env.WECHAT2ALL_LLM_API_KEY;
+  process.env.WECHAT2ALL_LLM_API_KEY = "must-not-reach-dependency";
+  t.after(() => {
+    if (previousSecret === undefined) delete process.env.WECHAT2ALL_LLM_API_KEY;
+    else process.env.WECHAT2ALL_LLM_API_KEY = previousSecret;
+  });
+  const service = new CommunityService({
+    rootDir: path.join(root, "app-data"),
+    catalogSources: [catalogPath],
+    fetch: (async (input) => String(input).includes("primary.example.com")
+      ? new Response("unavailable", { status: 503 })
+      : new Response(binary, {
+        status: 200,
+        headers: { "content-length": String(binary.byteLength) },
+      })) as typeof fetch,
+  });
+  const installedOperation = await waitForOperation(
+    service,
+    service.startOperation("install", "test-community", {
+      acceptedPermissions: ["dependency:install"],
+    }),
+  );
+  assert.equal(installedOperation.status, "succeeded", installedOperation.error);
+  const installDir = service.installed()[0]?.installDir;
+  assert.ok(installDir);
+  const cli = path.join(installDir, ".weconnect-tools", "bin", process.platform === "win32"
+    ? "officecli.exe"
+    : "officecli");
+  assert.equal(execFileSync(cli, ["--version"], {
+    encoding: "utf8",
+    env: { ...process.env, WECHAT2ALL_LLM_API_KEY: undefined },
+  }).trim(), "1.0.139");
+
+  const removedOperation = await waitForOperation(
+    service,
+    service.startOperation("uninstall", "test-community"),
+  );
+  assert.equal(removedOperation.status, "succeeded", removedOperation.error);
+  assert.equal(fs.existsSync(installDir), false);
+});
+
+test("rolls back a route when its private dependency checksum fails", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "weconnect-community-managed-binary-fail-"));
+  const source = path.join(root, "source-route");
+  const catalogPath = path.join(root, "catalog.json");
+  const platform = `${process.platform}-${process.arch}`;
+  const managedManifest: RouteManifestV1 = {
+    ...manifest(),
+    permissions: [{ name: "dependency:install", reason: "Install the private test CLI." }],
+    managedDependencies: [{
+      type: "binary",
+      id: "officecli",
+      displayName: "OfficeCLI",
+      version: "1.0.139",
+      executable: "officecli",
+      artifacts: {
+        [platform]: { urls: ["https://example.com/officecli"], sha256: "a".repeat(64) },
+      },
+    }],
+  };
+  writeRoutePackage(source, managedManifest);
+  writeCatalog(catalogPath, source, managedManifest);
+  const service = new CommunityService({
+    rootDir: path.join(root, "app-data"),
+    catalogSources: [catalogPath],
+    fetch: (async () => new Response("wrong binary", { status: 200 })) as typeof fetch,
+  });
+  const operation = await waitForOperation(
+    service,
+    service.startOperation("install", "test-community", {
+      acceptedPermissions: ["dependency:install"],
+    }),
+  );
+  assert.equal(operation.status, "failed");
+  assert.match(operation.error ?? "", /SHA-256 mismatch/);
+  assert.deepEqual(service.installed(), []);
+  assert.equal(fs.existsSync(path.join(service.rootDir, "routes", "test-community", "1.0.0")), false);
 });
 
 test("rejects non-HTTPS requirement links before exposing them to the desktop", async () => {

@@ -12,6 +12,7 @@ import {
   assertRouteManifestV1,
   instantiateRoutePackageV1,
   routePackageFromModuleExportsV1,
+  type RouteManagedBinaryDependencyV1,
   type RouteLoggerV1,
   type RouteManifestV1,
   type RoutePackageModuleExportsV1,
@@ -25,11 +26,15 @@ import {
 } from "./community-registry.js";
 
 const DEFAULT_MAX_ARTIFACT_BYTES = 100 * 1024 * 1024;
-const DEFAULT_DOWNLOAD_TIMEOUT_MS = 60_000;
+const DEFAULT_MAX_MANAGED_DEPENDENCY_BYTES = 100 * 1024 * 1024;
+const DEFAULT_DOWNLOAD_TIMEOUT_MS = 5 * 60_000;
+const DEFAULT_DEPENDENCY_DOWNLOAD_TIMEOUT_MS = 5 * 60_000;
+const DEFAULT_DEPENDENCY_VERIFY_TIMEOUT_MS = 5 * 60_000;
 const OPERATION_HISTORY_LIMIT = 100;
 const SAFE_ARCHIVE_NAME = /^[\x20-\x7e]+$/;
 const MAX_ARCHIVE_MEMBERS = 10_000;
 const MAX_ARCHIVE_PATH_BYTES = 512;
+const MAX_DEPENDENCY_PROCESS_OUTPUT_BYTES = 64 * 1024;
 
 export type CommunityArtifactType = "archive" | "directory";
 
@@ -96,7 +101,10 @@ export interface CommunityServiceOptions {
   logger?: RouteLoggerV1;
   fetch?: typeof globalThis.fetch;
   maxArtifactBytes?: number;
+  maxManagedDependencyBytes?: number;
   downloadTimeoutMs?: number;
+  dependencyDownloadTimeoutMs?: number;
+  dependencyVerifyTimeoutMs?: number;
   /** Reloads only the route runtime after the registry changes. */
   onInstalledChanged?: () => void | Promise<void>;
 }
@@ -592,6 +600,135 @@ async function readJsonFile(filePath: string): Promise<unknown> {
   }
 }
 
+interface BoundedProcessResult {
+  stdout: string;
+  stderr: string;
+}
+
+function dependencyProcessEnv(executable: string): NodeJS.ProcessEnv {
+  const safeKeys = [
+    "HOME",
+    "USERPROFILE",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+  ] as const;
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of safeKeys) {
+    if (process.env[key] !== undefined) env[key] = process.env[key];
+  }
+  const executableDir = path.isAbsolute(executable) ? path.dirname(executable) : undefined;
+  env.PATH = [...new Set([
+    executableDir,
+    path.dirname(process.execPath),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    ...(process.env.PATH ?? "").split(path.delimiter),
+  ].filter((entry): entry is string => Boolean(entry)))].join(path.delimiter);
+  return env;
+}
+
+function isMuslLinux(): boolean {
+  if (process.platform !== "linux") return false;
+  if (fs.existsSync("/etc/alpine-release")) return true;
+  try {
+    const report = process.report?.getReport() as {
+      header?: { glibcVersionRuntime?: unknown };
+    } | undefined;
+    const header = report?.header;
+    return header !== undefined && header.glibcVersionRuntime === undefined;
+  } catch {
+    return false;
+  }
+}
+
+function managedDependencyPlatform(): string {
+  if (process.platform === "linux" && isMuslLinux()) {
+    return `linux-musl-${process.arch}`;
+  }
+  return `${process.platform}-${process.arch}`;
+}
+
+function runBoundedProcess(
+  executable: string,
+  args: string[],
+  options: {
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    timeoutMs: number;
+    label: string;
+  },
+): Promise<BoundedProcessResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, args, {
+      cwd: options.cwd,
+      env: options.env,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      detached: process.platform !== "win32",
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const append = (current: string, chunk: Buffer): string => {
+      const used = Buffer.byteLength(current);
+      if (used >= MAX_DEPENDENCY_PROCESS_OUTPUT_BYTES) return current;
+      return current + chunk.subarray(0, MAX_DEPENDENCY_PROCESS_OUTPUT_BYTES - used).toString("utf8");
+    };
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve({ stdout: stdout.trim(), stderr: stderr.trim() });
+    };
+    const timer = setTimeout(() => {
+      try {
+        if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
+        else child.kill("SIGKILL");
+      } catch {
+        child.kill("SIGKILL");
+      }
+      finish(new CommunityServiceError(504, `${options.label} timed out.`));
+    }, options.timeoutMs);
+    child.stdout.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk); });
+    child.stderr.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk); });
+    child.once("error", (error) => {
+      finish(new CommunityServiceError(500, `Could not start ${options.label}: ${error.message}`));
+    });
+    child.once("close", (code) => {
+      if (code === 0) finish();
+      else {
+        finish(new CommunityServiceError(
+          500,
+          `${options.label} failed (${code ?? "unknown"}): ${stderr.trim() || stdout.trim() || "no output"}`,
+        ));
+      }
+    });
+  });
+}
+
+function managedDependencyExecutable(
+  packageRoot: string,
+  dependency: RouteManagedBinaryDependencyV1,
+): string {
+  const name = process.platform === "win32"
+    ? `${dependency.executable}.exe`
+    : dependency.executable;
+  return path.join(packageRoot, ".weconnect-tools", "bin", name);
+}
+
 export class CommunityService {
   readonly rootDir: string;
   readonly registryPath: string;
@@ -605,7 +742,10 @@ export class CommunityService {
   private readonly logger?: RouteLoggerV1;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly maxArtifactBytes: number;
+  private readonly maxManagedDependencyBytes: number;
   private readonly downloadTimeoutMs: number;
+  private readonly dependencyDownloadTimeoutMs: number;
+  private readonly dependencyVerifyTimeoutMs: number;
   private readonly onInstalledChanged?: () => void | Promise<void>;
   private readonly operations = new Map<string, CommunityOperation>();
   private mutationQueue: Promise<void> = Promise.resolve();
@@ -627,7 +767,13 @@ export class CommunityService {
     this.logger = options.logger;
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.maxArtifactBytes = options.maxArtifactBytes ?? DEFAULT_MAX_ARTIFACT_BYTES;
+    this.maxManagedDependencyBytes = options.maxManagedDependencyBytes
+      ?? DEFAULT_MAX_MANAGED_DEPENDENCY_BYTES;
     this.downloadTimeoutMs = options.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
+    this.dependencyDownloadTimeoutMs = options.dependencyDownloadTimeoutMs
+      ?? DEFAULT_DEPENDENCY_DOWNLOAD_TIMEOUT_MS;
+    this.dependencyVerifyTimeoutMs = options.dependencyVerifyTimeoutMs
+      ?? DEFAULT_DEPENDENCY_VERIFY_TIMEOUT_MS;
     this.onInstalledChanged = options.onInstalledChanged;
   }
 
@@ -853,31 +999,37 @@ export class CommunityService {
     }
   }
 
-  private async downloadArtifact(url: string, destination: string): Promise<void> {
+  private async downloadHttpsFile(
+    url: string,
+    destination: string,
+    maxBytes: number,
+    timeoutMs: number,
+    label: string,
+  ): Promise<void> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.downloadTimeoutMs);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await this.fetchImpl(url, {
         signal: controller.signal,
         headers: { accept: "application/gzip, application/octet-stream" },
       });
       if (!response.ok || !response.body) {
-        throw new CommunityServiceError(502, `Route artifact download returned ${response.status}.`);
+        throw new CommunityServiceError(502, `${label} download returned ${response.status}.`);
       }
       if (!isHttps(response.url || url)) {
-        throw new CommunityServiceError(400, "Route artifact redirected away from HTTPS.");
+        throw new CommunityServiceError(400, `${label} redirected away from HTTPS.`);
       }
       const declaredLength = Number(response.headers.get("content-length"));
-      if (Number.isFinite(declaredLength) && declaredLength > this.maxArtifactBytes) {
-        throw new CommunityServiceError(413, "Route artifact exceeds the download size limit.");
+      if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+        throw new CommunityServiceError(413, `${label} exceeds the download size limit.`);
       }
       let size = 0;
       const limiter = new Transform({
         transform: (chunk: Buffer | Uint8Array, _encoding, callback) => {
           const buffer = Buffer.from(chunk);
           size += buffer.byteLength;
-          if (size > this.maxArtifactBytes) {
-            callback(new CommunityServiceError(413, "Route artifact exceeds the download size limit."));
+          if (size > maxBytes) {
+            callback(new CommunityServiceError(413, `${label} exceeds the download size limit.`));
             return;
           }
           callback(null, buffer);
@@ -889,9 +1041,24 @@ export class CommunityService {
         limiter,
         file,
       );
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new CommunityServiceError(504, `${label} download timed out.`);
+      }
+      throw error;
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  private downloadArtifact(url: string, destination: string): Promise<void> {
+    return this.downloadHttpsFile(
+      url,
+      destination,
+      this.maxArtifactBytes,
+      this.downloadTimeoutMs,
+      "Route artifact",
+    );
   }
 
   private async stageArtifact(
@@ -935,6 +1102,7 @@ export class CommunityService {
     route: CommunityCatalogRoute,
     packageRoot: string,
     validationStorageDir: string,
+    operation: CommunityOperation,
   ): Promise<{ entrypoint: string }> {
     const metadata = await packageMetadata(packageRoot);
     const staticManifest = await readJsonFile(metadata.manifestPath);
@@ -964,6 +1132,8 @@ export class CommunityService {
     if (!entrypointStats?.isFile() || entrypointStats.isSymbolicLink()) {
       throw new CommunityServiceError(400, "Downloaded route entrypoint is missing or invalid.");
     }
+    await this.installManagedDependencies(route, packageRoot, operation);
+    this.updateOperation(operation, { progress: 70, message: "Validating route" });
     const exports = (await import(
       `${pathToFileURL(entrypoint).href}?install=${randomUUID()}`
     )) as unknown as RoutePackageModuleExportsV1;
@@ -980,6 +1150,87 @@ export class CommunityService {
       },
     });
     return { entrypoint };
+  }
+
+  private async installManagedDependencies(
+    route: CommunityCatalogRoute,
+    packageRoot: string,
+    operation: CommunityOperation,
+  ): Promise<void> {
+    const dependencies = route.manifest.managedDependencies ?? [];
+    if (dependencies.length === 0) return;
+    const platform = managedDependencyPlatform();
+    for (const dependency of dependencies) {
+      const artifact = dependency.artifacts[platform as keyof typeof dependency.artifacts];
+      if (!artifact) {
+        throw new CommunityServiceError(
+          400,
+          `${dependency.displayName} ${dependency.version} does not support ${platform}.`,
+        );
+      }
+      const executable = managedDependencyExecutable(packageRoot, dependency);
+      await fs.promises.mkdir(path.dirname(executable), { recursive: true, mode: 0o700 });
+      const failures: string[] = [];
+      let downloaded = false;
+      for (const [index, url] of artifact.urls.entries()) {
+        await fs.promises.rm(executable, { force: true });
+        this.updateOperation(operation, {
+          progress: 60,
+          message: `Downloading private dependency: ${dependency.displayName} ${dependency.version} (source ${index + 1}/${artifact.urls.length})`,
+        });
+        try {
+          await this.downloadHttpsFile(
+            url,
+            executable,
+            this.maxManagedDependencyBytes,
+            this.dependencyDownloadTimeoutMs,
+            `${dependency.displayName} ${dependency.version}`,
+          );
+          const digest = await sha256File(executable);
+          if (digest !== artifact.sha256.toLowerCase()) {
+            throw new CommunityServiceError(400, "SHA-256 mismatch");
+          }
+          downloaded = true;
+          break;
+        } catch (error) {
+          failures.push(`source ${index + 1}: ${error instanceof Error ? error.message : String(error)}`);
+          await fs.promises.rm(executable, { force: true });
+        }
+      }
+      if (!downloaded) {
+        throw new CommunityServiceError(
+          502,
+          `Could not download a verified ${dependency.displayName} binary (${failures.join("; ")}).`,
+        );
+      }
+      await fs.promises.chmod(executable, 0o755);
+      this.updateOperation(operation, {
+        progress: 65,
+        message: `Verifying private dependency: ${dependency.displayName} ${dependency.version}`,
+      });
+      const version = await runBoundedProcess(executable, ["--version"], {
+        cwd: packageRoot,
+        env: dependencyProcessEnv(executable),
+        timeoutMs: this.dependencyVerifyTimeoutMs,
+        label: `verifying ${dependency.displayName}`,
+      });
+      const detected = /(?:^|[^0-9A-Za-z])v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?=$|[^0-9A-Za-z])/.exec(
+        `${version.stdout}\n${version.stderr}`,
+      )?.[1];
+      if (detected !== dependency.version) {
+        throw new CommunityServiceError(
+          500,
+          `Managed dependency ${dependency.displayName} reported ${detected ?? "an unknown version"}; expected ${dependency.version}.`,
+        );
+      }
+      const digestAfterProbe = await sha256File(executable);
+      if (digestAfterProbe !== artifact.sha256.toLowerCase()) {
+        throw new CommunityServiceError(
+          400,
+          `${dependency.displayName} changed itself during verification; installation was rolled back.`,
+        );
+      }
+    }
   }
 
   private async activateWithRollback(
@@ -1067,6 +1318,7 @@ export class CommunityService {
         route,
         packageRoot,
         path.join(operationRoot, "validation-storage"),
+        operation,
       );
       const relativeEntrypoint = path.relative(packageRoot, entrypoint);
       targetDir = this.managedInstallDir(route.id, route.version);

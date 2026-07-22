@@ -138,3 +138,72 @@ test("requires permission reasons for future install approval UI", () => {
     (error) => error instanceof RouteProtocolError && error.code === "invalid-manifest",
   );
 });
+
+test("validates checksummed route-private binaries and explicit install permission", () => {
+  const routePackage = validPackage();
+  const dependency = {
+    type: "binary" as const,
+    id: "officecli",
+    displayName: "OfficeCLI",
+    version: "1.0.139",
+    executable: "officecli",
+    artifacts: {
+      "darwin-arm64": {
+        urls: ["https://example.com/officecli-mac-arm64"],
+        sha256: "a".repeat(64),
+      },
+    },
+  };
+  assert.doesNotThrow(() => routePackageFromModuleExportsV1({
+    routePackage: {
+      ...routePackage,
+      manifest: {
+        ...routePackage.manifest,
+        permissions: [{ name: "dependency:install", reason: "Install a private CLI." }],
+        managedDependencies: [dependency],
+      },
+    },
+  }));
+  assert.throws(
+    () => routePackageFromModuleExportsV1({
+      routePackage: {
+        ...routePackage,
+        manifest: {
+          ...routePackage.manifest,
+          managedDependencies: [dependency],
+        },
+      },
+    }),
+    (error) => error instanceof RouteProtocolError && error.code === "invalid-manifest",
+  );
+  assert.throws(
+    () => routePackageFromModuleExportsV1({
+      routePackage: {
+        ...routePackage,
+        manifest: {
+          ...routePackage.manifest,
+          permissions: [{ name: "dependency:install", reason: "Install a private CLI." }],
+          managedDependencies: [{ ...dependency, version: "^1.0.0" }],
+        },
+      },
+    }),
+    (error) => error instanceof RouteProtocolError && error.code === "invalid-manifest",
+  );
+  assert.throws(
+    () => routePackageFromModuleExportsV1({
+      routePackage: {
+        ...routePackage,
+        manifest: {
+          ...routePackage.manifest,
+          permissions: [{
+            name: "dependency:install",
+            reason: "Install a private CLI.",
+            optional: true,
+          }],
+          managedDependencies: [dependency],
+        },
+      },
+    }),
+    (error) => error instanceof RouteProtocolError && error.code === "invalid-manifest",
+  );
+});

@@ -121,6 +121,13 @@ validated before the registry changes, the in-memory route runtime is rebuilt,
 and a failed activation restores the previous registry/version. Uninstalling a
 route removes its code but preserves the separately assigned route data.
 
+A route may declare checksummed `managedDependencies` in its protocol manifest.
+The installer selects the immutable HTTPS binary for the current OS/CPU,
+downloads it under the staged route's `.weconnect-tools/bin`, verifies SHA-256
+and the exact reported version, then activates the route. These tools require
+the non-optional `dependency:install` permission and are removed with the route;
+they never use Homebrew, npm, sudo, or a global install location.
+
 For repository development, `community-routes/catalog.dev.json` is discovered
 automatically. If that repository file is absent (for example in a packaged
 build), the daemon falls back to the official WeConnect GitHub catalog. A

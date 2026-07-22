@@ -36,6 +36,9 @@ Open **Community** from the primary navigation to see catalog routes and routes
 already installed on this Mac. A route card shows its version, permissions, and
 runtime or external-app requirements. Install and update actions ask the user to
 approve required permissions before they are submitted.
+Checksummed managed binaries are listed separately in the confirmation and are
+downloaded into the route's private directory; uninstalling the route removes
+them as well.
 
 The page is a thin client for the router daemon's generic Community API:
 

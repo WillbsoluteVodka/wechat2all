@@ -60,7 +60,7 @@
       "id": "office",
       "packageName": "@weconnect-community/office-cli-route",
       "displayName": "Office CLI",
-      "version": "0.1.0",
+      "version": "0.2.2",
       "description": "Create and edit Word, Excel, and PowerPoint files through a self-contained OfficeCLI route.",
       "manifest": {
         "protocol": "weconnect.route",
@@ -68,7 +68,7 @@
         "id": "office",
         "packageName": "@weconnect-community/office-cli-route",
         "displayName": "Office CLI",
-        "version": "0.1.0",
+        "version": "0.2.2",
         "description": "Create and edit Word, Excel, and PowerPoint files through a self-contained OfficeCLI route.",
         "license": "MIT",
         "author": {
@@ -105,23 +105,88 @@
           },
           {
             "name": "process:spawn",
-            "reason": "Run the separately installed OfficeCLI binary with validated arguments and no shell."
+            "reason": "Run the route-private OfficeCLI binary with validated arguments and no shell."
+          },
+          {
+            "name": "dependency:install",
+            "reason": "Download and verify the pinned OfficeCLI executable inside this route's managed directory."
+          }
+        ],
+        "managedDependencies": [
+          {
+            "type": "binary",
+            "id": "officecli",
+            "displayName": "OfficeCLI",
+            "version": "1.0.139",
+            "executable": "officecli",
+            "artifacts": {
+              "darwin-arm64": {
+                "urls": [
+                  "https://d.officecli.ai/releases/download/v1.0.139/officecli-mac-arm64",
+                  "https://github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.139/officecli-mac-arm64"
+                ],
+                "sha256": "393874f79db58222bdbede7f4f942f2536580386923857d1b5ad9754efe80c19"
+              },
+              "darwin-x64": {
+                "urls": [
+                  "https://d.officecli.ai/releases/download/v1.0.139/officecli-mac-x64",
+                  "https://github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.139/officecli-mac-x64"
+                ],
+                "sha256": "6a931d424975dded6ae413c8c1f63d00dfb30a4bd4bd50352964782d13299f5c"
+              },
+              "linux-arm64": {
+                "urls": [
+                  "https://d.officecli.ai/releases/download/v1.0.139/officecli-linux-arm64",
+                  "https://github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.139/officecli-linux-arm64"
+                ],
+                "sha256": "39008c7f76d202858637810553ef14e2cd3e7f61485fdcf2011f26967a7babd1"
+              },
+              "linux-x64": {
+                "urls": [
+                  "https://d.officecli.ai/releases/download/v1.0.139/officecli-linux-x64",
+                  "https://github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.139/officecli-linux-x64"
+                ],
+                "sha256": "da07d4f787d7c85724104294ac023c89971ddfaee93ebb183b289282b8f869cc"
+              },
+              "linux-musl-arm64": {
+                "urls": [
+                  "https://d.officecli.ai/releases/download/v1.0.139/officecli-linux-alpine-arm64",
+                  "https://github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.139/officecli-linux-alpine-arm64"
+                ],
+                "sha256": "c59a6989cd8bb342a421d43a8ac0d01d56eee59631be3238c426d082b4c8c07c"
+              },
+              "linux-musl-x64": {
+                "urls": [
+                  "https://d.officecli.ai/releases/download/v1.0.139/officecli-linux-alpine-x64",
+                  "https://github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.139/officecli-linux-alpine-x64"
+                ],
+                "sha256": "098e93fcf569c5d094a40d98853735bf9d64e00c441bd535b6d9f6d9da53e4bd"
+              },
+              "win32-arm64": {
+                "urls": [
+                  "https://d.officecli.ai/releases/download/v1.0.139/officecli-win-arm64.exe",
+                  "https://github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.139/officecli-win-arm64.exe"
+                ],
+                "sha256": "6d80a93ba0c9cafb2b52048efbb403cd761b35126130fa8166383599aa91d96e"
+              },
+              "win32-x64": {
+                "urls": [
+                  "https://d.officecli.ai/releases/download/v1.0.139/officecli-win-x64.exe",
+                  "https://github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.139/officecli-win-x64.exe"
+                ],
+                "sha256": "864e0580c8e8c91a6aa4a4c1e8900551c8d4aa648ff10136ceed3a6ba5310888"
+              }
+            }
           }
         ]
       },
       "artifact": {
         "type": "archive",
-        "url": "https://api.github.com/repos/WillbsoluteVodka/wechat2all_office_route/releases/assets/485874295",
-        "sha256": "bb54307edb16ad96b567fb93b4d22e70515ab2cb1ab6f95db7f6df2bf0e10e87",
+        "url": "https://api.github.com/repos/WillbsoluteVodka/wechat2all_office_route/releases/assets/486081230",
+        "sha256": "4a9db794fdc3cb1fbb0443420e89bef1853831c61ea396140cd1282a73bb8f93",
         "entrypoint": "./dist/index.mjs"
       },
       "requirements": [
-        {
-          "name": "OfficeCLI 1.x",
-          "description": "Install the separate CLI with 'npm install -g @officecli/officecli', then verify 'officecli --version'. It is not bundled with this route.",
-          "url": "https://github.com/iOfficeAI/OfficeCLI",
-          "required": true
-        },
         {
           "name": "WeConnect LLM",
           "description": "Configure and validate an OpenAI-compatible API key and model in WeConnect before using this route.",

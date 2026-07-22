@@ -50,6 +50,14 @@ export interface CommunityRouteManifest {
     reason: string;
     optional?: boolean;
   }>;
+  managedDependencies?: Array<{
+    type: "binary";
+    id: string;
+    displayName: string;
+    version: string;
+    executable: string;
+    artifacts: Record<string, { urls: string[]; sha256: string }>;
+  }>;
 }
 
 export interface CommunityRouteRequirement {

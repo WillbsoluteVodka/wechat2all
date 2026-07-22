@@ -431,6 +431,14 @@ export function CommunityPage() {
                       {manifest.engines.node ? (
                         <li><span>Node {manifest.engines.node}</span></li>
                       ) : null}
+                      {manifest.managedDependencies?.map((dependency) => (
+                        <li key={`${dependency.id}@${dependency.version}`}>
+                          <span>
+                            <strong>{dependency.displayName} {dependency.version}</strong>
+                            {": downloaded and checksum-verified inside this route; removed with it"}
+                          </span>
+                        </li>
+                      ))}
                       {route?.requirements?.map((requirement) => (
                         <li key={requirement.name}>
                           <span>
@@ -467,6 +475,13 @@ export function CommunityPage() {
                     </strong>
                     {confirmation.kind !== "uninstall" && requiredPermissions.length ? (
                       <span>Permissions: {requiredPermissions.join(", ")}</span>
+                    ) : null}
+                    {confirmation.kind !== "uninstall" && manifest.managedDependencies?.length ? (
+                      <span>
+                        Private dependencies: {manifest.managedDependencies.map((dependency) =>
+                          `${dependency.displayName} ${dependency.version} (verified private binary)`
+                        ).join(", ")}
+                      </span>
                     ) : null}
                     <div className="button-row">
                       <button

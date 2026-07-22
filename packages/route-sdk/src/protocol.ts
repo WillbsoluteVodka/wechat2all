@@ -14,6 +14,18 @@ const PACKAGE_NAME_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const CAPABILITY_PATTERN = /^(?:text-input|media-input|text-output|media-output|setup-check|config|lifecycle|custom:[a-z0-9][a-z0-9._-]*)$/;
 const PERMISSION_PATTERN = /^[a-z][a-z0-9._-]*(?::[a-z0-9][a-z0-9._-]*)?$/;
+const EXECUTABLE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
+const MANAGED_PLATFORM_KEYS = new Set([
+  "darwin-arm64",
+  "darwin-x64",
+  "linux-arm64",
+  "linux-x64",
+  "linux-musl-arm64",
+  "linux-musl-x64",
+  "win32-arm64",
+  "win32-x64",
+]);
 
 export type RouteProtocolErrorCode =
   | "invalid-package"
@@ -129,6 +141,76 @@ export function assertRouteManifestV1(value: unknown): asserts value is RoutePac
       "manifest.permissions must not contain duplicate names.",
       "manifest.permissions",
     );
+  }
+  if (manifest.managedDependencies !== undefined) {
+    if (
+      !Array.isArray(manifest.managedDependencies)
+      || manifest.managedDependencies.length > 16
+      || !manifest.managedDependencies.every(
+        (dependency) => {
+          const entry = objectValue(dependency);
+          const artifacts = objectValue(entry?.artifacts);
+          return entry?.type === "binary"
+            && Object.keys(entry).every((key) =>
+              ["type", "id", "displayName", "version", "executable", "artifacts"].includes(key)
+            )
+            && typeof entry.id === "string"
+            && ROUTE_ID_PATTERN.test(entry.id)
+            && typeof entry.displayName === "string"
+            && entry.displayName.trim().length > 0
+            && typeof entry.version === "string"
+            && VERSION_PATTERN.test(entry.version)
+            && typeof entry.executable === "string"
+            && EXECUTABLE_PATTERN.test(entry.executable)
+            && artifacts !== undefined
+            && Object.keys(artifacts).length > 0
+            && Object.entries(artifacts).every(([platform, artifactValue]) => {
+              const artifact = objectValue(artifactValue);
+              if (!MANAGED_PLATFORM_KEYS.has(platform) || !artifact) return false;
+              const urls = artifact.urls;
+              const validUrls = Array.isArray(urls)
+                && urls.length > 0
+                && urls.length <= 4
+                && new Set(urls).size === urls.length
+                && urls.every((value) => {
+                  try {
+                    const url = new URL(String(value));
+                    return url.protocol === "https:" && !url.username && !url.password;
+                  } catch {
+                    return false;
+                  }
+                });
+              return Object.keys(artifact).every((key) => ["urls", "sha256"].includes(key))
+                && validUrls
+                && typeof artifact.sha256 === "string"
+                && SHA256_PATTERN.test(artifact.sha256);
+            });
+        },
+      )
+    ) {
+      throw new RouteProtocolError(
+        "invalid-manifest",
+        "manifest.managedDependencies must contain valid checksummed route-local binaries.",
+        "manifest.managedDependencies",
+      );
+    }
+    const packages = manifest.managedDependencies.map((dependency) => dependency.id);
+    const executables = manifest.managedDependencies.map((dependency) => dependency.executable);
+    if (new Set(packages).size !== packages.length || new Set(executables).size !== executables.length) {
+      throw new RouteProtocolError(
+        "invalid-manifest",
+        "manifest.managedDependencies must not contain duplicate ids or executables.",
+        "manifest.managedDependencies",
+      );
+    }
+    const installPermission = manifest.permissions.find((permission) => permission.name === "dependency:install");
+    if (manifest.managedDependencies.length > 0 && (!installPermission || installPermission.optional)) {
+      throw new RouteProtocolError(
+        "invalid-manifest",
+        "manifest.managedDependencies requires the dependency:install permission.",
+        "manifest.permissions",
+      );
+    }
   }
 }
 

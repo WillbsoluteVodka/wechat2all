@@ -84,8 +84,9 @@ daemon 源码。完整协议见
   `/status`、`/new`、per-sender session resume、图片/文件输入，以及把 workspace
   文件或图片发回微信。
 - Community 可选安装 Office CLI route：安装后复用 `WECHAT2ALL_LLM_*` 配置，
-  通过受限参数调用独立安装的 OfficeCLI；卸载后 `/cd office` 会从 routes 中消失，
-  主程序不包含它的业务源码。
+  Community 会按当前系统架构自动下载并校验固定版本的 OfficeCLI 到 route 私有目录，
+  不需要 npm、Homebrew 或全局安装；卸载后 OfficeCLI 私有副本和 `/cd office` 一起
+  消失，主程序不包含它的业务源码。
 - 标准 runtime action：`send_text`、`send_media`、`send_voice`、`typing`、
   `noop`。
 - 对文本、媒体、语音、表情/贴纸类附件、普通文件做消息标准化。具体能力取决于
