@@ -11,6 +11,8 @@ const children = [];
 const ownedChildren = new Set();
 const daemonUrl =
   process.env.WECHAT2ALL_ROUTER_DAEMON_URL ?? "http://127.0.0.1:39787";
+const localEnvFile =
+  process.env.WECHAT2ALL_ENV_FILE ?? path.join(repoRoot, ".env.local");
 const restartExisting = process.env.WECHAT2ALL_DESKTOP_RESTART !== "0";
 const uiDevUrl = process.env.WECHAT2ALL_DESKTOP_DEV_URL ?? "http://127.0.0.1:5173";
 
@@ -30,6 +32,7 @@ function run(name, args) {
     env: {
       ...process.env,
       WECHAT2ALL_ROUTER_DAEMON_URL: daemonUrl,
+      WECHAT2ALL_ENV_FILE: localEnvFile,
       WECHAT2ALL_ENABLE_DEV_SHUTDOWN: "1",
       NO_PROXY: mergeNoProxy(process.env.NO_PROXY),
       no_proxy: mergeNoProxy(process.env.no_proxy),

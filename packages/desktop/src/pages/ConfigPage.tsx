@@ -1,6 +1,12 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 
 import { getLocalConfig, patchLocalConfig } from "../api";
+import {
+  LLM_PRESETS,
+  initialLlmSelection,
+  isLlmPresetModel,
+  normalizedLlmSelection,
+} from "../llm-config";
 import type {
   DashboardSnapshot,
   LocalConfigPatch,
@@ -31,19 +37,6 @@ interface LocalConfigDraft {
   localMaxSearchRows: string;
 }
 
-const LLM_PRESETS = {
-  "deepseek-chat": {
-    provider: "openai-compatible",
-    baseUrl: "https://api.deepseek.com/v1",
-  },
-  "gpt-4.1-mini": {
-    provider: "openai-compatible",
-    baseUrl: "https://api.openai.com/v1",
-  },
-} as const;
-
-type LlmPresetModel = keyof typeof LLM_PRESETS;
-
 function valueFromNumber(value: number | null) {
   return value === null ? "" : String(value);
 }
@@ -54,12 +47,13 @@ function optionalNumber(value: string) {
 }
 
 function draftFromConfig(config: LocalConfigSnapshot): LocalConfigDraft {
+  const llmSelection = initialLlmSelection(config.llm);
   return {
-    llmProvider: config.llm.provider,
+    llmProvider: llmSelection.llmProvider,
     llmApiKey: "",
     removeLlmApiKey: false,
-    llmModel: config.llm.model ?? "",
-    llmBaseUrl: config.llm.baseUrl,
+    llmModel: llmSelection.llmModel,
+    llmBaseUrl: llmSelection.llmBaseUrl,
     llmTemperature: valueFromNumber(config.llm.temperature),
     llmMaxTokens: valueFromNumber(config.llm.maxTokens),
     llmTimeoutMs: valueFromNumber(config.llm.timeoutMs),
@@ -208,6 +202,13 @@ export function ConfigPage(props: {
     event.preventDefault();
     if (!draft || saving) return;
 
+    let llmSelection;
+    try {
+      llmSelection = normalizedLlmSelection(draft);
+    } catch (error) {
+      setConfigError(error instanceof Error ? error.message : String(error));
+      return;
+    }
     const llmApiKey = secretPatch(draft.llmApiKey, draft.removeLlmApiKey);
     const memoryApiKey = secretPatch(
       draft.memoryApiKey,
@@ -215,9 +216,9 @@ export function ConfigPage(props: {
     );
     const payload: LocalConfigPatch = {
       llm: {
-        provider: draft.llmProvider,
-        model: draft.llmModel.trim() || null,
-        baseUrl: draft.llmBaseUrl,
+        provider: llmSelection.llmProvider,
+        model: llmSelection.llmModel,
+        baseUrl: llmSelection.llmBaseUrl,
         temperature: optionalNumber(draft.llmTemperature),
         maxTokens: optionalNumber(draft.llmMaxTokens),
         timeoutMs: optionalNumber(draft.llmTimeoutMs),
@@ -351,16 +352,23 @@ export function ConfigPage(props: {
                     <select
                       value={draft.llmModel}
                       onChange={(event) => {
-                        const model = event.currentTarget.value as LlmPresetModel;
-                        const preset = LLM_PRESETS[model];
-                        setDraft({
-                          ...draft,
-                          llmProvider: preset.provider,
-                          llmModel: model,
-                          llmBaseUrl: preset.baseUrl,
-                        });
+                        const model = event.currentTarget.value;
+                        const preset = isLlmPresetModel(model)
+                          ? LLM_PRESETS[model]
+                          : undefined;
+                        setDraft(preset
+                          ? {
+                              ...draft,
+                              llmProvider: preset.provider,
+                              llmModel: model,
+                              llmBaseUrl: preset.baseUrl,
+                            }
+                          : { ...draft, llmModel: model });
                       }}
                     >
+                      {!isLlmPresetModel(draft.llmModel) ? (
+                        <option value={draft.llmModel}>{draft.llmModel}</option>
+                      ) : null}
                       <option value="deepseek-chat">DeepSeek</option>
                       <option value="gpt-4.1-mini">OpenAI</option>
                     </select>

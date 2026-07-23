@@ -188,6 +188,14 @@ accepted, and updates are written atomically to `.env.local` with mode `0600`.
 Responses include `schemaVersion: 1` so the future desktop form can version its
 integration.
 
+`pnpm desktop` passes an absolute `WECHAT2ALL_ENV_FILE` pointing at the checkout
+root, so saving and restarting always address the same file regardless of the
+package working directory. Outside a source checkout, the fallback is the
+platform config directory (for example
+`~/Library/Application Support/WeConnect/config/.env.local` on macOS). Values
+from this selected file are authoritative at daemon startup, matching the
+effective values returned by `GET /config`.
+
 ## WeConnect LLM Health API
 
 The daemon performs one lightweight LLM check in the background whenever it

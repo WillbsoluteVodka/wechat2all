@@ -30,6 +30,12 @@ In Tauri mode, commands in `src-tauri` call the local router daemon configured b
 In browser preview mode, `src/api.ts` returns local fallback data so UI work can
 continue without a daemon.
 
+The Config page persists provider settings through the daemon. On a fresh
+install, its visible default model is also the actual submitted model; choosing
+DeepSeek or OpenAI derives the corresponding provider and base URL before the
+file is written. The source-checkout launcher pins the config file to the
+repository root so daemon restarts cannot switch to another `.env.local`.
+
 ## Community Routes
 
 Open **Community** from the primary navigation to see catalog routes and routes

@@ -36,18 +36,16 @@ function loadEnvFile(filePath) {
     if (index <= 0) continue;
     const key = trimmed.slice(0, index).trim();
     const value = stripEnvQuotes(trimmed.slice(index + 1).trim());
-    if (process.env[key] === undefined) process.env[key] = value;
+    process.env[key] = value;
   }
 }
 
 function loadLocalEnv() {
-  const candidates = [
-    path.resolve(process.cwd(), ".env.local"),
-    path.resolve(process.cwd(), "../..", ".env.local"),
-  ];
-  for (const candidate of [...new Set(candidates)]) {
-    loadEnvFile(candidate);
-  }
+  const filePath = process.env.WECHAT2ALL_ENV_FILE
+    ? path.resolve(process.env.WECHAT2ALL_ENV_FILE)
+    : path.resolve(repoRoot, ".env.local");
+  loadEnvFile(filePath);
+  process.env.WECHAT2ALL_ENV_FILE = filePath;
 }
 
 function routerAddress() {

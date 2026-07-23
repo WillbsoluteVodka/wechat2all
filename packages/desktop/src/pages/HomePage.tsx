@@ -104,8 +104,7 @@ export function HomePage(props: {
                 );
                 const routeConfigured =
                   (route.connectorId === "main-assistant"
-                    && props.llmHealth?.llm.status === "ready"
-                    && props.llmHealth.llm.usable)
+                    && props.llmHealth?.llm.configured === true)
                   || (route.management?.setupCheck === true
                     && props.routeSetupChecks[route.id]?.check.status === "ready"
                     && !props.routeSetupChecks[route.id]?.check.items.some(

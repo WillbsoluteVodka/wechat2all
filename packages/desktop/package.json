@@ -11,7 +11,8 @@
     "dev:ui": "node scripts/dev-ui.mjs",
     "build": "pnpm typecheck && pnpm build:ui",
     "build:ui": "vite build",
-    "check": "pnpm build",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "check": "pnpm test && pnpm build",
     "tauri:build": "tauri build",
     "typecheck": "tsc --noEmit"
   },

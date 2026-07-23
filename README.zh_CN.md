@@ -71,10 +71,11 @@ cd wechat2all
 
 ### 2. 配置并连接微信
 
-1. 打开 **Config**，选择一个 OpenAI-compatible 模型，例如 DeepSeek 或 OpenAI。
+1. 打开 **Config**，确认选择 DeepSeek 或 OpenAI（首次启动默认选择 DeepSeek）。
 2. 填入你自己的 API key 并保存。
-3. 扫描 WeConnect 显示的微信二维码。
-4. 在微信里打开新聊天，发送 `/help`。
+3. 按页面提示重启 WeConnect，使 daemon 和所有 Routes 读取同一份配置。
+4. 扫描 WeConnect 显示的微信二维码。
+5. 在微信里打开新聊天，发送 `/help`。
 
 API key 和登录 session 只保存在本机，不会提交到 Git。
 
