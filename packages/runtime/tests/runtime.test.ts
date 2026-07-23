@@ -241,6 +241,29 @@ function codexTextMessage(text: string, id = "m-text"): RuntimeMessage {
   };
 }
 
+function codexVoiceMessage(text?: string, id = "m-voice"): RuntimeMessage {
+  return {
+    id,
+    platform: "wechat-ilink",
+    profileId: "main",
+    conversationId: "user-1",
+    senderId: "user-1",
+    timestamp: 1,
+    kind: text ? "mixed" : "voice",
+    text,
+    attachments: [{
+      id: "voice-1",
+      kind: "voice",
+      raw: {
+        type: MessageItemType.VOICE,
+        msg_id: "voice-1",
+        voice_item: { text, playtime: 1_200 },
+      },
+    }],
+    raw: {},
+  };
+}
+
 function imageDownloadClient(params: {
   fileName?: string;
   data?: string;
@@ -1693,6 +1716,93 @@ test("codex connector reports progress periodically and keeps waiting for the fi
     conversationId: "user-1",
     text: "最终回复",
   }]);
+});
+
+test("codex connector forwards a WeChat voice transcript without the voice attachment", async () => {
+  let sentPrompt: TestCodexPrompt | undefined;
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return { threadId: "thread-1", boundAt: 1 };
+      },
+      async sendPrompt(prompt) {
+        sentPrompt = prompt;
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          finalText: "voice transcript received",
+        };
+      },
+    },
+  });
+
+  const actions = await connector.handleMessage(
+    codexVoiceMessage("帮我检查一下项目"),
+    codexTestContext(),
+  );
+
+  assert.equal(sentPrompt?.text, "帮我检查一下项目");
+  assert.equal(sentPrompt?.attachments, undefined);
+  assertRuntimeActions(actions, [{
+    type: "send_text",
+    conversationId: "user-1",
+    text: "voice transcript received",
+  }]);
+});
+
+test("codex connector keeps non-voice attachments alongside a voice transcript", async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-codex-voice-image-"));
+  let downloadCount = 0;
+  let sentPrompt: TestCodexPrompt | undefined;
+  const connector = createCodexConnector({
+    id: "codex-bridge",
+    client: {
+      async getStatus() {
+        return { state: "idle" };
+      },
+      async getCurrentBinding() {
+        return { threadId: "thread-1", boundAt: 1 };
+      },
+      async sendPrompt(prompt) {
+        sentPrompt = prompt;
+        return {
+          id: prompt.id,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          finalText: "image received",
+        };
+      },
+    },
+  });
+  const message = codexVoiceMessage("分析这张图片");
+  message.attachments.push(codexImageMessage().attachments[0]);
+  const context = codexTestContext({
+    client: {
+      async downloadMedia(item) {
+        downloadCount += 1;
+        assert.equal(item.type, MessageItemType.IMAGE);
+        return {
+          kind: "image",
+          fileName: "wechat-photo.jpg",
+          data: Buffer.from("image"),
+        };
+      },
+    } as WeChatClient,
+    media: new RuntimeMediaPipeline({ cacheDir }),
+  });
+
+  await connector.handleMessage(message, context);
+
+  assert.equal(downloadCount, 1);
+  assert.equal(sentPrompt?.text, "分析这张图片");
+  assert.equal(sentPrompt?.attachments?.length, 1);
+  assert.equal(sentPrompt?.attachments?.[0].kind, "image");
+  assert.equal(sentPrompt?.attachments?.[0].fileName, "wechat-photo.jpg");
 });
 
 test("codex connector caches WeChat images and forwards them with the next text request", async () => {

@@ -908,7 +908,10 @@ async function promptAttachmentsForMessage(
   message: RuntimeMessage,
   context: RuntimeHandlerContext,
 ): Promise<CodexBridgePromptAttachment[]> {
-  const hasMediaAttachment = message.attachments.some((attachment) =>
+  const forwardableAttachments = message.text?.trim()
+    ? message.attachments.filter((attachment) => attachment.kind !== "voice")
+    : message.attachments;
+  const hasMediaAttachment = forwardableAttachments.some((attachment) =>
     attachment.kind === "image" ||
     attachment.kind === "file" ||
     attachment.kind === "video" ||
@@ -920,7 +923,9 @@ async function promptAttachmentsForMessage(
   }
   const media = await context.media.downloadMessageMedia({
     client: context.client,
-    message,
+    message: forwardableAttachments === message.attachments
+      ? message
+      : { ...message, attachments: forwardableAttachments },
   });
   const attachments = media
     .filter((item) => item.filePath)
