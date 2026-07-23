@@ -109,21 +109,9 @@ are content-hashed and written atomically, so same-name/same-size attachments
 from one message cannot overwrite each other. Transient CDN failures are
 retried before the connector reports a media error.
 
-Inside the Codex route:
-
-```text
-/cache
-/cache clear
-```
-
-`/cache` reports the current profile's resolved cache directory, file count, and size.
-`/cache clear` clears that profile's attachment cache and drops the current
-conversation's pending attachment draft so old file paths are not reused.
-
-Codex output images, videos, and generic files are returned through
-`send_media`. Supported native voice-bubble formats (`.silk`, `.amr`, `.mp3`,
-`.ogg`, `.spx`, `.wav`, `.pcm`) use `send_voice`; other audio formats are sent
-as normal files so WeChat does not receive an invalid voice payload.
+Installed routes can expose their own cache commands and output-file behavior.
+Those route-specific policies belong to the downloadable route package rather
+than this generic runtime.
 
 ## Run The Runtime Bot
 
@@ -139,7 +127,7 @@ hello
 /help
 /ls
 /rename
-/cd codex
+/cd <installed-route>
 /cd ..
 ```
 

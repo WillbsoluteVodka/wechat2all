@@ -1141,7 +1141,7 @@ export class CommunityService {
     assertRouteManifestMatchesPackageV1(staticManifest, routePackage);
     assertRouteManifestMatchesPackageV1(route.manifest, routePackage);
     await fs.promises.mkdir(validationStorageDir, { recursive: true, mode: 0o700 });
-    instantiateRoutePackageV1(routePackage, {
+    const validationModule = instantiateRoutePackageV1(routePackage, {
       profileId: this.profileId,
       env: process.env,
       storageDir: validationStorageDir,
@@ -1149,6 +1149,7 @@ export class CommunityService {
         debug() {}, info() {}, warn() {}, error() {},
       },
     });
+    await validationModule.lifecycle?.stop?.();
     return { entrypoint };
   }
 

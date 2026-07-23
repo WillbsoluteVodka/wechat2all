@@ -42,23 +42,6 @@ importers:
         specifier: ^0.12.0
         version: 0.12.0
 
-  packages/codex-gui-bridge: {}
-
-  packages/codex-route:
-    dependencies:
-      '@wechat2all/codex-gui-bridge':
-        specifier: workspace:*
-        version: link:../codex-gui-bridge
-      '@wechat2all/route-sdk':
-        specifier: workspace:*
-        version: link:../route-sdk
-      '@wechat2all/runtime':
-        specifier: workspace:*
-        version: link:../runtime
-      wechat2all:
-        specifier: workspace:*
-        version: link:../client
-
   packages/desktop:
     dependencies:
       '@tauri-apps/api':
@@ -113,9 +96,6 @@ importers:
       '@wechat2all/claude-route':
         specifier: workspace:*
         version: link:../claude-route
-      '@wechat2all/codex-route':
-        specifier: workspace:*
-        version: link:../codex-route
       '@wechat2all/route-sdk':
         specifier: workspace:*
         version: link:../route-sdk

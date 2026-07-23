@@ -42,7 +42,6 @@ commands or React state in the main application.
 - TypeScript.
 - `wechat2all` client SDK.
 - `@wechat2all/runtime`.
-- `@wechat2all/codex-route` for the independently packaged Codex route.
 - `@wechat2all/claude-route` for the headless Claude Agent SDK route.
 - Local filesystem state through runtime state stores.
 
@@ -77,9 +76,9 @@ Common endpoints:
 
 ## Community Route Protocol
 
-The daemon loads Codex and Claude through `@wechat2all/route-sdk`, exactly like
-a third-party route. Add npm specifiers or built local entrypoints to
-`WECHAT2ALL_ROUTE_PACKAGES`; no daemon source edit is required:
+The daemon loads Community and bundled routes through `@wechat2all/route-sdk`.
+Add npm specifiers or built local entrypoints to `WECHAT2ALL_ROUTE_PACKAGES`;
+no daemon source edit is required:
 
 ```text
 WECHAT2ALL_ROUTE_PACKAGES=@alice/weconnect-route-calendar,/absolute/path/to/dist/index.mjs
@@ -236,7 +235,7 @@ The router reads `loginAt` from the local profile credentials and schedules a
 WeConnect reminder at each session-hour boundary until the 24-hour expiry. The
 reminder contains both the remaining duration and the local expiry time. It is
 created by the main-assistant module and sent through the runtime action queue;
-the Codex route is not involved.
+installed routes are not involved.
 
 WeChat requires a recent `context_token` for proactive sends. After a fresh QR
 login, the owner must send the assistant at least one message. The target and
@@ -265,73 +264,13 @@ WECHAT2ALL_ROUTER_PORT=39788 \
 pnpm --filter @wechat2all/router-daemon dev
 ```
 
-## Installed Codex Route
+## Community-installed Routes
 
-The host installs `@wechat2all/codex-route`. That package owns the connector,
-route definition, GUI bridge construction, setup checker, config extension,
-commands, reminders, and attachment behavior. The daemon sees only a generic
-route module contract.
-
-Inside WeChat:
-
-```text
-/cd codex
-/status
-/ls
-/bind 1
-/current
-/mode final
-hello from WeChat
-/token
-```
-
-The bridge uses Codex app-server methods `thread/list`, `thread/read`,
-`thread/resume`, `turn/start`, and `account/rateLimits/read`. If no thread is
-bound, ordinary text is rejected with a `/bind` instruction.
-
-Optional environment:
-
-```text
-WECHAT2ALL_CODEX_THREAD_ID=<prebound-thread-id>
-WECHAT2ALL_CODEX_DELIVERY=gui-automation
-# WECHAT2ALL_CODEX_DELIVERY=app-server
-WECHAT2ALL_CODEX_REPLY_MODE=final
-# WECHAT2ALL_CODEX_REPLY_MODE=silent
-# WECHAT2ALL_CODEX_REPLY_MODE=stream
-WECHAT2ALL_CODEX_APP_SERVER_SOCKET=<optional-control-socket>
-WECHAT2ALL_CODEX_APP_SERVER_TIMEOUT_MS=8000
-WECHAT2ALL_CODEX_TURN_TIMEOUT_MS=180000
-WECHAT2ALL_CODEX_IN_PROGRESS_GRACE_MS=120000
-WECHAT2ALL_CODEX_COMPACTION_GRACE_MS=180000
-WECHAT2ALL_CODEX_GUI_POLL_INTERVAL_MS=1000
-WECHAT2ALL_CODEX_GUI_THREAD_OPEN_DELAY_MS=900
-WECHAT2ALL_CODEX_GUI_NEW_CHAT_DISCOVERY_MS=15000
-WECHAT2ALL_CODEX_LIST_LIMIT=20
-WECHAT2ALL_CODEX_GUI_BINDING_FILE=<optional-binding-state-file>
-WECHAT2ALL_MEDIA_DOWNLOAD_TIMEOUT_MS=60000
-WECHAT2ALL_MEDIA_DOWNLOAD_MAX_RETRIES=3
-WECHAT2ALL_MEDIA_DOWNLOAD_RETRY_DELAY_MS=500
-WECHAT2ALL_MEDIA_DOWNLOAD_CONCURRENCY=3
-WECHAT2ALL_MEDIA_CACHE_TTL_MS=604800000
-WECHAT2ALL_MEDIA_CACHE_MAX_BYTES=1073741824
-WECHAT2ALL_MEDIA_CACHE_PRUNE_INTERVAL_MS=60000
-```
-
-`gui-automation` is the default. It opens the exact bound Codex desktop chat,
-pastes attachments/text, presses Return, and uses app-server to observe the
-reply. If GUI injection fails before a turn appears, delivery falls back to
-app-server. `/new` is created through app-server and opened after its first turn.
-
-Inbound WeChat media is cached under `~/.wechat2all-runtime-bot/media/<profile>`
-so runtime connectors can hand local file paths to Codex and other local agents.
-Profile cache directory names are sanitized when needed, so profile names cannot
-escape the configured cache root. The three `WECHAT2ALL_MEDIA_CACHE_*` settings
-control best-effort pruning. `WECHAT2ALL_MEDIA_DOWNLOAD_*` controls bounded
-parallel downloads and retry behavior for unstable CDN/network connections.
-The Codex route also exposes `/cache` and `/cache clear` for inspecting and
-clearing the current profile cache from WeChat.
-`/bind` persists the selected Codex thread under local bridge state, so normal
-desktop/daemon restarts restore the same chat automatically.
+Downloadable routes are installed from the Community catalog into app data and
+loaded through the protocol-v1 registry. The daemon owns only the generic
+installation, validation, lifecycle, configuration-extension, and reload
+contract. Each route repository owns its connector, commands, dependencies,
+setup guide, and route-specific state.
 
 ## Collaborator Notes
 

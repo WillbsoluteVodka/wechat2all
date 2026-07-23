@@ -3,12 +3,40 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { codexRouteConfigExtension } from "@wechat2all/codex-route";
+import type { RouteConfigExtensionV1 } from "@wechat2all/route-sdk";
 
 import {
   LocalConfigStore,
   LocalConfigValidationError,
 } from "../src/local-config.js";
+
+const sampleRouteConfigExtension: RouteConfigExtensionV1 = {
+  key: "sampleRoute",
+  fields: { mode: "WECHAT2ALL_TEST_ROUTE_MODE" },
+  parsePatch(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("sampleRoute must be a JSON object.");
+    }
+    const config = value as Record<string, unknown>;
+    const unknown = Object.keys(config).filter((key) => key !== "mode");
+    if (unknown.length > 0) {
+      throw new Error(
+        `sampleRoute contains unsupported field(s): ${unknown.join(", ")}.`,
+      );
+    }
+    if (config.mode === undefined) return {};
+    if (config.mode === null || config.mode === "") return { mode: null };
+    if (config.mode === "direct" || config.mode === "proxy") {
+      return { mode: config.mode };
+    }
+    throw new Error("sampleRoute.mode must be one of: direct, proxy; or null.");
+  },
+  snapshot(env) {
+    return {
+      mode: env.WECHAT2ALL_TEST_ROUTE_MODE === "proxy" ? "proxy" : "direct",
+    };
+  },
+};
 
 async function tempEnvPath(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "wechat2all-config-"));
@@ -19,16 +47,16 @@ function localConfigStore(filePath: string): LocalConfigStore {
   return new LocalConfigStore({
     filePath,
     env: {},
-    extensions: [codexRouteConfigExtension],
+    extensions: [sampleRouteConfigExtension],
   });
 }
 
-test("core config store has no Codex schema until the route extension is installed", async () => {
+test("core config store has no route schema until its extension is installed", async () => {
   const store = new LocalConfigStore({ filePath: await tempEnvPath(), env: {} });
 
-  assert.equal("codex" in await store.snapshot(), false);
+  assert.equal("sampleRoute" in await store.snapshot(), false);
   await assert.rejects(
-    store.update({ codex: { delivery: "gui-automation" } }),
+    store.update({ sampleRoute: { mode: "direct" } }),
     /unsupported field/,
   );
 });
@@ -65,8 +93,8 @@ test("config snapshot masks secrets instead of returning API keys", async () => 
   assert.equal(snapshot.runtimeApplied, true);
   assert.equal(snapshot.restartRequired, false);
   assert.equal(
-    (snapshot.codex as { delivery: string }).delivery,
-    "gui-automation",
+    (snapshot.sampleRoute as { mode: string }).mode,
+    "direct",
   );
 });
 
@@ -93,8 +121,8 @@ test("config update preserves unrelated env content and writes a private file", 
       provider: "local",
       apiKey: null,
     },
-    codex: {
-      delivery: "gui-automation",
+    sampleRoute: {
+      mode: "proxy",
     },
     claude: {
       apiKey: "sk-ant-new-secret-2468",
@@ -117,7 +145,7 @@ test("config update preserves unrelated env content and writes a private file", 
   assert.match(raw, /ANTHROPIC_API_KEY=sk-ant-new-secret-2468/);
   assert.match(raw, /WECHAT2ALL_CLAUDE_WORKDIR=\/Users\/example\/Claude Vault/);
   assert.match(raw, /WECHAT2ALL_CLAUDE_SESSION_WINDOW_MINUTES=20/);
-  assert.match(raw, /WECHAT2ALL_CODEX_DELIVERY=gui-automation/);
+  assert.match(raw, /WECHAT2ALL_TEST_ROUTE_MODE=proxy/);
   assert.equal((await fs.stat(filePath)).mode & 0o077, 0);
   assert.equal(result.changed, true);
   assert.equal(result.config.restartRequired, true);
@@ -132,8 +160,8 @@ test("config update preserves unrelated env content and writes a private file", 
   });
   assert.equal(result.config.claude.allowCliAuth, false);
   assert.equal(
-    (result.config.codex as { delivery: string }).delivery,
-    "gui-automation",
+    (result.config.sampleRoute as { mode: string }).mode,
+    "proxy",
   );
 });
 
@@ -169,7 +197,7 @@ test("replacing route extensions preserves pending restart state", async () => {
 
   assert.equal(snapshot.restartRequired, true);
   assert.equal(snapshot.runtimeApplied, false);
-  assert.equal("codex" in snapshot, false);
+  assert.equal("sampleRoute" in snapshot, false);
 });
 
 test("config validation rejects arbitrary env fields and unsafe values", async () => {

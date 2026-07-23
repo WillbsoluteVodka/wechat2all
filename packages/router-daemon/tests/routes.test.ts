@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createCodexRouteDefinition } from "@wechat2all/codex-route";
 import { createClaudeRouteDefinition } from "@wechat2all/claude-route";
 
 import {
@@ -10,12 +9,10 @@ import {
 
 test("default routes expose isolated built-in apps before the main fallback", () => {
   const routes = defaultRoutes("profile-1", [
-    createCodexRouteDefinition("profile-1"),
     createClaudeRouteDefinition("profile-1"),
   ]);
 
   assert.deepEqual(routes.map((route) => route.id), [
-    "codex",
     "claude",
     "main-assistant-default",
   ]);

@@ -11,11 +11,11 @@
 这个 package 是最底层协议层，只负责 WeChat iLink 相关能力：二维码登录、内存中的
 credentials、长轮询、context token、媒体 CDN 上传/下载、输入状态和发送 API。
 
-它刻意不知道 routes、LLM、memory、dashboard 状态或 Codex。上层通过
+它刻意不知道 routes、LLM、memory、dashboard 状态或具体本地 agent。上层通过
 `WeChatClient` 调用它。
 
 边界例子：如果用户发来一张图片，`client` 可以收到原始 iLink 消息并处理媒体下载/
-上传。决定这张图片应该交给销售 agent、Codex route，还是 memory store，是
+上传。决定这张图片应该交给销售 agent、已安装 route，还是 memory store，是
 `packages/runtime` 的职责。
 
 ## 设计原则

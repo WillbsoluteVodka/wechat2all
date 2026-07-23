@@ -55,10 +55,6 @@ function routerAddress() {
   return { host, port, url: `http://${host}:${port}` };
 }
 
-function desiredBackend() {
-  return "gui-app-server";
-}
-
 function abortAfter(ms) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), ms);
@@ -84,14 +80,7 @@ async function fetchJson(url) {
 async function probeDaemon(baseUrl) {
   const health = await fetchJson(`${baseUrl}/health`);
   if (!health?.ok) return undefined;
-
-  const snapshot = await fetchJson(`${baseUrl}/snapshot`);
-  return {
-    health,
-    backend:
-      snapshot?.settings?.codexBackend ??
-      health.codexBackend,
-  };
+  return { health };
 }
 
 function runDaemon() {
@@ -136,11 +125,7 @@ async function buildRuntimeDependencies() {
     "--filter",
     "wechat2all",
     "--filter",
-    "@wechat2all/codex-gui-bridge",
-    "--filter",
     "@wechat2all/route-sdk",
-    "--filter",
-    "@wechat2all/codex-route",
     "--filter",
     "@wechat2all/claude-route",
     "--filter",
@@ -156,18 +141,6 @@ async function main() {
   const existing = await probeDaemon(url);
 
   if (existing) {
-    const requestedBackend = desiredBackend();
-    if (existing.backend && existing.backend !== requestedBackend) {
-      console.error(`[router-daemon-dev] ${url} is already running.`);
-      console.error(
-        `[router-daemon-dev] Existing codex backend: ${existing.backend}; requested: ${requestedBackend}.`,
-      );
-      console.error(
-        "[router-daemon-dev] Stop the existing daemon first, then restart router-daemon.",
-      );
-      process.exit(1);
-    }
-
     console.log(`[router-daemon-dev] Reusing existing router-daemon at ${url}`);
     return;
   }

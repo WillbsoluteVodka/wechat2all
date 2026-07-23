@@ -103,6 +103,9 @@ route packages never patch the daemon or Desktop application directly.
 The host calls `lifecycle.start()` only after the profile and HTTP server are
 ready, and calls `lifecycle.stop()` during graceful shutdown. A rejected or
 failing startup hook is logged without taking down other running routes.
+The host may also call `lifecycle.stop()` on a validation-only instance whose
+`start()` hook never ran. Route shutdown hooks must therefore be idempotent and
+safe both before startup and after partial startup.
 
 ## Loading a local third-party route
 

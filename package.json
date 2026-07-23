@@ -13,7 +13,6 @@
     "check": "pnpm -r check",
     "echo-bot": "pnpm --filter wechat2all echo-bot",
     "runtime-bot": "pnpm --filter @wechat2all/runtime runtime-bot",
-    "codex-gui-bridge": "pnpm --filter @wechat2all/codex-gui-bridge dev",
     "desktop": "pnpm --filter @wechat2all/desktop dev",
     "desktop:build": "pnpm --filter @wechat2all/desktop tauri:build"
   },

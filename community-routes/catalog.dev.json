@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-22T11:24:21.000Z",
+  "generatedAt": "2026-07-23T17:50:22.000Z",
   "channel": "development",
   "routes": [
     {
@@ -191,6 +191,91 @@
           "name": "WeConnect LLM",
           "description": "Configure and validate an OpenAI-compatible API key and model in WeConnect before using this route.",
           "required": true
+        }
+      ]
+    },
+    {
+      "id": "codex",
+      "packageName": "@weconnect-community/codex-route",
+      "displayName": "Codex",
+      "version": "0.1.0",
+      "description": "Codex Desktop GUI automation with app-server fallback.",
+      "manifest": {
+        "protocol": "weconnect.route",
+        "protocolVersion": 1,
+        "id": "codex",
+        "packageName": "@weconnect-community/codex-route",
+        "displayName": "Codex",
+        "version": "0.1.0",
+        "description": "Codex Desktop GUI automation with app-server fallback.",
+        "license": "MIT",
+        "author": {
+          "name": "WillbsoluteVodka",
+          "url": "https://github.com/WillbsoluteVodka"
+        },
+        "homepage": "https://github.com/WillbsoluteVodka/wechat2all_codex_route",
+        "repository": "https://github.com/WillbsoluteVodka/wechat2all_codex_route",
+        "engines": {
+          "weconnect": ">=0.1.0 <2",
+          "node": ">=20"
+        },
+        "capabilities": [
+          "text-input",
+          "media-input",
+          "text-output",
+          "media-output",
+          "setup-check",
+          "config",
+          "lifecycle"
+        ],
+        "permissions": [
+          {
+            "name": "process:spawn",
+            "reason": "Start and self-heal the local Codex app-server process."
+          },
+          {
+            "name": "filesystem:read",
+            "reason": "Forward user-selected local attachments and inspect Codex output files."
+          },
+          {
+            "name": "filesystem:write",
+            "reason": "Persist the bound chat, alarm, and recovery state."
+          },
+          {
+            "name": "network",
+            "reason": "Codex app-server may contact the configured model provider."
+          },
+          {
+            "name": "macos:accessibility",
+            "reason": "Inject prompts into the exact Codex Desktop chat."
+          },
+          {
+            "name": "macos:automation",
+            "reason": "Control ChatGPT/Codex and System Events for GUI delivery."
+          }
+        ]
+      },
+      "artifact": {
+        "type": "archive",
+        "url": "https://api.github.com/repos/WillbsoluteVodka/wechat2all_codex_route/releases/assets/487465731",
+        "sha256": "26ff4ad9f0a5d602e89fc0a2c24ff1784d5caa3c10ebb0d5cad64f19585e028e",
+        "entrypoint": "./dist/index.mjs"
+      },
+      "requirements": [
+        {
+          "name": "ChatGPT / Codex Desktop",
+          "description": "Install the macOS app, sign in, and ensure its bundled or configured codex binary supports codex app-server.",
+          "required": true
+        },
+        {
+          "name": "macOS",
+          "description": "The Codex GUI automation integration currently requires macOS.",
+          "required": true
+        },
+        {
+          "name": "Accessibility and Automation",
+          "description": "Optional for GUI-first delivery. App-server fallback remains available without GUI control.",
+          "required": false
         }
       ]
     }

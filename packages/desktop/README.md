@@ -78,20 +78,11 @@ pnpm desktop
 This restarts stale local wechat2all dev processes: the desktop app process,
 the router port (`39787`), and the UI port (`5173`). Then it starts a fresh
 `@wechat2all/router-daemon`, waits for `/health`, and starts `tauri dev`.
-On macOS it also runs the Codex GUI auto-open check. The check is disabled by
-default and only opens Codex after the user enables `/autoopen 1` inside the
-`codex` route.
 
 To opt back into reusing an existing daemon:
 
 ```bash
 WECHAT2ALL_DESKTOP_RESTART=0 pnpm desktop
-```
-
-To skip the Codex GUI auto-open check entirely:
-
-```bash
-WECHAT2ALL_DESKTOP_OPEN_CODEX=0 pnpm desktop
 ```
 
 Run only this package:
@@ -114,9 +105,10 @@ packages/desktop/src-tauri/target/release/bundle/macos/wechat2all.app
 
 ## macOS Permissions
 
-The dashboard itself does not need Accessibility permission. If you use Codex
-GUI delivery through the router daemon, the process launching wechat2all must be
-enabled in System Settings -> Privacy & Security -> Accessibility.
+The dashboard itself does not need Accessibility permission. A Community route
+that automates another desktop app may require the process launching wechat2all
+to be enabled in System Settings -> Privacy & Security -> Accessibility; follow
+that route's setup guide.
 
 ## Collaborator Notes
 

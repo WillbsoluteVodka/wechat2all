@@ -43,6 +43,7 @@ function writeRoutePackage(
   staticManifest = manifest(),
   exportedManifest = staticManifest,
   topLevelSource = "",
+  lifecycleSource = "",
 ): void {
   fs.mkdirSync(path.join(directory, "dist"), { recursive: true });
   fs.writeFileSync(
@@ -79,6 +80,7 @@ function writeRoutePackage(
             connectorId: "test-community-connector",
             profileId: context.profileId,
           },
+          ${lifecycleSource}
         };
       },
     };
@@ -236,6 +238,37 @@ test("installs, activates, loads, and uninstalls a local Community route", async
   assert.equal(removedOperation.status, "succeeded", removedOperation.error);
   assert.equal(activations, 3);
   assert.deepEqual(service.installed(), []);
+});
+
+test("stops the temporary route instance after package validation", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "weconnect-community-stop-"));
+  const source = path.join(root, "source-route");
+  const catalogPath = path.join(root, "catalog.json");
+  const stopped = path.join(root, "validation-stopped");
+  writeRoutePackage(
+    source,
+    manifest(),
+    manifest(),
+    `import fs from "node:fs";`,
+    `lifecycle: {
+      async stop() {
+        fs.writeFileSync(${JSON.stringify(stopped)}, "stopped");
+      },
+    },`,
+  );
+  writeCatalog(catalogPath, source);
+  const service = new CommunityService({
+    rootDir: path.join(root, "app-data"),
+    catalogSources: [catalogPath],
+  });
+
+  const operation = await waitForOperation(
+    service,
+    service.startOperation("install", "test-community"),
+  );
+
+  assert.equal(operation.status, "succeeded", operation.error);
+  assert.equal(fs.readFileSync(stopped, "utf8"), "stopped");
 });
 
 test("downloads checksummed binaries privately and removes them with the route", async (t) => {

@@ -13,11 +13,11 @@ QR login, credentials in memory, long polling, context tokens, media CDN
 upload/download, typing indicators, and send APIs.
 
 It intentionally does not know about routes, LLMs, memory, dashboard state, or
-Codex. Higher layers call this package through `WeChatClient`.
+specific local agents. Higher layers call this package through `WeChatClient`.
 
 Example boundary: if a user sends an image, `client` can receive the raw iLink
 message and download/upload media. Deciding whether that image goes to a sales
-agent, a Codex route, or a memory store belongs to `packages/runtime`.
+agent, an installed route, or a memory store belongs to `packages/runtime`.
 
 ## Design Principles
 

@@ -166,17 +166,6 @@ test("a crashing community factory does not prevent built-in routes from loading
     { storageRoot, logger },
   );
 
-  assert.deepEqual(installed.map((item) => item.id), ["codex", "claude"]);
-  const codex = installed.find((item) => item.id === "codex");
-  const management = codex?.route.metadata?.dashboardManagement as {
-    setupCheck?: boolean;
-    configControls?: unknown[];
-    manualPermissions?: unknown[];
-    commands?: Array<{ rule?: string }>;
-  } | undefined;
-  assert.equal(management?.setupCheck, true);
-  assert.ok(management?.configControls?.length);
-  assert.ok(management?.manualPermissions?.length);
-  assert.ok(management?.commands?.some((command) => command.rule === "/status"));
+  assert.deepEqual(installed.map((item) => item.id), ["claude"]);
   assert.match(errors.join("\n"), /factory exploded/);
 });

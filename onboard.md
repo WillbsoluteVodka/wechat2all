@@ -46,7 +46,7 @@
 2. clone 仓库并安装依赖。
 3. 在本机创建 `.env.local`，填入自己的大助手 LLM API key。
 4. 启动 `pnpm desktop`，用自己的微信扫码。
-5. 如果要使用 Codex route，再安装并登录 ChatGPT/Codex desktop，配置 macOS 权限并绑定一个 Codex chat。
+5. 按需从 Community 安装额外 route，并按照该 route 仓库自己的 setup guide 配置。
 6. 如果要使用 Claude route，再配置自己的 Anthropic API key 和本地 workspace/vault。
 
 完成一次 onboarding 后，日常启动只需要：
@@ -61,7 +61,7 @@ Tauri desktop；不需要分别启动三个进程。
 
 ## 0. 本机数据原则
 
-每位 collaborator 都应该有自己的配置、微信 session 和 Codex binding。
+每位 collaborator 都应该有自己的配置、微信 session 和 route 本地状态。
 
 不要从其他电脑复制这些内容：
 
@@ -75,7 +75,7 @@ Tauri desktop；不需要分别启动三个进程。
 - LLM / Mem0 API keys。
 - 微信登录凭据、轮询 cursor 和消息去重记录。
 - 本地 memory 与媒体 cache。
-- Codex chat binding、auto-open 和 alarm 设置。
+- Community route 的 binding、alarm 和其他本地设置。
 
 这些内容已被 `.gitignore` 排除。**不要提交 `.env.local`，也不要提交任何真实 API
 key、微信 credentials 或 `~/.wechat2all-runtime-bot` 内容。**
@@ -94,9 +94,6 @@ session。
 - pnpm；当前开发环境使用 pnpm 11。
 - Rust stable 与 Cargo，用于 Tauri。
 - Xcode Command Line Tools。
-
-如果需要 Codex route，当前 ChatGPT desktop 的官方 macOS 要求是 macOS 14 或更高
-版本以及 Apple Silicon（M1 或更新）。
 
 ### 1.2 安装开发依赖
 
@@ -155,7 +152,7 @@ pnpm check
 ## 3. General Onboard：启动大助手
 
 大助手使用一个 OpenAI-compatible LLM provider。这个 API key 只负责大助手聊天，
-**不负责 Codex route 登录**。
+不负责 Community route 的账号登录或第三方依赖。
 
 ### 3.1 创建本地配置
 
@@ -236,157 +233,26 @@ pnpm desktop
 通过标准：
 
 - `/help` 能返回命令说明。
-- `/ls` 能看到 `codex` 等 routes。
+- `/ls` 能看到当前已安装的 routes。
 - 普通文字能得到 LLM 回复，而不是“连不上 LLM”。
 
 修改 `.env.local` 后必须重启 `pnpm desktop`，已经运行的 daemon 不会自动重新读取
 API key。
 
-## 4. Codex Route Onboard
+## 4. Community Route Onboard
 
-Codex route 与大助手使用两套独立认证：
+Codex、Office、Upochi 等 Community route 不再随 WeConnect 主仓库内置。打开
+desktop 的 Community 页面，按需安装 route；安装完成后 route 会立即出现在
+dashboard 和微信主 Router 的 `/ls` 中。
 
-- 大助手：读取 `.env.local` 中的 `WECHAT2ALL_LLM_API_KEY`。
-- Codex route：读取这台 Mac 上 ChatGPT/Codex desktop 的登录和本地 chats。
-
-DeepSeek key 或 OpenAI API key不会自动登录 Codex desktop。
-
-### 4.1 安装并登录 ChatGPT/Codex desktop
-
-1. 从 [OpenAI 官方页面](https://openai.com/chatgpt/desktop/) 安装当前 ChatGPT desktop。
-2. 打开 app，并使用 collaborator 自己的 ChatGPT 账号登录。
-3. 切换到 Codex。
-4. 按照 [Codex 官方入门](https://openai.com/codex/get-started/) 添加本地
-   wechat2all 仓库作为 project。
-5. 至少创建并打开一个 Codex chat，发送一条普通消息，确认 Codex 本身可用。
-
-当前 bridge 会优先识别：
-
-```text
-/Applications/ChatGPT.app
-```
-
-同时兼容旧路径：
-
-```text
-/Applications/Codex.app
-```
-
-正常情况下不需要单独安装 Codex CLI，因为 bridge 会使用 desktop app bundle 里的
-`Contents/Resources/codex`。如果 app 安装在非标准路径，可以在 `.env.local` 显式配置：
-
-```dotenv
-WECHAT2ALL_CODEX_GUI_APP_NAME=ChatGPT
-WECHAT2ALL_CODEX_GUI_APP_PATH=/Applications/ChatGPT.app
-WECHAT2ALL_CODEX_GUI_PROCESS_NAME=ChatGPT
-```
-
-### 4.2 配置 Codex delivery
-
-Codex route 默认使用 GUI automation。可在 `.env.local` 显式写入：
-
-```dotenv
-WECHAT2ALL_CODEX_DELIVERY=gui-automation
-WECHAT2ALL_CODEX_REPLY_MODE=final
-WECHAT2ALL_CODEX_TURN_TIMEOUT_MS=180000
-WECHAT2ALL_CODEX_PROCESSING_REMINDER_MS=120000
-```
-
-`gui-automation` 会打开准确绑定的 chat，粘贴图片/文件路径和文字，然后按 Return。
-app-server 负责观察回复；只有 GUI 注入失败且没有检测到新 turn 时，才由 app-server
-fallback 投递。`/new` 由 app-server 创建，并在首条消息完成后打开新 chat。
-
-如果只需要协议调用、不要求输入立即显示在 GUI，可以使用：
-
-```dotenv
-WECHAT2ALL_CODEX_DELIVERY=app-server
-```
-
-`app-server` 模式不会主动操作 GUI；`gui-automation` 模式需要 Accessibility 和
-Automation 权限。
-
-不要把 `desktop-ipc` 设置成默认 delivery。项目只将 Codex Desktop IPC 用于只读的
-实时 `/status`；普通消息发送仍使用当前稳定的 delivery 路径。
-
-### 4.3 macOS Privacy & Security
-
-`gui-automation` 会通过 System Events 控制 ChatGPT/Codex，因此权限要授予**实际
-启动 `pnpm desktop` 的 app**：
-
-1. 在 `System Settings -> Privacy & Security -> Accessibility` 开启实际启动宿主，
-   例如 Terminal、iTerm 或 ChatGPT/Codex。
-2. 在 `System Settings -> Privacy & Security -> Automation` 中，允许同一个宿主控制
-   `System Events` 和 ChatGPT/Codex（以系统实际列出的名字为准）。
-3. 完全退出并重新打开获得权限的宿主，再运行 `pnpm desktop`。
-
-如果 ChatGPT 访问 repo 时出现文件夹权限提示，允许访问 repo 所在目录即可；不需要
-为了 onboarding 开启 Full Disk Access。
-
-### 4.4 绑定 Codex chat
-
-确保 ChatGPT desktop 已打开，并且刚创建的 Codex chat 已经能在左侧列表看到。然后
-在微信主 Router 中发送：
-
-```text
-/cd codex
-```
-
-进入 Codex route 后：
-
-```text
-/ls
-```
-
-`/ls` 会返回当前可绑定 chats 的编号。选择一个编号，例如：
-
-```text
-/bind 1
-```
-
-不要手工输入很长的 thread id；优先使用 `/ls` 给出的序号。
-
-继续验证：
-
-```text
-/current
-/status
-/token
-请只回复“Codex route 连接成功”
-```
-
-通过标准：
-
-- `/current` 显示刚绑定的 chat。
-- `/status` 能区分正在工作、已完成与未知，不会在 chat 正在运行时误报空闲。
-- 普通消息被发送到绑定的 Codex chat，最终回复回到微信。
-- 在 `gui-automation` 模式下，微信输入也能在绑定的 Codex GUI chat 中看到。
-
-绑定结果保存在这台电脑自己的：
-
-```text
-~/.wechat2all-runtime-bot/codex-gui-bridge/binding.json
-```
-
-不需要提交，也不要复制给其他 collaborator。
-
-可选：让下一次 `pnpm desktop` 自动打开 ChatGPT/Codex desktop：
-
-```text
-/autoopen 1
-```
-
-关闭自动打开：
-
-```text
-/autoopen 0
-```
+每个 route 的第三方 app、账号、系统权限、命令和配置都由它自己的独立仓库说明。
+卸载 route 会移除其可执行 package，但不会把 route 代码重新写回 WeConnect 主仓库。
 
 ## 5. Claude Route Onboard
 
-Claude route 与大助手、Codex route 是第三套独立 provider：
+Claude route 使用与大助手彼此独立的 provider：
 
 - 大助手使用 OpenAI-compatible key。
-- Codex route 使用本机 ChatGPT/Codex desktop。
 - Claude route 使用官方 Claude Agent SDK，默认要求 `ANTHROPIC_API_KEY`。
 
 在 `.env.local` 添加：
@@ -421,7 +287,7 @@ WECHAT2ALL_CLAUDE_ALLOW_CLI_AUTH=1
 
 - `/ls` 能看到 `claude`。
 - `/status` 显示 `Claude Agent SDK`、正确 workspace 和 auth 状态。
-- 普通消息由 Claude 处理，而不是大助手或 Codex。
+- 普通消息由 Claude 处理，而不是大助手或其他 route。
 - `/new` 清除当前用户的短期 session；`/cd ..` 回到主 Router。
 - 图片/文件会保存到 workspace 的 `Wechat_Saved/`，Claude 可读取；视频会被明确拒绝。
 
@@ -490,38 +356,12 @@ lsof -nP -iTCP:5173 -sTCP:LISTEN
 
 通常重新运行一次 `pnpm desktop` 会清理旧的 wechat2all 进程。
 
-### Codex route 的 `/ls` 没有 chats
+### Community route 安装后没有出现
 
-检查：
-
-1. ChatGPT/Codex desktop 已安装、已登录且正在运行。
-2. 已在 Codex 中添加本地 project，并至少创建一个 chat。
-3. app 位于 `/Applications/ChatGPT.app` 或 `/Applications/Codex.app`。
-4. bridge 能找到 desktop bundle 中的 Codex executable。
-
-可以在 repo 根目录单独测试发现能力：
-
-```bash
-pnpm --filter @wechat2all/codex-gui-bridge dev -- ls
-```
-
-### Codex 能收到消息，但 GUI 不显示或 AppleScript 报错
-
-1. 确认 `.env.local` 是 `WECHAT2ALL_CODEX_DELIVERY=gui-automation`。
-2. 重新检查 Accessibility 和 Automation。
-3. 权限授予对象必须是启动 `pnpm desktop` 的 app。
-4. 修改权限后完全退出并重开 Terminal/iTerm。
-5. 保持 ChatGPT/Codex desktop 已打开。
-
-### `/status` 显示未知 / 未连接
-
-`/status` 会读取绑定 chat 的 Codex Desktop 实时 snapshot。确认：
-
-- ChatGPT/Codex desktop 正在运行。
-- 当前仍有有效 `/bind`。
-- `/current` 显示的 thread 仍存在。
-
-如果 chat 被删除或属于另一台电脑，重新执行 `/ls` 和 `/bind <序号>`。
+1. 在 Community 页面确认安装状态是 `Installed`。
+2. 查看 route 卡片上的 setup/requirements 信息。
+3. 在微信主 Router 发送 `/ls`；如果仍未出现，重启 desktop 后再检查。
+4. route 自身的连接、权限或第三方 app 问题，请按照该 route 仓库的 setup guide 排查。
 
 ### Claude route 显示 Workspace Missing 或 auth unavailable
 
@@ -540,10 +380,6 @@ pnpm --filter @wechat2all/codex-gui-bridge dev -- ls
 - [ ] `pnpm desktop` 能打开 dashboard。
 - [ ] 使用自己的微信扫码并显示 connected。
 - [ ] 大助手普通消息可以得到 LLM 回复。
-- [ ] ChatGPT/Codex desktop 已安装并登录。
-- [ ] Codex project/chat 已创建。
-- [ ] macOS Accessibility/Automation 已按启动方式授权。
-- [ ] `/cd codex` -> `/ls` -> `/bind 1` 成功。
-- [ ] Codex 普通消息可以从微信进入绑定 chat，并把最终结果返回微信。
+- [ ] 如需 Community route，已从 Community 页面安装并按照其独立 setup guide 验证。
 - [ ] 如需 Claude route，已配置自己的 Anthropic key 和 workspace。
 - [ ] `/cd claude` -> `/status` -> 普通消息 -> `/new` 均正常。
