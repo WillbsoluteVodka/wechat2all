@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-23T17:50:22.000Z",
+  "generatedAt": "2026-07-24T05:27:46.000Z",
   "channel": "development",
   "routes": [
     {
@@ -198,7 +198,7 @@
       "id": "codex",
       "packageName": "@weconnect-community/codex-route",
       "displayName": "Codex",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "description": "Codex Desktop GUI automation with app-server fallback.",
       "manifest": {
         "protocol": "weconnect.route",
@@ -206,7 +206,7 @@
         "id": "codex",
         "packageName": "@weconnect-community/codex-route",
         "displayName": "Codex",
-        "version": "0.1.0",
+        "version": "0.1.1",
         "description": "Codex Desktop GUI automation with app-server fallback.",
         "license": "MIT",
         "author": {
@@ -257,8 +257,8 @@
       },
       "artifact": {
         "type": "archive",
-        "url": "https://api.github.com/repos/WillbsoluteVodka/wechat2all_codex_route/releases/assets/487465731",
-        "sha256": "26ff4ad9f0a5d602e89fc0a2c24ff1784d5caa3c10ebb0d5cad64f19585e028e",
+        "url": "https://api.github.com/repos/WillbsoluteVodka/wechat2all_codex_route/releases/assets/488044763",
+        "sha256": "dace6d0fc69ce16c266336d3526961943556c257de504c01915353ac1f6e11e3",
         "entrypoint": "./dist/index.mjs"
       },
       "requirements": [
