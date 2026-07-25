@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { routePackage as claudeRoutePackage } from "@wechat2all/claude-route";
 import {
   assertRouteManifestMatchesPackageV1,
   instantiateRoutePackageV1,
@@ -182,7 +181,7 @@ export function instantiateInstalledRoutePackages(
   });
 }
 
-/** Loads built-in and user-installed protocol v1 route packages. */
+/** Loads externally configured and Community-installed protocol v1 route packages. */
 export async function createInstalledRouteModules(
   profileId: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -199,12 +198,7 @@ export async function createInstalledRouteModules(
       },
     },
   );
-  const installed = instantiateInstalledRoutePackages(
-    [claudeRoutePackage],
-    profileId,
-    env,
-    options,
-  );
+  const installed: InstalledRouteModule[] = [];
   if (options.registryPath) {
     try {
       const registry = readCommunityInstalledRegistry(options.registryPath);

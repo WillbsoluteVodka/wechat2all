@@ -23,8 +23,8 @@
 需要在系统弹窗中确认；完成后回到 Terminal 按 Return，脚本会继续。全部就绪后脚本
 直接运行 `pnpm desktop` 打开软件。
 
-它不会检查或配置 Codex Desktop、Anthropic/Claude、route workspace、route 账号或
-其他具体 route 的专属依赖。这些能力仍然按需单独配置。
+它不会检查或配置 Community route 所需的第三方 app、CLI、workspace、账号或其他
+专属依赖。这些能力由各 route 的独立 setup guide 说明并按需配置。
 
 只检查环境而不安装或启动：
 
@@ -46,8 +46,8 @@
 2. clone 仓库并安装依赖。
 3. 在本机创建 `.env.local`，填入自己的大助手 LLM API key。
 4. 启动 `pnpm desktop`，用自己的微信扫码。
-5. 按需从 Community 安装额外 route，并按照该 route 仓库自己的 setup guide 配置。
-6. 如果要使用 Claude route，再配置自己的 Anthropic API key 和本地 workspace/vault。
+5. 按需从 Community 安装额外 route，并按照该 route 仓库自己的 setup guide 准备
+   第三方 app、CLI、账号和 workspace。
 
 完成一次 onboarding 后，日常启动只需要：
 
@@ -241,66 +241,24 @@ API key。
 
 ## 4. Community Route Onboard
 
-Codex、Office、Upochi 等 Community route 不再随 WeConnect 主仓库内置。打开
+Codex、Claude、Office、Upochi 等 Community route 不再随 WeConnect 主仓库内置。打开
 desktop 的 Community 页面，按需安装 route；安装完成后 route 会立即出现在
 dashboard 和微信主 Router 的 `/ls` 中。
 
 每个 route 的第三方 app、账号、系统权限、命令和配置都由它自己的独立仓库说明。
 卸载 route 会移除其可执行 package，但不会把 route 代码重新写回 WeConnect 主仓库。
 
-## 5. Claude Route Onboard
+安装 Community route 只会安装该 route 的连接 package，不代表它依赖的第三方产品也
+已经安装。例如 Claude route 需要用户另外安装并配置 **Claude Code CLI**；WeConnect
+主程序和 Community 安装器不会替用户安装 Claude Code。安装前先按照 Claude route
+自己的 README 完成 CLI、Anthropic API key 和 workspace 配置。
 
-Claude route 使用与大助手彼此独立的 provider：
+已有用户不需要删除 `.env.local` 中的 `ANTHROPIC_API_KEY` 或
+`WECHAT2ALL_CLAUDE_*`。Claude route 未安装时，WeConnect core 不会把这些变量当作
+内置配置；重新安装 Claude route 后，独立 route 会继续读取兼容的旧变量。卸载 route
+也不会主动删除这些本地配置或历史 route 数据。
 
-- 大助手使用 OpenAI-compatible key。
-- Claude route 使用官方 Claude Agent SDK，默认要求 `ANTHROPIC_API_KEY`。
-
-在 `.env.local` 添加：
-
-```dotenv
-ANTHROPIC_API_KEY=填入你自己的_Anthropic_API_Key
-WECHAT2ALL_CLAUDE_WORKDIR=/绝对路径/到/你的/ObsidianVault
-WECHAT2ALL_CLAUDE_LANGUAGE=zh
-WECHAT2ALL_CLAUDE_SESSION_WINDOW_MINUTES=15
-```
-
-`WECHAT2ALL_CLAUDE_WORKDIR` 也可以是普通本地项目目录，不强制使用 Obsidian。
-如果目录内有 `CLAUDE.md`，Agent SDK 会加载里面的项目约定。第三方 app 默认不复用
-Claude Code consumer login；只有明确理解认证影响时才设置：
-
-```dotenv
-WECHAT2ALL_CLAUDE_ALLOW_CLI_AUTH=1
-```
-
-重启 `pnpm desktop`，然后在微信测试：
-
-```text
-/ls
-/cd claude
-/status
-请只回复“Claude route 连接成功”
-/new
-/cd ..
-```
-
-通过标准：
-
-- `/ls` 能看到 `claude`。
-- `/status` 显示 `Claude Agent SDK`、正确 workspace 和 auth 状态。
-- 普通消息由 Claude 处理，而不是大助手或其他 route。
-- `/new` 清除当前用户的短期 session；`/cd ..` 回到主 Router。
-- 图片/文件会保存到 workspace 的 `Wechat_Saved/`，Claude 可读取；视频会被明确拒绝。
-
-Claude route 本地状态在：
-
-```text
-~/.wechat2all-runtime-bot/claude-route/                    # default profile
-~/.wechat2all-runtime-bot/profiles/<profile>/claude-route/ # named profile
-```
-
-不要提交该目录，也不要把其他 collaborator 的 session 文件复制过来。
-
-## 6. 日常启动和停止
+## 5. 日常启动和停止
 
 启动整套本地开发环境：
 
@@ -315,7 +273,7 @@ pnpm desktop
 `39787` 和 UI 端口 `5173`，然后启动一套新的进程。因此通常不需要手工分别重启
 daemon、runtime 和 desktop。
 
-## 7. 常见问题
+## 6. 常见问题
 
 ### `pnpm` / `cargo` 找不到
 
@@ -363,16 +321,11 @@ lsof -nP -iTCP:5173 -sTCP:LISTEN
 3. 在微信主 Router 发送 `/ls`；如果仍未出现，重启 desktop 后再检查。
 4. route 自身的连接、权限或第三方 app 问题，请按照该 route 仓库的 setup guide 排查。
 
-### Claude route 显示 Workspace Missing 或 auth unavailable
+如果是 Claude route，还要先在实际启动 WeConnect 的环境中确认 `claude --version`
+可运行。Community 中显示 `Installed` 只代表 route package 已安装，不代表独立的
+Claude Code CLI、Anthropic API key 或 workspace 已准备好。
 
-1. 确认 `.env.local` 中 `WECHAT2ALL_CLAUDE_WORKDIR` 是存在的绝对目录。
-2. 确认 `ANTHROPIC_API_KEY` 已设置，且没有被提交到 Git。
-3. 修改配置后完整重启 `pnpm desktop`。
-4. 在 `/cd claude` 后执行 `/status` 查看 route 自检原因。
-5. 只有明确选择复用本地 Claude CLI 认证时才打开
-   `WECHAT2ALL_CLAUDE_ALLOW_CLI_AUTH=1`。
-
-## 8. Onboarding 完成检查表
+## 7. Onboarding 完成检查表
 
 - [ ] `pnpm install --frozen-lockfile` 成功。
 - [ ] `pnpm check` 成功。
@@ -381,5 +334,4 @@ lsof -nP -iTCP:5173 -sTCP:LISTEN
 - [ ] 使用自己的微信扫码并显示 connected。
 - [ ] 大助手普通消息可以得到 LLM 回复。
 - [ ] 如需 Community route，已从 Community 页面安装并按照其独立 setup guide 验证。
-- [ ] 如需 Claude route，已配置自己的 Anthropic key 和 workspace。
-- [ ] `/cd claude` -> `/status` -> 普通消息 -> `/new` 均正常。
+- [ ] route 需要第三方 app 或 CLI 时，已独立安装、登录并完成该依赖的自检。

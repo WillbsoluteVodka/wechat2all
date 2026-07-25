@@ -51,16 +51,6 @@ const fallbackSnapshot: DashboardSnapshot = {
       stats: { messagesToday: 0, lastHitAt: null },
     },
     {
-      id: "claude",
-      name: "claude",
-      description: "Claude Agent SDK + Obsidian vault，通过大助手 /cd claude 进入。",
-      enabled: true,
-      priority: 850,
-      connectorId: "claude-route",
-      matchText: [],
-      stats: { messagesToday: 0, lastHitAt: null },
-    },
-    {
       id: "assistant-route-default-sales",
       name: "Sales",
       description: "示例 route：处理报价、价格、销售相关消息。",
@@ -89,14 +79,6 @@ const fallbackSnapshot: DashboardSnapshot = {
       status: "ready",
       routeCount: 1,
       description: "负责默认对话、route 分发和固定 slash 命令。",
-    },
-    {
-      id: "claude-route",
-      name: "Claude Route",
-      kind: "Claude Agent SDK",
-      status: "needs-config",
-      routeCount: 1,
-      description: "独立 Claude Agent SDK route，可连接 Obsidian vault 或本地工作区。",
     },
     {
       id: "wechat2all-mcp",
@@ -197,20 +179,6 @@ let fallbackLocalConfig: LocalConfigSnapshot = {
     baseUrl: "https://api.mem0.ai",
     timeoutMs: 15_000,
     localMaxSearchRows: 2_000,
-  },
-  claude: {
-    apiKey: { configured: false, masked: null },
-    workdir: null,
-    promptFile: null,
-    model: null,
-    language: "zh",
-    sessionWindowMinutes: 15,
-    maxMediaMb: 50,
-    maxTurns: 40,
-    maxBudgetUsd: 1,
-    timeoutMs: 10 * 60_000,
-    allowCliAuth: false,
-    executable: null,
   },
 };
 
@@ -325,10 +293,9 @@ export async function patchLocalConfig(
   if (!isTauri()) {
     const llmPatch = payload.llm;
     const memoryPatch = payload.memory;
-    const claudePatch = payload.claude;
     const extensionPatch = Object.fromEntries(
       Object.entries(payload)
-        .filter(([key, value]) => !["llm", "memory", "claude"].includes(key)
+        .filter(([key, value]) => !["llm", "memory"].includes(key)
           && value && typeof value === "object" && !Array.isArray(value))
         .map(([key, value]) => [
           key,
@@ -364,51 +331,6 @@ export async function patchLocalConfig(
         localMaxSearchRows: nextValue(
           memoryPatch?.localMaxSearchRows,
           fallbackLocalConfig.memory.localMaxSearchRows,
-        ),
-      },
-      claude: {
-        ...fallbackLocalConfig.claude,
-        apiKey: previewSecretStatus(
-          claudePatch?.apiKey,
-          fallbackLocalConfig.claude.apiKey,
-        ),
-        workdir: nextValue(claudePatch?.workdir, fallbackLocalConfig.claude.workdir),
-        promptFile: nextValue(
-          claudePatch?.promptFile,
-          fallbackLocalConfig.claude.promptFile,
-        ),
-        model: nextValue(claudePatch?.model, fallbackLocalConfig.claude.model),
-        language: nextValue(
-          claudePatch?.language,
-          fallbackLocalConfig.claude.language,
-        ) ?? "zh",
-        sessionWindowMinutes: nextValue(
-          claudePatch?.sessionWindowMinutes,
-          fallbackLocalConfig.claude.sessionWindowMinutes,
-        ) ?? 15,
-        maxMediaMb: nextValue(
-          claudePatch?.maxMediaMb,
-          fallbackLocalConfig.claude.maxMediaMb,
-        ) ?? 50,
-        maxTurns: nextValue(
-          claudePatch?.maxTurns,
-          fallbackLocalConfig.claude.maxTurns,
-        ) ?? 40,
-        maxBudgetUsd: nextValue(
-          claudePatch?.maxBudgetUsd,
-          fallbackLocalConfig.claude.maxBudgetUsd,
-        ) ?? 1,
-        timeoutMs: nextValue(
-          claudePatch?.timeoutMs,
-          fallbackLocalConfig.claude.timeoutMs,
-        ) ?? 10 * 60_000,
-        allowCliAuth: nextValue(
-          claudePatch?.allowCliAuth,
-          fallbackLocalConfig.claude.allowCliAuth,
-        ) ?? false,
-        executable: nextValue(
-          claudePatch?.executable,
-          fallbackLocalConfig.claude.executable,
         ),
       },
     };

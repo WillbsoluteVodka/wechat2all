@@ -63,7 +63,7 @@ usage() {
   --no-launch   安装/检查依赖，但不启动应用
   -h, --help    显示帮助
 
-脚本不会检查或配置 Codex、Claude 等具体 route 的专属依赖和账号。
+脚本不会检查或配置 Community route 的第三方 app、CLI、账号或专属依赖。
 EOF
 }
 
@@ -360,7 +360,7 @@ main() {
   cd "$REPO_ROOT"
 
   info "准备 wechat2all 主应用环境"
-  info "只检查主应用依赖；不会检查 Codex、Claude 等 route 的专属配置。"
+  info "只检查主应用依赖；不会检查 Community route 的第三方 app、CLI、账号或专属配置。"
 
   if (( CHECK_ONLY )); then
     check_environment

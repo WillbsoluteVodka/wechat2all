@@ -92,6 +92,12 @@ Route's description, requirements, and requested permissions, then install only
 the ones that match your workflow. Community also handles updates and removal
 without adding that Route's business logic to the WeConnect core.
 
+Installing a Route does not automatically install or sign in to every
+third-party product it connects to. Follow the Route's own setup guide for
+external prerequisites. For example, the optional Claude Route is installed
+from Community, while Claude Code CLI remains a separate user-installed
+prerequisite and the Route requires its own Anthropic API key.
+
 ### 4. Switch Routes from WeChat
 
 ```text

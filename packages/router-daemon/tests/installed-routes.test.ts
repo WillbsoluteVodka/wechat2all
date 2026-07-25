@@ -136,7 +136,7 @@ test("assigns private storage and rejects duplicate ids", () => {
   );
 });
 
-test("a crashing community factory does not prevent built-in routes from loading", async () => {
+test("a crashing external factory does not prevent the route host from starting", async () => {
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "weconnect-routes-safe-"));
   const crashingPath = path.join(storageRoot, "crashing-route.mjs");
   fs.writeFileSync(crashingPath, `
@@ -166,6 +166,6 @@ test("a crashing community factory does not prevent built-in routes from loading
     { storageRoot, logger },
   );
 
-  assert.deepEqual(installed.map((item) => item.id), ["claude"]);
+  assert.deepEqual(installed.map((item) => item.id), []);
   assert.match(errors.join("\n"), /factory exploded/);
 });

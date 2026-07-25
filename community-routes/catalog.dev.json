@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-24T05:27:46.000Z",
+  "generatedAt": "2026-07-25T14:02:56.000Z",
   "channel": "development",
   "routes": [
     {
@@ -276,6 +276,85 @@
           "name": "Accessibility and Automation",
           "description": "Optional for GUI-first delivery. App-server fallback remains available without GUI control.",
           "required": false
+        }
+      ]
+    },
+    {
+      "id": "claude",
+      "packageName": "@weconnect-community/claude-route",
+      "displayName": "Claude Agent",
+      "version": "0.1.1",
+      "description": "Run a Claude Agent from WeChat against a local workspace or Obsidian vault.",
+      "manifest": {
+        "protocol": "weconnect.route",
+        "protocolVersion": 1,
+        "id": "claude",
+        "packageName": "@weconnect-community/claude-route",
+        "displayName": "Claude Agent",
+        "version": "0.1.1",
+        "description": "Run a Claude Agent from WeChat against a local workspace or Obsidian vault.",
+        "license": "MIT",
+        "author": {
+          "name": "WillbsoluteVodka",
+          "url": "https://github.com/WillbsoluteVodka"
+        },
+        "homepage": "https://github.com/WillbsoluteVodka/wechat2all_claude_route",
+        "repository": "https://github.com/WillbsoluteVodka/wechat2all_claude_route",
+        "engines": {
+          "weconnect": ">=0.1.0 <2",
+          "node": ">=20"
+        },
+        "capabilities": [
+          "text-input",
+          "media-input",
+          "text-output",
+          "media-output",
+          "setup-check",
+          "config",
+          "lifecycle"
+        ],
+        "permissions": [
+          {
+            "name": "network",
+            "reason": "Call Anthropic, use WebFetch/WebSearch, and contact remote Git hosts when Claude runs an allowlisted git pull or push."
+          },
+          {
+            "name": "filesystem:read",
+            "reason": "Read the configured workspace and user-provided attachments."
+          },
+          {
+            "name": "filesystem:write",
+            "reason": "Persist route sessions and automatically approve Write/Edit changes inside the configured workspace through Claude Code acceptEdits mode."
+          },
+          {
+            "name": "process:spawn",
+            "reason": "Run the user-installed Claude Code executable, its allowlisted tools, and git status/diff/log/add/commit/push/pull commands in Git workspaces."
+          }
+        ]
+      },
+      "artifact": {
+        "type": "archive",
+        "url": "https://api.github.com/repos/WillbsoluteVodka/wechat2all_claude_route/releases/assets/489482164",
+        "sha256": "3abe9f0b814f3b2f6001b4bfcd95a376950169b4e2ffd80512e971e48c9c4c64",
+        "entrypoint": "./dist/index.mjs"
+      },
+      "requirements": [
+        {
+          "name": "Claude Code CLI",
+          "description": "Install Anthropic's Claude Code executable; this Community package does not redistribute it.",
+          "url": "https://code.claude.com/docs/en/setup",
+          "required": true
+        },
+        {
+          "name": "Anthropic API key",
+          "description": "Configure ANTHROPIC_API_KEY for this third-party integration. Claude subscription/OAuth credentials are not accepted.",
+          "url": "https://console.anthropic.com/settings/keys",
+          "required": true
+        },
+        {
+          "name": "Local workspace",
+          "description": "Choose an existing local project or Obsidian vault and configure WECHAT2ALL_CLAUDE_WORKDIR.",
+          "required": true
         }
       ]
     }

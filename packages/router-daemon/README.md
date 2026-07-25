@@ -29,7 +29,7 @@ commands or React state in the main application.
 - `src/env.ts` - `.env.local` loading and typed environment helpers.
 - `src/session-reminders.ts` - 24-hour session scheduling and local reminder target state.
 - `src/routes.ts` - core route definitions and dashboard route labels.
-- `src/installed-routes.ts` - built-in plus dynamically installed protocol packages.
+- `src/installed-routes.ts` - dynamically installed protocol packages.
 - `src/community.ts` - catalog validation and atomic Community install/update/uninstall.
 - `src/community-registry.ts` - private app-data registry for installed route packages.
 - `src/community-http.ts` - generic Community HTTP API.
@@ -42,7 +42,6 @@ commands or React state in the main application.
 - TypeScript.
 - `wechat2all` client SDK.
 - `@wechat2all/runtime`.
-- `@wechat2all/claude-route` for the headless Claude Agent SDK route.
 - Local filesystem state through runtime state stores.
 
 ## HTTP API
@@ -92,8 +91,7 @@ copyable package template for the author contract.
 
 A third-party package that cannot be imported, validated, or instantiated is
 rejected and logged; it does not prevent the main app or other routes from
-starting. Built-in package failures remain fatal because they indicate a broken
-application build.
+starting. The core does not statically import optional Community route packages.
 
 ### Community installation
 
@@ -170,11 +168,6 @@ curl -X PATCH http://127.0.0.1:39787/config \
       "provider": "mem0",
       "apiKey": "replace-me",
       "baseUrl": "https://api.mem0.ai"
-    },
-    "claude": {
-      "apiKey": "replace-me",
-      "workdir": "/absolute/path/to/obsidian-vault",
-      "model": "claude-sonnet-4-5"
     }
   }'
 ```
@@ -182,10 +175,16 @@ curl -X PATCH http://127.0.0.1:39787/config \
 `GET /config` never returns a complete secret. It only returns `configured` and
 a masked value. In `PATCH /config`, an omitted secret or an empty secret input
 is preserved, which makes an unedited password field safe to submit; send
-`null` to explicitly clear it. Only documented LLM, memory, and Claude fields are
-accepted, and updates are written atomically to `.env.local` with mode `0600`.
+`null` to explicitly clear it. Only documented core fields and configuration
+extensions contributed by currently installed routes are accepted. Updates are
+written atomically to `.env.local` with mode `0600`.
 Responses include `schemaVersion: 1` so the future desktop form can version its
 integration.
+
+Route-specific configuration is owned by the route package, not by the daemon.
+Uninstalling a route removes its active configuration schema but does not erase
+existing values from the user's environment file; reinstalling a compatible
+route can read those values again.
 
 `pnpm desktop` passes an absolute `WECHAT2ALL_ENV_FILE` pointing at the checkout
 root, so saving and restarting always address the same file regardless of the
@@ -225,9 +224,10 @@ The health check uses the configuration applied to the running daemon. After a
 `PATCH /config` response with `restartRequired: true`, restart the app before
 using the health result for the new settings.
 
-LLM, memory, and Claude providers are constructed when the daemon starts. A successful
-change therefore returns `restartRequired: true`; the UI should show that state
-and restart the local app stack before treating the new provider as active.
+Core LLM/memory providers and installed route connectors are constructed when
+the daemon starts. A successful configuration change therefore returns
+`restartRequired: true`; the UI should show that state and restart the local app
+stack before treating the new configuration as active.
 
 ## Session Expiry Reminders
 

@@ -85,6 +85,10 @@ API key 和登录 session 只保存在本机，不会提交到 Git。
 环境要求和申请的权限，只安装适合自己工作流的部分。Community 也负责更新和卸载，
 不需要把某个 Route 的业务代码加入 WeConnect 本体。
 
+安装 Route 不代表它连接的所有第三方产品也会被自动安装或登录。请按照该 Route
+自己的 setup guide 准备外部依赖。例如，可选的 Claude Route 要从 Community 安装，
+但 Claude Code CLI 仍需要用户单独安装，而且 Route 需要独立的 Anthropic API key。
+
 ### 4. 在微信里切换 Route
 
 ```text

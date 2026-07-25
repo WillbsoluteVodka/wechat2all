@@ -84,11 +84,7 @@ test("config snapshot masks secrets instead of returning API keys", async () => 
     configured: true,
     masked: "m0-...5678",
   });
-  assert.deepEqual(snapshot.claude.apiKey, {
-    configured: true,
-    masked: "sk-...9012",
-  });
-  assert.equal(snapshot.claude.workdir, "/Users/example/Notes");
+  assert.equal("claude" in snapshot, false);
   assert.equal(JSON.stringify(snapshot).includes("example-secret"), false);
   assert.equal(snapshot.runtimeApplied, true);
   assert.equal(snapshot.restartRequired, false);
@@ -124,16 +120,6 @@ test("config update preserves unrelated env content and writes a private file", 
     sampleRoute: {
       mode: "proxy",
     },
-    claude: {
-      apiKey: "sk-ant-new-secret-2468",
-      workdir: "/Users/example/Claude Vault",
-      model: "claude-sonnet-4-5",
-      language: "zh",
-      sessionWindowMinutes: 20,
-      maxTurns: 30,
-      maxBudgetUsd: 2.5,
-      allowCliAuth: false,
-    },
   });
 
   const raw = await fs.readFile(filePath, "utf-8");
@@ -142,9 +128,6 @@ test("config update preserves unrelated env content and writes a private file", 
   assert.match(raw, /WECHAT2ALL_LLM_API_KEY=sk-new-secret-9999/);
   assert.match(raw, /WECHAT2ALL_LLM_BASE_URL=https:\/\/api\.deepseek\.com\/v1/);
   assert.doesNotMatch(raw, /remove-me|WECHAT2ALL_MEM0_API_KEY/);
-  assert.match(raw, /ANTHROPIC_API_KEY=sk-ant-new-secret-2468/);
-  assert.match(raw, /WECHAT2ALL_CLAUDE_WORKDIR=\/Users\/example\/Claude Vault/);
-  assert.match(raw, /WECHAT2ALL_CLAUDE_SESSION_WINDOW_MINUTES=20/);
   assert.match(raw, /WECHAT2ALL_TEST_ROUTE_MODE=proxy/);
   assert.equal((await fs.stat(filePath)).mode & 0o077, 0);
   assert.equal(result.changed, true);
@@ -154,11 +137,6 @@ test("config update preserves unrelated env content and writes a private file", 
     configured: true,
     masked: "sk-...9999",
   });
-  assert.deepEqual(result.config.claude.apiKey, {
-    configured: true,
-    masked: "sk-...2468",
-  });
-  assert.equal(result.config.claude.allowCliAuth, false);
   assert.equal(
     (result.config.sampleRoute as { mode: string }).mode,
     "proxy",
@@ -216,11 +194,31 @@ test("config validation rejects arbitrary env fields and unsafe values", async (
     /http or https/,
   );
   await assert.rejects(
-    store.update({ claude: { language: "fr" } }),
-    /must be one of/,
+    store.update({ claude: { language: "zh" } }),
+    /unsupported field/,
   );
-  await assert.rejects(
-    store.update({ claude: { allowCliAuth: "sometimes" } }),
-    /must be a boolean/,
+});
+
+test("the formerly built-in claude key is available to an installed extension", async () => {
+  const filePath = await tempEnvPath();
+  const extension: RouteConfigExtensionV1 = {
+    ...sampleRouteConfigExtension,
+    key: "claude",
+  };
+  const store = new LocalConfigStore({
+    filePath,
+    env: {},
+    extensions: [extension],
+  });
+
+  const result = await store.update({ claude: { mode: "proxy" } });
+
+  assert.equal(
+    (result.config.claude as { mode: string }).mode,
+    "proxy",
+  );
+  assert.match(
+    await fs.readFile(filePath, "utf8"),
+    /WECHAT2ALL_TEST_ROUTE_MODE=proxy/,
   );
 });
