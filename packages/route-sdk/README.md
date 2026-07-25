@@ -18,3 +18,8 @@ Protocol v1 provides:
 See [PROTOCOL.md](./PROTOCOL.md) for the contract and
 [`examples/echo-route.ts`](./examples/echo-route.ts) for a minimal route. A
 copyable publishable project lives in [`templates/route-package`](./templates/route-package).
+
+Dashboard configuration contributions support host-rendered `text`, `secret`,
+`number`, and `select` controls while retaining compatibility with the original
+values-only select shape. See
+[Dashboard configuration controls](./PROTOCOL.md#dashboard-configuration-controls).

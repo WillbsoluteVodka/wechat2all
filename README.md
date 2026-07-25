@@ -96,7 +96,8 @@ Installing a Route does not automatically install or sign in to every
 third-party product it connects to. Follow the Route's own setup guide for
 external prerequisites. For example, the optional Claude Route is installed
 from Community, while Claude Code CLI remains a separate user-installed
-prerequisite and the Route requires its own Anthropic API key.
+prerequisite. After installation, its route page provides the Anthropic API
+key and local workspace configuration controls declared by the package itself.
 
 ### 4. Switch Routes from WeChat
 

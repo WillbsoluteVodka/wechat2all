@@ -1,5 +1,18 @@
+import {
+  useEffect,
+  useState,
+  type KeyboardEvent,
+} from "react";
+
+import {
+  commitRouteConfigDraft,
+  routeConfigControlKind,
+  routeConfigTextValue,
+  routeSecretConfigStatus,
+} from "../route-config";
 import type {
   LocalConfigSnapshot,
+  RouteConfigControl,
   RouteSetupCheckItemStatus,
   RouteSetupCheckResponse,
   RouteSummary,
@@ -93,6 +106,156 @@ function WeConnectStage(props: { route: RouteSummary | null }) {
   );
 }
 
+function configNamespaceValue(
+  config: LocalConfigSnapshot | null,
+  control: RouteConfigControl,
+): unknown {
+  const namespace = config?.[control.configKey];
+  return namespace && typeof namespace === "object" && !Array.isArray(namespace)
+    ? (namespace as Record<string, unknown>)[control.field]
+    : undefined;
+}
+
+function SelectRouteConfigControl(props: {
+  control: RouteConfigControl;
+  currentValue: unknown;
+  saving: boolean;
+  onSave: (value: string | null) => Promise<boolean>;
+}) {
+  const choices = props.control.values ?? [];
+  const currentIndex = choices.findIndex(
+    (choice) => choice.value === props.currentValue,
+  );
+  const activeChoice = choices[currentIndex >= 0 ? currentIndex : 0];
+  const nextChoice = choices.length
+    ? choices[(currentIndex + 1 + choices.length) % choices.length]
+    : undefined;
+  const button = (
+    <button
+      type="button"
+      className="secondary-button route-delivery-toggle"
+      disabled={props.saving || !nextChoice}
+      onClick={async () => {
+        if (nextChoice) await props.onSave(nextChoice.value);
+      }}
+      title={nextChoice?.title ?? `Switch ${props.control.label}`}
+    >
+      {props.saving
+        ? "SAVING..."
+        : `${props.control.label}: ${
+          activeChoice?.label ?? String(props.currentValue ?? "NOT SET")
+        }`}
+    </button>
+  );
+
+  if (!props.control.description) return button;
+  return (
+    <div className="route-config-select-control">
+      {button}
+      <small>{props.control.description}</small>
+    </div>
+  );
+}
+
+function InputRouteConfigControl(props: {
+  control: RouteConfigControl;
+  currentValue: unknown;
+  saving: boolean;
+  onSave: (value: string | null) => Promise<boolean>;
+}) {
+  const kind = routeConfigControlKind(props.control);
+  const secret = kind === "secret";
+  const currentText = secret ? "" : routeConfigTextValue(props.currentValue);
+  const secretStatus = routeSecretConfigStatus(props.currentValue);
+  const [draft, setDraft] = useState(currentText);
+
+  useEffect(() => {
+    // Secrets are deliberately never copied from a config snapshot into an
+    // input. The host returns only configured/masked metadata.
+    setDraft(secret ? "" : currentText);
+  }, [currentText, props.control.configKey, props.control.field, secret]);
+
+  const hasDraft = draft.trim().length > 0;
+  const hasStoredValue = secret ? secretStatus.configured : currentText.length > 0;
+  const canSave = hasDraft && (secret || draft !== currentText);
+  const controlPath = `${props.control.configKey}.${props.control.field}`;
+
+  async function save() {
+    if (props.saving || !canSave) return;
+    const submittedDraft = draft;
+    const result = await commitRouteConfigDraft({
+      currentDraft: submittedDraft,
+      savedDraft: secret ? "" : submittedDraft,
+      commit: () => props.onSave(submittedDraft),
+    });
+    if (result.saved) setDraft(result.draft);
+  }
+
+  async function clear() {
+    if (props.saving) return;
+    const result = await commitRouteConfigDraft({
+      currentDraft: draft,
+      savedDraft: "",
+      commit: () => props.onSave(null),
+    });
+    if (result.saved) setDraft(result.draft);
+  }
+
+  function onKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    void save();
+  }
+
+  return (
+    <div className="route-config-input-control">
+      <label htmlFor={`route-config-${controlPath}`}>
+        <span>{props.control.label}</span>
+        {secret ? (
+          <small className={secretStatus.configured ? "is-configured" : ""}>
+            {secretStatus.configured
+              ? secretStatus.masked ?? "CONFIGURED"
+              : "NOT CONFIGURED"}
+          </small>
+        ) : null}
+      </label>
+      {props.control.description ? (
+        <p>{props.control.description}</p>
+      ) : null}
+      <div className="route-config-input-row">
+        <input
+          id={`route-config-${controlPath}`}
+          type={secret ? "password" : kind === "number" ? "number" : "text"}
+          value={draft}
+          placeholder={props.control.placeholder}
+          autoComplete={secret ? "new-password" : "off"}
+          disabled={props.saving}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={onKeyDown}
+        />
+        <button
+          type="button"
+          className="secondary-button route-config-save"
+          disabled={props.saving || !canSave}
+          onClick={() => void save()}
+        >
+          {props.saving ? "SAVING..." : "SAVE"}
+        </button>
+        {props.control.clearable && hasStoredValue ? (
+          <button
+            type="button"
+            className="secondary-button route-config-clear"
+            disabled={props.saving}
+            onClick={() => void clear()}
+          >
+            CLEAR
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export function RoutesPage(props: {
   routeSetupChecks: Record<string, RouteSetupCheckResponse | null>;
   routeSetupErrors: Record<string, string | null>;
@@ -105,8 +268,8 @@ export function RoutesPage(props: {
   onSetRouteConfig: (
     configKey: string,
     field: string,
-    value: string,
-  ) => void;
+    value: string | null,
+  ) => Promise<boolean>;
   onSelect: (routeId: string | null) => void;
 }) {
   const weConnectRoute = props.routes.find(isWeConnectRoute) ?? null;
@@ -231,37 +394,21 @@ export function RoutesPage(props: {
               <span className="route-delivery-restart">RESTART REQUIRED</span>
             ) : null}
             {configControls.map((control) => {
-              const configNamespace = props.localConfig?.[control.configKey];
-              const currentValue = configNamespace
-                && typeof configNamespace === "object"
-                && !Array.isArray(configNamespace)
-                ? (configNamespace as Record<string, unknown>)[control.field]
-                : undefined;
-              const currentIndex = control.values.findIndex(
-                (choice) => choice.value === currentValue,
-              );
-              const activeChoice = control.values[currentIndex >= 0 ? currentIndex : 0];
-              const nextChoice = control.values[(currentIndex + 1 + control.values.length)
-                % control.values.length];
               const controlPath = `${control.configKey}.${control.field}`;
-              return (
-                <button
-                  key={controlPath}
-                  type="button"
-                  className="secondary-button route-delivery-toggle"
-                  disabled={props.routeConfigSavingPath === controlPath || !nextChoice}
-                  onClick={() => nextChoice && props.onSetRouteConfig(
-                    control.configKey,
-                    control.field,
-                    nextChoice.value,
-                  )}
-                  title={nextChoice?.title ?? `Switch ${control.label}`}
-                >
-                  {props.routeConfigSavingPath === controlPath
-                    ? "SAVING..."
-                    : `${control.label}: ${activeChoice?.label ?? String(currentValue ?? "NOT SET")}`}
-                </button>
-              );
+              const currentValue = configNamespaceValue(props.localConfig, control);
+              const commonProps = {
+                control,
+                currentValue,
+                saving: props.routeConfigSavingPath === controlPath,
+                onSave: (value: string | null) => props.onSetRouteConfig(
+                  control.configKey,
+                  control.field,
+                  value,
+                ),
+              };
+              return routeConfigControlKind(control) === "select"
+                ? <SelectRouteConfigControl key={controlPath} {...commonProps} />
+                : <InputRouteConfigControl key={controlPath} {...commonProps} />;
             })}
             {hasSetupCheck ? (
               <button

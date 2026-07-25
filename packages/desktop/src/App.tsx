@@ -317,20 +317,26 @@ export function App() {
     }
   }
 
-  async function onSetRouteConfig(configKey: string, field: string, value: string) {
+  async function onSetRouteConfig(
+    configKey: string,
+    field: string,
+    value: string | null,
+  ): Promise<boolean> {
     const controlPath = `${configKey}.${field}`;
-    if (routeConfigSavingPath) return;
+    if (routeConfigSavingPath) return false;
     setRouteConfigSavingPath(controlPath);
     try {
       const result = await patchLocalConfig({
         [configKey]: { [field]: value },
       });
       setLocalConfig(result.config);
+      return true;
     } catch (error) {
       setRouteSetupErrors((previous) => ({
         ...previous,
         [selectedRouteId ?? configKey]: error instanceof Error ? error.message : String(error),
       }));
+      return false;
     } finally {
       setRouteConfigSavingPath(null);
     }
@@ -380,11 +386,7 @@ export function App() {
               routes={snapshot.routes}
               selectedRouteId={selectedRouteId}
               onRefreshRouteSetupCheck={(routeId) => void onRefreshRouteSetupCheck(routeId)}
-              onSetRouteConfig={(configKey, field, value) => void onSetRouteConfig(
-                configKey,
-                field,
-                value,
-              )}
+              onSetRouteConfig={onSetRouteConfig}
               onSelect={setSelectedRouteId}
             />
           ) : null}

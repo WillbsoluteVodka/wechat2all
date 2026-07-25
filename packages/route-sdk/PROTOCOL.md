@@ -100,6 +100,55 @@ Optional contributions are `config`, `setupCheck`, `dashboard`, `backend`, and
 `lifecycle`. The host owns HTTP endpoints and UI rendering for these features;
 route packages never patch the daemon or Desktop application directly.
 
+### Dashboard configuration controls
+
+Routes may describe host-rendered configuration inputs through
+`dashboard.management.configControls`. Every control identifies a route config
+extension and field with `configKey`, `field`, and `label`. The optional `kind`
+is one of `text`, `secret`, `number`, or `select`:
+
+```ts
+dashboard: {
+  management: {
+    configControls: [
+      {
+        configKey: "calendar",
+        field: "apiKey",
+        label: "API KEY",
+        kind: "secret",
+        placeholder: "Enter the provider key",
+        description: "Stored in WeConnect's private local configuration.",
+        clearable: true,
+      },
+      {
+        configKey: "calendar",
+        field: "language",
+        label: "LANGUAGE",
+        kind: "select",
+        values: [
+          { value: "zh", label: "中文" },
+          { value: "en", label: "English" },
+        ],
+      },
+    ],
+  },
+}
+```
+
+`values`, `placeholder`, `description`, and `clearable` are optional
+presentation hints. For backward compatibility, an existing values-only
+control with no `kind` is a `select`; a control with neither `kind` nor
+`values` defaults to `text`. The route's `config.parsePatch()` remains the
+authoritative validation boundary. A control only asks the host to render an
+input and does not grant access to environment variables outside the route's
+declared config extension.
+
+For a `secret` control, `config.snapshot()` must return the field as
+`{ configured: boolean, masked: string | null }`
+(`RouteSecretConfigSnapshotV1`). It must never return secret plaintext. The
+host leaves the password input empty and uses only this display-safe object to
+show whether a value is configured.
+
 The host calls `lifecycle.start()` only after the profile and HTTP server are
 ready, and calls `lifecycle.stop()` during graceful shutdown. A rejected or
 failing startup hook is logged without taking down other running routes.

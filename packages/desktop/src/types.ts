@@ -136,16 +136,7 @@ export interface CommunityInstallRequest {
 
 export interface RouteManagement {
   setupCheck?: boolean;
-  configControls?: Array<{
-    configKey: string;
-    field: string;
-    label: string;
-    values: Array<{
-      value: string;
-      label: string;
-      title?: string;
-    }>;
-  }>;
+  configControls?: RouteConfigControl[];
   manualPermissions?: Array<{
     title: string;
     items: string[];
@@ -154,6 +145,27 @@ export interface RouteManagement {
     rule: string;
     description: string;
   }>;
+}
+
+export type RouteConfigControlKind = "text" | "secret" | "number" | "select";
+
+export interface RouteConfigControl {
+  configKey: string;
+  field: string;
+  label: string;
+  /**
+   * Omitted controls with values retain the protocol-v1 cycling button
+   * behavior used by existing route packages.
+   */
+  kind?: RouteConfigControlKind;
+  values?: Array<{
+    value: string;
+    label: string;
+    title?: string;
+  }>;
+  placeholder?: string;
+  description?: string;
+  clearable?: boolean;
 }
 
 export interface AgentSummary {

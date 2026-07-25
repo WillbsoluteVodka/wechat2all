@@ -112,6 +112,43 @@ export interface RouteConfigExtensionV1 {
   snapshot(env: Readonly<Record<string, string | undefined>>): unknown;
 }
 
+export type RouteDashboardConfigControlKindV1 =
+  | "text"
+  | "secret"
+  | "number"
+  | "select";
+
+export interface RouteDashboardConfigControlValueV1 {
+  value: string;
+  label: string;
+  title?: string;
+}
+
+/**
+ * Display-safe field value returned by a config snapshot for a `secret`
+ * dashboard control. Secret plaintext must never be returned to the host UI.
+ */
+export interface RouteSecretConfigSnapshotV1 {
+  configured: boolean;
+  masked: string | null;
+}
+
+export interface RouteDashboardConfigControlV1 {
+  configKey: string;
+  field: string;
+  label: string;
+  /**
+   * Optional rendering hint. For compatibility, a control with values and no
+   * kind is treated as a select; a control with neither defaults to text.
+   * A secret control's snapshot field must be RouteSecretConfigSnapshotV1.
+   */
+  kind?: RouteDashboardConfigControlKindV1;
+  values?: RouteDashboardConfigControlValueV1[];
+  placeholder?: string;
+  description?: string;
+  clearable?: boolean;
+}
+
 export interface RouteDashboardContributionV1 {
   agent?: {
     name: string;
@@ -121,16 +158,7 @@ export interface RouteDashboardContributionV1 {
   };
   management?: {
     setupCheck?: boolean;
-    configControls?: Array<{
-      configKey: string;
-      field: string;
-      label: string;
-      values: Array<{
-        value: string;
-        label: string;
-        title?: string;
-      }>;
-    }>;
+    configControls?: RouteDashboardConfigControlV1[];
     manualPermissions?: Array<{
       title: string;
       items: string[];

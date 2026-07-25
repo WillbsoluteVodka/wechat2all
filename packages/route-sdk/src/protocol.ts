@@ -16,6 +16,12 @@ const CAPABILITY_PATTERN = /^(?:text-input|media-input|text-output|media-output|
 const PERMISSION_PATTERN = /^[a-z][a-z0-9._-]*(?::[a-z0-9][a-z0-9._-]*)?$/;
 const EXECUTABLE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
+const DASHBOARD_CONFIG_CONTROL_KINDS = new Set([
+  "text",
+  "secret",
+  "number",
+  "select",
+]);
 const MANAGED_PLATFORM_KEYS = new Set([
   "darwin-arm64",
   "darwin-x64",
@@ -64,6 +70,211 @@ function requiredString(
       `${path} is missing or invalid.`,
       path,
     );
+  }
+}
+
+function invalidModule(message: string, path: string): never {
+  throw new RouteProtocolError("invalid-module", message, path);
+}
+
+function assertRouteDashboardV1(
+  value: unknown,
+  config: Record<string, unknown> | undefined,
+): void {
+  if (value === undefined) return;
+  const dashboard = objectValue(value);
+  if (!dashboard) {
+    invalidModule("dashboard extension must be an object.", "dashboard");
+  }
+
+  if (dashboard.agent !== undefined) {
+    const agent = objectValue(dashboard.agent);
+    if (!agent) {
+      invalidModule("dashboard.agent must be an object.", "dashboard.agent");
+    }
+    for (const field of ["name", "kind", "status", "description"]) {
+      requiredString(
+        agent[field],
+        `dashboard.agent.${field}`,
+        undefined,
+        "invalid-module",
+      );
+    }
+  }
+
+  if (dashboard.management === undefined) return;
+  const management = objectValue(dashboard.management);
+  if (!management) {
+    invalidModule(
+      "dashboard.management must be an object.",
+      "dashboard.management",
+    );
+  }
+  if (
+    management.setupCheck !== undefined
+    && typeof management.setupCheck !== "boolean"
+  ) {
+    invalidModule(
+      "dashboard.management.setupCheck must be a boolean.",
+      "dashboard.management.setupCheck",
+    );
+  }
+
+  if (management.configControls !== undefined) {
+    if (!Array.isArray(management.configControls)) {
+      invalidModule(
+        "dashboard.management.configControls must be an array.",
+        "dashboard.management.configControls",
+      );
+    }
+    const configKey = config?.key;
+    const configFields = config ? objectValue(config.fields) : undefined;
+    const controlPaths = new Set<string>();
+    for (const [index, rawControl] of management.configControls.entries()) {
+      const path = `dashboard.management.configControls.${index}`;
+      const control = objectValue(rawControl);
+      if (!control) {
+        invalidModule("Config control must be an object.", path);
+      }
+      requiredString(
+        control.configKey,
+        `${path}.configKey`,
+        ROUTE_ID_PATTERN,
+        "invalid-module",
+      );
+      requiredString(
+        control.field,
+        `${path}.field`,
+        undefined,
+        "invalid-module",
+      );
+      requiredString(
+        control.label,
+        `${path}.label`,
+        undefined,
+        "invalid-module",
+      );
+      if (!config || control.configKey !== configKey) {
+        invalidModule(
+          "Config controls may only reference this route's config extension.",
+          `${path}.configKey`,
+        );
+      }
+      if (!configFields || !Object.hasOwn(configFields, control.field)) {
+        invalidModule(
+          "Config control field is not declared by this route's config extension.",
+          `${path}.field`,
+        );
+      }
+      const controlPath = `${control.configKey}.${control.field}`;
+      if (controlPaths.has(controlPath)) {
+        invalidModule(
+          "Config controls must not contain duplicate config fields.",
+          path,
+        );
+      }
+      controlPaths.add(controlPath);
+
+      if (
+        control.kind !== undefined
+        && (
+          typeof control.kind !== "string"
+          || !DASHBOARD_CONFIG_CONTROL_KINDS.has(control.kind)
+        )
+      ) {
+        invalidModule(
+          "Config control kind must be text, secret, number, or select.",
+          `${path}.kind`,
+        );
+      }
+      if (control.values !== undefined) {
+        if (!Array.isArray(control.values)) {
+          invalidModule(
+            "Config control values must be an array.",
+            `${path}.values`,
+          );
+        }
+        for (const [valueIndex, rawChoice] of control.values.entries()) {
+          const choicePath = `${path}.values.${valueIndex}`;
+          const choice = objectValue(rawChoice);
+          if (
+            !choice
+            || typeof choice.value !== "string"
+            || typeof choice.label !== "string"
+            || (choice.title !== undefined && typeof choice.title !== "string")
+          ) {
+            invalidModule(
+              "Config control choices must contain string value/label fields and an optional string title.",
+              choicePath,
+            );
+          }
+        }
+      }
+      for (const field of ["placeholder", "description"]) {
+        if (control[field] !== undefined && typeof control[field] !== "string") {
+          invalidModule(
+            `Config control ${field} must be a string.`,
+            `${path}.${field}`,
+          );
+        }
+      }
+      if (
+        control.clearable !== undefined
+        && typeof control.clearable !== "boolean"
+      ) {
+        invalidModule(
+          "Config control clearable must be a boolean.",
+          `${path}.clearable`,
+        );
+      }
+    }
+  }
+
+  if (management.manualPermissions !== undefined) {
+    if (!Array.isArray(management.manualPermissions)) {
+      invalidModule(
+        "dashboard.management.manualPermissions must be an array.",
+        "dashboard.management.manualPermissions",
+      );
+    }
+    for (const [index, rawPermission] of management.manualPermissions.entries()) {
+      const path = `dashboard.management.manualPermissions.${index}`;
+      const permission = objectValue(rawPermission);
+      if (
+        !permission
+        || typeof permission.title !== "string"
+        || !Array.isArray(permission.items)
+        || !permission.items.every((item) => typeof item === "string")
+      ) {
+        invalidModule(
+          "Manual permissions must contain a string title and an array of string items.",
+          path,
+        );
+      }
+    }
+  }
+
+  if (management.commands !== undefined) {
+    if (!Array.isArray(management.commands)) {
+      invalidModule(
+        "dashboard.management.commands must be an array.",
+        "dashboard.management.commands",
+      );
+    }
+    for (const [index, rawCommand] of management.commands.entries()) {
+      const path = `dashboard.management.commands.${index}`;
+      const command = objectValue(rawCommand);
+      if (
+        !command
+        || typeof command.rule !== "string"
+        || typeof command.description !== "string"
+      ) {
+        invalidModule(
+          "Dashboard commands must contain string rule and description fields.",
+          path,
+        );
+      }
+    }
   }
 }
 
@@ -355,9 +566,7 @@ function assertRouteModuleV1(
   ) {
     throw new RouteProtocolError("invalid-module", "lifecycle extension is invalid.", "lifecycle");
   }
-  if (instance.dashboard !== undefined && !objectValue(instance.dashboard)) {
-    throw new RouteProtocolError("invalid-module", "dashboard extension must be an object.", "dashboard");
-  }
+  assertRouteDashboardV1(instance.dashboard, config);
   if (instance.backend !== undefined && typeof instance.backend !== "string") {
     throw new RouteProtocolError("invalid-module", "backend must be a string.", "backend");
   }
